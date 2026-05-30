@@ -25,12 +25,36 @@ void IRAM_ATTR on_rx() { rx_flag = true; }
 
 } // namespace
 
+// Power and enable the external front-end module (PA + LNA). The V4 needs this
+// or RX is badly desensitised. We drive the superset of both board revisions'
+// control pins (see pins.h): the pins a given revision doesn't use are just
+// free GPIOs there, so driving them is harmless.
+//   RX-LNA path: CSD/ctrl = 1, CTX = 0  (CTX is DIO2, auto)
+//   CPS = 0 -> PA bypass, matching our low-power (~+2 dBm) operation.
+void fem_enable() {
+    pinMode(PIN_FEM_VFEM, OUTPUT);
+    digitalWrite(PIN_FEM_VFEM, HIGH);   // power the FEM LDO (both revs)
+    pinMode(PIN_FEM_CSD, OUTPUT);
+    digitalWrite(PIN_FEM_CSD, HIGH);    // V4.2 GC1109 chip enable
+    pinMode(PIN_FEM_CTRL, OUTPUT);
+    digitalWrite(PIN_FEM_CTRL, HIGH);   // V4.3.1 KCT8103L: LNA in RX path
+    pinMode(PIN_FEM_CPS, OUTPUT);
+    digitalWrite(PIN_FEM_CPS, LOW);     // V4.2 PA bypass (low power)
+    delay(1);                           // let the FEM power up
+}
+
 namespace radio {
 
 bool init(int& err) {
+    fem_enable();
+
     radioSpi.begin(PIN_SCK, PIN_MISO, PIN_MOSI, PIN_NSS);
     err = chip.beginFSK(FREQ_MHZ, BITRATE_KBPS, FREQ_DEV_KHZ, RX_BW_KHZ,
                         TX_POWER_DBM, PREAMBLE_BITS, TCXO_V, false);
+    if (err != RADIOLIB_ERR_NONE) return false;
+
+    // Let DIO2 drive the FEM TX/RX switch (CTX): high in TX, low otherwise.
+    err = chip.setDio2AsRfSwitch(true);
     if (err != RADIOLIB_ERR_NONE) return false;
 
     err = chip.setSyncWord(SYNC_WORD, sizeof(SYNC_WORD));
