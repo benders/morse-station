@@ -108,4 +108,8 @@ Start at **low power, single fixed channel, no hopping** (§15.249, ~200–400 m
       full-power operation.
 - [x] Per-unit station IDs in NVS — `src/config.cpp` (random id on first
       boot, override via `set_station_id()`).
+- [ ] Derive the default station ID from the ESP32 MAC instead of `esp_random()`
+      so it's stable per unit without provisioning or a stored value. Use
+      `ESP.getEfuseMac()` (or `esp_efuse_mac_get_default`) and fold the 6 bytes
+      into 1..254. See espressif/arduino-esp32#932.
 - [ ] Enclosure, antenna build (hardware).
