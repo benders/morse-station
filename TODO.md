@@ -48,13 +48,14 @@ Validate we can make sound before we worry about the radio.
 
 Needs a second Heltec V4 flashed as the counterpart.
 
-- [ ] Replace the scanner `main.cpp` with a switchable TX/RX build (build flag
-      or runtime button) so one unit transmits and one receives.
-- [ ] Establish a GFSK link on a single fixed channel: TX sends a known
-      payload on a timer, RX prints received bytes + RSSI to serial.
-- [ ] Confirm RadioLib SX1262 FSK config matches design notes (4.8 kbps,
-      ~5 kHz dev, sync word identifying the net). Tune `rxBw`.
-- [ ] Bench range / packet-loss sanity check at low power.
+- [x] Switchable TX/RX at runtime: hold PRG/BOOT button at boot = TX beacon,
+      else RX listener (`src/main.cpp` Stage-3 test). One build, two units.
+- [x] GFSK link on a single fixed channel: TX sends a 4-byte payload every 1 s,
+      RX prints bytes + RSSI (`src/radio.cpp`, 905.0 MHz).
+- [x] RadioLib SX1262 FSK config per design notes — 4.8 kbps, 5 kHz dev,
+      sync word {0x2D,0xD4}, rxBw 39 kHz, low power (+2 dBm). **Tune rxBw /
+      power on hardware** if range or packet loss is off.
+- [ ] Bench range / packet-loss sanity check at low power (hardware).
 
 ## Stage 4 — Fox message loop (pre-programmed transmit)
 
