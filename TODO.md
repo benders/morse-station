@@ -89,12 +89,13 @@ uses.
 
 ## Stage 6 — Fox-hunt integration
 
-- [ ] Fox mode: loops Stage-4 message, transmits via Stage-5 scheme, low duty
-      cycle to save battery, OLED shows "FOX TX" status.
-- [ ] Hunter mode: receives, plays Morse sidetone, shows decoded text + RSSI
-      bar on OLED (RSSI as a crude "warmer/colder" hint).
-- [ ] Mode select at boot (button or build flag).
-- [ ] Field test at range; tune power and message cadence.
+- [x] Fox mode: loops the message, transmits keystate, OLED "FOX TX" status.
+- [x] Hunter mode: receives, plays sidetone, OLED decoded text + RSSI bar
+      (warmer/colder hint). (`src/display.cpp`, Stage-6 `src/main.cpp`.)
+- [x] Live-key mode added (students key to each other after the hunt).
+- [x] Mode select at boot — PRG-button menu (short = cycle, long = select,
+      8 s auto-select).
+- [ ] Field test at range; tune power and message cadence (hardware).
 
 ## Stage 7 — Range & polish
 
