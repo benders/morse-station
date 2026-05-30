@@ -77,15 +77,15 @@ keying with real timing. The canned fox loop just feeds the same keystate
 stream from the encoder instead of a human key, so one protocol covers both
 uses.
 
-- [ ] TX sends a small packet every ~30 ms carrying current key-down/up state
-      (+ station id, seq). RX reconstructs timing and drives its sidetone.
-      No ACKs, no retries — a dropped packet is corrected by the next one.
-- [ ] Fox loop feeds the keystate stream from the Stage-4 Morse encoder rather
-      than from a physical key — same wire format, same RX code.
-- [ ] RX side: key-down/up stream → sidetone, and feed a local Morse *decoder*
-      to render text on the OLED.
-- [ ] End-to-end: fox (or a live key) → transmit → hunter hears Morse + sees
-      decoded text on OLED.
+- [x] TX sends a 5-byte `KeyState` packet every 30 ms (magic, station id,
+      key state, seq). RX reconstructs timing and drives its sidetone. No
+      ACKs/retries. (`src/protocol.h`, Stage-5 `src/main.cpp`.)
+- [x] Fox loop feeds the keystate stream from the `morse::Player` — same wire
+      format the RX uses for a live key.
+- [x] RX side: key stream → sidetone + `morse::Decoder` → text (serial now;
+      OLED in Stage 6).
+- [x] End-to-end builds: fox → transmit → hunter hears Morse + decodes text.
+      Verify on two units; OLED display is Stage 6.
 
 ## Stage 6 — Fox-hunt integration
 
