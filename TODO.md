@@ -37,12 +37,12 @@ Validate we can make sound before we worry about the radio.
 
 ## Stage 2 — Telegraph key input
 
-- [ ] Wire the key to a GPIO with `INPUT_PULLUP`, key shorts to GND.
-- [ ] Debounce (RC cap across contacts + software). Confirm clean edges on
-      a scope or via serial timestamps.
-- [ ] Key down → `sidetone_on()`, key up → `sidetone_off()`, locally, with no
-      perceptible latency. This is the "straight key practice" loop, radio
-      not involved yet.
+- [x] Wire the key to a GPIO with `INPUT_PULLUP`, key shorts to GND
+      (`PIN_KEY` in `src/pins.h`, tentatively GPIO 5 — confirm on hardware).
+- [x] Debounce — `src/morsekey.cpp` software debounce (5 ms settling). Add an
+      RC cap across contacts too if edges are noisy. Confirm via serial.
+- [x] Key down → `sidetone_on()`, key up → `sidetone_off()` (`src/main.cpp`
+      Stage-2 local-keyer test). Verify no perceptible latency on hardware.
 
 ## Stage 3 — Radio link bring-up (FSK TX/RX on two units)
 
