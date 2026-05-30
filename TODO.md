@@ -155,9 +155,9 @@ Start at **low power, single fixed channel, no hopping** (§15.249, ~200–400 m
 - [x] Callsign + fox message in NVS (`src/config.cpp`), provisioned over serial:
       boot setup console (`run_setup_console` in `src/main.cpp`, commands
       `call`/`msg`/`id`/`show`/`done`) plus a host-side helper
-      `scripts/provision.sh` (--call/--msg/--id/--show). Builds clean; **not yet
-      exercised against hardware** — DTR/RTS auto-reset is best-effort and may
-      need a manual RST tap.
+      `scripts/provision.sh` (--call/--msg/--id/--show). **Verified on hardware:**
+      provisioned both units to KC8HOB and confirmed in the fox loop. DTR/RTS
+      auto-reset is best-effort; pass `--port` and tap RST if the window is missed.
 - [ ] **Field provisioning via BLE** (preferred over serial for the field).
       Stand up a BLE GATT config service on the S3 (it has BLE on-silicon) so a
       phone — or a "master" unit — can set callsign/fox-message/station-id
