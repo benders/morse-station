@@ -22,16 +22,18 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[?]` needs a decision
 
 Validate we can make sound before we worry about the radio.
 
-- [ ] Wire the amp: **PAM8403** class-D board (Amazon B0DPMNYR2B) driving a
+- [~] Wire the amp: **PAM8403** class-D board (Amazon B0DPMNYR2B) driving a
       **4 Ω** speaker (Amazon B0F3DBRXS5). PAM8403 takes an analog audio input
       and runs off 2.5–5 V — power it from the Heltec 3V3/5V rail, common GND.
-      Capture the chosen GPIO → amp L/R input pin here once wired.
-- [ ] Generate a 600 Hz sidetone on the MCU (LEDC/PWM on a GPIO is simplest;
-      a series cap + resistor to the amp input smooths the square wave). The
-      ESP32-S3 has no true DAC, so PWM is the path. Verify clean tone; set
-      volume with the amp's onboard pot.
-- [ ] Wrap tone on/off behind a `sidetone_on()` / `sidetone_off()` API so the
-      key handler and the RX decoder can both drive it.
+      Tentative pin: **GPIO 7** → ~1 kΩ series + 100 nF → amp L_IN. **Confirm
+      GPIO 7 against the board silkscreen on hardware** (free of radio pins
+      8–14, OLED 17/18/21, Vext 36).
+- [x] Generate a 600 Hz sidetone on the MCU — `src/sidetone.cpp` uses the
+      ESP32 LEDC peripheral (square wave; S3 has no true DAC). Builds clean.
+      Verify clean tone on hardware and set volume with the amp's pot.
+- [x] Wrap tone on/off behind `sidetone_on()` / `sidetone_off()`
+      (`src/sidetone.h`) so the key handler and RX decoder can both drive it.
+- [ ] Flash `src/main.cpp` (Stage-1 beep test) and confirm audio on hardware.
 
 ## Stage 2 — Telegraph key input
 
