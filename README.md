@@ -29,9 +29,18 @@ On boot the OLED shows a mode menu. Use the **PRG/BOOT** button:
 Modes:
 
 - **Hunter (RX)** — receives, plays the Morse sidetone, shows decoded text and
-  an RSSI bar (fuller bar = stronger signal, a warmer/colder hint).
-- **Fox (TX loop)** — repeats the canned location message on the air.
+  an RSSI bar (fuller bar = stronger signal, a warmer/colder hint). The sidetone
+  **volume tracks signal strength** (dB-linear, so it sounds like a classic
+  "tune for max volume" meter) — run the fox at LO power so the signal actually
+  falls off with distance and the gradient is audible as you close in.
+- **Fox (TX loop)** — repeats the canned location message on the air. A **short
+  PRG tap cycles TX power** LO / MED / HI (shown as "PWR x" on the OLED, boots
+  MED) — pull it down to LO in a small space.
 - **Live key (TX)** — transmits a telegraph key wired to the key GPIO, with
   local sidetone, so students can key to a hunter.
+- **Hibernate** — power-off stand-in (the boards have no hardware switch):
+  powers down the front-end and peripheral rail and enters deep sleep. Press
+  **RST** to wake — the sketch restarts back into this menu. So RST turns the
+  unit off (via Hibernate) and on again in the field.
 
 To re-pick a mode, reset the board (the menu runs again at boot).

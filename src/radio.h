@@ -14,6 +14,10 @@ bool init(int& err);
 // Blocking transmit of a small payload. Returns true on success.
 bool send(const uint8_t* data, size_t len);
 
+// Set the SX1262 output power in dBm (the FEM PA sits after this). Returns true
+// on success. Used by the fox to switch high/medium/low for the space at hand.
+bool set_tx_power(int dbm);
+
 // Put the radio into continuous receive. Call once after init() on RX nodes.
 void start_receive();
 

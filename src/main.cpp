@@ -7,6 +7,7 @@
 #include "protocol.h"
 #include "display.h"
 #include "config.h"
+#include <esp_sleep.h>
 
 // Stage 6 — integrated fox-hunt firmware.
 //
@@ -23,8 +24,15 @@ static constexpr uint8_t  WPM          = 13;
 static constexpr uint32_t REPEAT_PAUSE = 3000;
 static const char* FOX_MSG = "FOX NEAR THE BIG OAK BY THE LAKE";
 
-enum Mode { MODE_HUNTER = 0, MODE_FOX = 1, MODE_LIVEKEY = 2 };
+enum Mode { MODE_HUNTER = 0, MODE_FOX = 1, MODE_LIVEKEY = 2, MODE_HIBERNATE = 3 };
 static Mode mode = MODE_HUNTER;
+
+// Fox TX power levels, cycled with the PRG button (SX1262 output; the FEM PA
+// follows). Default MED — bump to HI for open ground, drop to LO in a room.
+struct PwrLevel { const char* label; int dbm; };
+static const PwrLevel PWR_LEVELS[] = {{"LO", -9}, {"MED", 2}, {"HI", 14}};
+static const int N_PWR  = 3;
+static int       pwr_idx = 1;   // MED (+2 dBm), matches the radio init default
 
 static morse::Player  player;
 static morse::Decoder decoder;
@@ -56,8 +64,9 @@ static void text_push(char c) {
 
 // Blocking boot menu; returns the chosen mode.
 static Mode run_menu() {
-    static const char* items[] = {"Hunter (RX)", "Fox (TX loop)", "Live key (TX)"};
-    const int n = 3;
+    static const char* items[] = {"Hunter (RX)", "Fox (TX loop)", "Live key (TX)",
+                                   "Hibernate"};
+    const int n = 4;
     int sel = 0;
 
     pinMode(PIN_MODE_BTN, INPUT_PULLUP);
@@ -85,6 +94,18 @@ static Mode run_menu() {
     }
 }
 
+// Power-off stand-in: there is no hardware switch, so we power down the
+// peripherals and enter deep sleep with no wake source. The board draws ~uA
+// until the user presses RST, which restarts the sketch back into this menu.
+static void hibernate() {
+    display::status("Hibernating", "Press RST to wake", nullptr);
+    delay(1500);
+    sidetone_off();
+    pinMode(PIN_FEM_VFEM, OUTPUT);  digitalWrite(PIN_FEM_VFEM, LOW);   // FEM off
+    pinMode(PIN_VEXT_CTRL, OUTPUT); digitalWrite(PIN_VEXT_CTRL, HIGH); // peripheral rail off
+    esp_deep_sleep_start();         // only RST wakes us -> full restart
+}
+
 void setup() {
     Serial.begin(115200);
     uint32_t t0 = millis();
@@ -97,6 +118,8 @@ void setup() {
     mode = run_menu();
     Serial.printf("\n# mode=%d station_id=%u\n", (int)mode, config::station_id());
 
+    if (mode == MODE_HIBERNATE) hibernate();   // does not return
+
     int err;
     if (!radio::init(err)) {
         Serial.printf("FATAL: radio init failed (code=%d)\n", err);
@@ -107,6 +130,7 @@ void setup() {
         case MODE_FOX:
             player.begin(WPM);
             player.start(FOX_MSG);
+            radio::set_tx_power(PWR_LEVELS[pwr_idx].dbm);
             break;
         case MODE_LIVEKEY:
             key.begin(PIN_KEY);
@@ -115,6 +139,8 @@ void setup() {
             decoder.begin(WPM);
             radio::start_receive();
             break;
+        case MODE_HIBERNATE:
+            break;   // handled before radio init; never reached
     }
 }
 
@@ -128,7 +154,25 @@ static void tx_keystate(uint32_t now, bool down) {
     radio::send(buf, proto::PACKET_LEN);
 }
 
+// Debounced rising-edge detector for the PRG/BOOT button (already INPUT_PULLUP
+// from the boot menu). Used in fox mode to cycle TX power.
+static bool prg_tapped(uint32_t now) {
+    static bool was_down = false;
+    static uint32_t last = 0;
+    bool down = (digitalRead(PIN_MODE_BTN) == LOW);
+    bool edge = down && !was_down && (now - last > 200);
+    if (edge) last = now;
+    was_down = down;
+    return edge;
+}
+
 static void loop_fox(uint32_t now) {
+    if (prg_tapped(now)) {
+        pwr_idx = (pwr_idx + 1) % N_PWR;
+        radio::set_tx_power(PWR_LEVELS[pwr_idx].dbm);
+        last_draw = 0;   // force an immediate redraw of the new level
+    }
+
     if (!player.finished()) {
         player.update(now);
         if (player.finished()) pause_until = now + REPEAT_PAUSE;
@@ -139,7 +183,10 @@ static void loop_fox(uint32_t now) {
     set_tone(down);
     tx_keystate(now, down);
 
-    if (now - last_draw >= 100) { last_draw = now; display::fox(seq, FOX_MSG, down); }
+    if (now - last_draw >= 100) {
+        last_draw = now;
+        display::fox(seq, FOX_MSG, down, PWR_LEVELS[pwr_idx].label);
+    }
 }
 
 static void loop_livekey(uint32_t now) {
@@ -165,6 +212,10 @@ static void loop_hunter(uint32_t now) {
             rx_down = ks.key_down != 0;
             rssi = r;
             rssi_valid = true;
+            // Louder for stronger signal — same -110..-40 dBm span as the bar,
+            // so the ear tracks the meter (classic "tune for max volume" feel).
+            float clamped = rssi < -110.0f ? -110.0f : (rssi > -40.0f ? -40.0f : rssi);
+            sidetone_set_volume((uint8_t)((clamped + 110.0f) / 70.0f * 255.0f));
         }
     }
     set_tone(rx_down);
@@ -184,5 +235,6 @@ void loop() {
         case MODE_FOX:     loop_fox(now);     break;
         case MODE_LIVEKEY: loop_livekey(now); break;
         case MODE_HUNTER:  loop_hunter(now);  break;
+        case MODE_HIBERNATE: break;   // never reached (slept in setup)
     }
 }

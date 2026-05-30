@@ -12,8 +12,8 @@ void begin();
 // Boot menu: items[0..n-1], sel highlighted.
 void menu(const char* const* items, int n, int sel);
 
-// Fox transmit status.
-void fox(uint16_t seq, const char* msg, bool tone_on);
+// Fox transmit status. pwr is a short power-level label ("HI"/"MED"/"LO").
+void fox(uint16_t seq, const char* msg, bool tone_on, const char* pwr);
 
 // Hunter receive view: rolling decoded text, last-packet RSSI, tone indicator.
 // rssi_valid=false dims the bar (no packet yet).

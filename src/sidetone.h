@@ -11,3 +11,8 @@
 void sidetone_init(int gpio_pin, uint32_t freq_hz = 600);
 void sidetone_on();
 void sidetone_off();
+
+// Set tone loudness, 0 (faint) .. 255 (full). Applied on the next (or current)
+// sidetone_on(). The hunter drives this from received RSSI; fox/live-key leave
+// it at full. Volume is the square-wave duty cycle, not a true amplitude.
+void sidetone_set_volume(uint8_t vol);

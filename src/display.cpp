@@ -48,10 +48,14 @@ void menu(const char* const* items, int n, int sel) {
     oled.sendBuffer();
 }
 
-void fox(uint16_t seq, const char* msg, bool tone_on) {
+void fox(uint16_t seq, const char* msg, bool tone_on, const char* pwr) {
     oled.clearBuffer();
     oled.setFont(u8g2_font_6x12_tr);
     oled.drawStr(0, 11, tone_on ? "FOX TX  *" : "FOX TX");
+    // power level, right-justified on the header row (PRG cycles it)
+    char pbuf[12];
+    snprintf(pbuf, sizeof(pbuf), "PWR %s", pwr);
+    oled.drawStr(128 - (int)strlen(pbuf) * 6, 11, pbuf);
     // message wrapped across two lines (21 chars per line at 6px)
     char line[22];
     size_t len = strlen(msg);

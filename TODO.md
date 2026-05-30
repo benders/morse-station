@@ -111,6 +111,25 @@ uses.
 - [x] Live-key mode added (students key to each other after the hunt).
 - [x] Mode select at boot — PRG-button menu (short = cycle, long = select,
       8 s auto-select).
+- [x] Hunter audio volume tracks RSSI (analog "tune for max volume" feel) —
+      received RSSI maps over the same -110..-40 dBm span as the bar onto the
+      sidetone LEDC duty cycle. Curve is **exponential (dB-linear)** so equal
+      RSSI steps give equal perceived loudness steps; a linear map was
+      inaudible (all the change sat in the flat top of the square wave's
+      sin(pi*duty) response). Near-silent floor (duty 3). **Verified on
+      hardware.** Note: the gradient only appears when RSSI actually varies, so
+      run the fox at LO power — at MED/HI the strong link saturates RSSI across
+      the search area. (`sidetone_set_volume` in `src/sidetone.cpp`,
+      `loop_hunter` in `src/main.cpp`.)
+- [x] Fox adjustable TX power — short PRG tap cycles LO(-9)/MED(+2)/HI(+14) dBm
+      via `radio::set_tx_power` (SX1262 output; FEM PA follows). Shown as
+      "PWR x" on the fox OLED, boots MED. Lets us pull power down in a small
+      space. **Verified on hardware.** (`src/main.cpp`, `src/radio.cpp`,
+      `src/display.cpp`.)
+- [x] Hibernate (power-off stand-in, no hardware switch) — boot-menu item
+      powers down the FEM + peripheral rail and enters deep sleep with no wake
+      source; RST restarts the sketch into the menu. **Verified on hardware.**
+      (`hibernate()` in `src/main.cpp`.)
 - [ ] Field test at range; tune power and message cadence (hardware).
 
 ## Stage 7 — Range & polish

@@ -69,6 +69,10 @@ bool send(const uint8_t* data, size_t len) {
     return state == RADIOLIB_ERR_NONE;
 }
 
+bool set_tx_power(int dbm) {
+    return chip.setOutputPower(dbm) == RADIOLIB_ERR_NONE;
+}
+
 void start_receive() {
     rx_flag = false;
     chip.startReceive();
