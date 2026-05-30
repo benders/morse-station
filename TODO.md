@@ -130,6 +130,11 @@ uses.
       powers down the FEM + peripheral rail and enters deep sleep with no wake
       source; RST restarts the sketch into the menu. **Verified on hardware.**
       (`hibernate()` in `src/main.cpp`.)
+- [x] **RX stuck-key on signal loss:** when an RX node lost the signal mid-key
+      it could latch in "key active" (sidetone stuck on / decoder hung). Fixed
+      with a watchdog in `loop_hunter` — no keystate packet for ~one dah
+      (`RX_TIMEOUT_MS`, 3 units at WPM) forces key-up → sidetone off → idle.
+      **Verified on hardware.**
 - [ ] Field test at range; tune power and message cadence (hardware).
 
 ## Stage 7 — Range & polish

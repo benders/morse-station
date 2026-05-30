@@ -280,9 +280,15 @@ static void loop_livekey(uint32_t now) {
 }
 
 static void loop_hunter(uint32_t now) {
-    static bool  rx_down = false;
-    static float rssi = 0.0f;
-    static bool  rssi_valid = false;
+    static bool     rx_down = false;
+    static float    rssi = 0.0f;
+    static bool     rssi_valid = false;
+    static uint32_t last_rx = 0;
+
+    // Signal-loss watchdog: TX streams keystate every 30 ms. If we hear nothing
+    // for ~one dah (3 units at WPM), the link dropped mid-key — force key-up so
+    // the sidetone doesn't latch on and the decoder doesn't hang.
+    static constexpr uint32_t RX_TIMEOUT_MS = (1200u / WPM) * 3u;
 
     uint8_t buf[32];
     size_t n;
@@ -291,6 +297,7 @@ static void loop_hunter(uint32_t now) {
         proto::KeyState ks;
         if (proto::decode(buf, n, ks)) {
             rx_down = ks.key_down != 0;
+            last_rx = now;
             rssi = r;
             rssi_valid = true;
             // Louder for stronger signal — same -110..-40 dBm span as the bar,
@@ -298,6 +305,11 @@ static void loop_hunter(uint32_t now) {
             float clamped = rssi < -110.0f ? -110.0f : (rssi > -40.0f ? -40.0f : rssi);
             sidetone_set_volume((uint8_t)((clamped + 110.0f) / 70.0f * 255.0f));
         }
+    }
+
+    // No fresh keystate for too long → drop to key-up (silent/idle).
+    if (rx_down && (now - last_rx) > RX_TIMEOUT_MS) {
+        rx_down = false;
     }
     set_tone(rx_down);
 
