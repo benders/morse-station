@@ -59,13 +59,15 @@ Needs a second Heltec V4 flashed as the counterpart.
 
 ## Stage 4 — Fox message loop (pre-programmed transmit)
 
-- [ ] Store the fox's location-description message as text in firmware
-      (e.g. `"FOX NEAR THE BIG OAK BY THE LAKE"`).
-- [ ] Text → Morse timing: map chars to dit/dah element sequences with correct
-      WPM timing (dit/dah/intra-char/inter-char/inter-word gaps).
-- [ ] Drive the local sidetone from the Morse timing so the fox audibly keys
-      itself — confirms the encoder before any radio involvement.
-- [ ] Loop the message with a configurable inter-repeat pause.
+- [x] Fox message stored in firmware (`FOX_MSG` in `src/main.cpp`).
+- [x] Text → Morse timing: `morse::Player` (`src/morse.cpp`) maps chars to
+      dit/dah sequences with standard WPM timing (1/3/1/3/7-unit gaps), as a
+      non-blocking timed key-state stream so it can feed sidetone *and* radio.
+- [x] Local sidetone driven from the Morse timing (Stage-4 `main.cpp`).
+      Verify timing by ear on hardware.
+- [x] Loops with a configurable `REPEAT_PAUSE`.
+
+Also added (used by RX in Stage 5/6): `morse::Decoder` — key timing → text.
 
 ## Stage 5 — Morse over FSK — keystate broadcast
 
