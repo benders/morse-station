@@ -55,9 +55,18 @@ Needs a second Heltec V4 flashed as the counterpart.
 - [x] GFSK link on a single fixed channel: TX sends a 4-byte payload every 1 s,
       RX prints bytes + RSSI (`src/radio.cpp`, 905.0 MHz).
 - [x] RadioLib SX1262 FSK config per design notes — 4.8 kbps, 5 kHz dev,
-      sync word {0x2D,0xD4}, rxBw 39 kHz, low power (+2 dBm). **Tune rxBw /
-      power on hardware** if range or packet loss is off.
-- [ ] Bench range / packet-loss sanity check at low power (hardware).
+      sync word {0x2D,0xD4}, rxBw 39 kHz, low power (+2 dBm).
+- [x] **V4 external FEM (PA+LNA) brought up** — `radio::fem_enable()` powers
+      VFEM (GPIO7), enables the FEM, sets PA-bypass, and `setDio2AsRfSwitch`
+      lets DIO2 switch TX/RX. Without it RX was dead (~-107 dBm). One image
+      drives the superset of V4.2 (GC1109) and V4.3.1 (KCT8103L) control pins.
+      See memory `heltec-v4-fem-rf-frontend`.
+- [x] Bench link verified both directions, huge margin (two floors away ~-40
+      dBm). Link is solid; see TX-gain note below.
+- [ ] **Polish/range:** TX gain mismatched between revisions (V4.2 ~+34 dB
+      hotter than V4.3 — different FEM TX path/PA mode under the superset
+      config). Equalise to a matched low-power level and confirm we're within
+      §15.249 before any long-range/outdoor use. Not blocking the hunt.
 
 ## Stage 4 — Fox message loop (pre-programmed transmit)
 
