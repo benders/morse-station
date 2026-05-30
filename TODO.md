@@ -33,16 +33,18 @@ Validate we can make sound before we worry about the radio.
       Verify clean tone on hardware and set volume with the amp's pot.
 - [x] Wrap tone on/off behind `sidetone_on()` / `sidetone_off()`
       (`src/sidetone.h`) so the key handler and RX decoder can both drive it.
-- [ ] Flash `src/main.cpp` (Stage-1 beep test) and confirm audio on hardware.
+- [x] Flash `src/main.cpp` (Stage-1 beep test) and confirm audio on hardware.
+      Confirmed: clean 600 Hz tone on GPIO 7 (cap not yet fitted, not needed).
 
 ## Stage 2 — Telegraph key input
 
 - [x] Wire the key to a GPIO with `INPUT_PULLUP`, key shorts to GND
-      (`PIN_KEY` in `src/pins.h`, tentatively GPIO 5 — confirm on hardware).
+      (`PIN_KEY` in `src/pins.h`). Confirmed on **GPIO 6**: GPIO 5 read LOW
+      even floating (pull-up wouldn't hold), GPIO 6 reads HIGH idle / LOW keyed.
 - [x] Debounce — `src/morsekey.cpp` software debounce (5 ms settling). Add an
       RC cap across contacts too if edges are noisy. Confirm via serial.
 - [x] Key down → `sidetone_on()`, key up → `sidetone_off()` (`src/main.cpp`
-      Stage-2 local-keyer test). Verify no perceptible latency on hardware.
+      Stage-2 local-keyer test). Verified on hardware: clean tone, no latency.
 
 ## Stage 3 — Radio link bring-up (FSK TX/RX on two units)
 

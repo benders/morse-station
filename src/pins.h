@@ -21,5 +21,7 @@ static constexpr int PIN_VEXT_CTRL = 36;   // LOW = peripheral 3.3V rail on
 
 // Our wiring (confirm on hardware)
 static constexpr int PIN_SIDETONE = 7;     // -> PAM8403 audio input
-static constexpr int PIN_KEY      = 5;     // telegraph key -> GND, INPUT_PULLUP
+static constexpr int PIN_KEY      = 6;     // telegraph key -> GND, INPUT_PULLUP
+                                           // (was GPIO 5: read LOW even floating
+                                           //  on hardware — pull-up didn't hold)
 static constexpr int PIN_MODE_BTN = 0;     // onboard PRG/BOOT button (mode select)
