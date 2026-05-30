@@ -63,10 +63,15 @@ Needs a second Heltec V4 flashed as the counterpart.
       See memory `heltec-v4-fem-rf-frontend`.
 - [x] Bench link verified both directions, huge margin (two floors away ~-40
       dBm). Link is solid; see TX-gain note below.
-- [ ] **Polish/range:** TX gain mismatched between revisions (V4.2 ~+34 dB
-      hotter than V4.3 — different FEM TX path/PA mode under the superset
-      config). Equalise to a matched low-power level and confirm we're within
-      §15.249 before any long-range/outdoor use. Not blocking the hunt.
+- [ ] **Polish/range + compliance:** TX gain mismatched between revisions
+      (V4.2 ~+34 dB hotter than V4.3 — different FEM TX path/PA mode under the
+      superset config). Independent check: an SDR several floors away hears us
+      at -80..-90 dBm with **no RX gain**, i.e. the V4.2 PA is clearly engaging
+      and we are NOT in the +2 dBm low-power regime we configured. Range is
+      plentiful for the camp either way. Before any deliberate outdoor deploy:
+      equalise both boards to a matched power and decide the legal basis —
+      §15.249 low-power unlicensed vs operating under an amateur license in the
+      902-928 MHz (33 cm) band. Not blocking the hunt.
 
 ## Stage 4 — Fox message loop (pre-programmed transmit)
 
