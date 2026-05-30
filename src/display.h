@@ -22,4 +22,8 @@ void hunter(const char* text, float rssi_dbm, bool rssi_valid, bool tone_on);
 // Live-key transmit view.
 void livekey(uint16_t seq, bool tone_on);
 
+// Generic three-line status screen (title + two body lines). Pass nullptr for
+// an unused body line. Used by bring-up/test sketches. */
+void status(const char* title, const char* line1, const char* line2);
+
 } // namespace display

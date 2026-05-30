@@ -95,4 +95,13 @@ void livekey(uint16_t seq, bool tone_on) {
     oled.sendBuffer();
 }
 
+void status(const char* title, const char* line1, const char* line2) {
+    oled.clearBuffer();
+    oled.setFont(u8g2_font_6x12_tr);
+    if (title) oled.drawStr(0, 14, title);
+    if (line1) oled.drawStr(0, 36, line1);
+    if (line2) oled.drawStr(0, 54, line2);
+    oled.sendBuffer();
+}
+
 } // namespace display
