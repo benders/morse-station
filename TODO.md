@@ -106,4 +106,6 @@ Start at **low power, single fixed channel, no hopping** (§15.249, ~200–400 m
 - [ ] **Later phase, only if range falls short:** FHSS — 50-channel hop table
       + RX scan-and-lock (`rx-sync.md`, a TODO in design notes) for §15.247
       full-power operation.
-- [ ] Per-unit station IDs in NVS/EEPROM, enclosure, antenna build.
+- [x] Per-unit station IDs in NVS — `src/config.cpp` (random id on first
+      boot, override via `set_station_id()`).
+- [ ] Enclosure, antenna build (hardware).

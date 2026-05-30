@@ -6,6 +6,7 @@
 #include "radio.h"
 #include "protocol.h"
 #include "display.h"
+#include "config.h"
 
 // Stage 6 — integrated fox-hunt firmware.
 //
@@ -19,7 +20,6 @@
 
 static constexpr uint32_t TONE_HZ      = 600;
 static constexpr uint8_t  WPM          = 13;
-static constexpr uint8_t  STATION_ID   = 1;
 static constexpr uint32_t REPEAT_PAUSE = 3000;
 static const char* FOX_MSG = "FOX NEAR THE BIG OAK BY THE LAKE";
 
@@ -90,11 +90,12 @@ void setup() {
     uint32_t t0 = millis();
     while (!Serial && (millis() - t0) < 2000) { delay(10); }
 
+    config::begin();
     display::begin();
     sidetone_init(PIN_SIDETONE, TONE_HZ);
 
     mode = run_menu();
-    Serial.printf("\n# mode=%d\n", (int)mode);
+    Serial.printf("\n# mode=%d station_id=%u\n", (int)mode, config::station_id());
 
     int err;
     if (!radio::init(err)) {
@@ -121,7 +122,7 @@ void setup() {
 static void tx_keystate(uint32_t now, bool down) {
     if (now - last_tx < proto::TX_INTERVAL_MS) return;
     last_tx = now;
-    proto::KeyState ks{proto::MAGIC, STATION_ID, (uint8_t)down, seq++};
+    proto::KeyState ks{proto::MAGIC, config::station_id(), (uint8_t)down, seq++};
     uint8_t buf[proto::PACKET_LEN];
     proto::encode(ks, buf);
     radio::send(buf, proto::PACKET_LEN);
