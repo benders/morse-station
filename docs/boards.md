@@ -24,10 +24,16 @@ Filtered for **FSK/GFSK + OOK** capability, **external antenna connector** (u.FL
 
 - **SX1262 boards (Heltec V3/V4, all LILYGO T-* devices) do not support OOK.** Semtech dropped OOK from the SX126x family. If you need OOK, pick an **RFM69HCW** or **SX1276/RFM95W** board.
 - **External PA/LNA front-ends** are uncommon at this price tier. The notable exception is the **Heltec V4 "high power" / Ultimate** variant, which adds an external PA stage to push +27 dBm (~500 mW). The base Heltec V3 and all Adafruit/SparkFun/LILYGO boards above rely on the radio's integrated PA/LNA only.
-- For more TX power on a no-LoRa, FSK/OOK build, options are: (a) add an external 915 MHz PA/LNA module (e.g. RFX2401C or SKY66xxx) to a Feather RFM69 board, or (b) step up to the SparkFun MicroMod 1 W LoRa Function Board (SX127x + external 1 W PA, supports OOK) paired with a MicroMod processor board.
-- All Adafruit Feathers and FeatherWings expose a **u.FL footprint** but the connector is **not populated** — solder a wire antenna or hand-mount a u.FL jack. SparkFun Pro RF ships with u.FL installed. LILYGO/Heltec boards ship with SMA or u.FL pigtail.
+- LILYGO/Heltec SX1262 boards ship with SMA or u.FL pigtail antennas populated. (Adafruit Feathers expose only an unpopulated u.FL footprint.)
 
-### Recommended picks for OOK + FSK + range + simplicity
-1. **Adafruit Feather M0 RFM69HCW** — pure FSK/GFSK/OOK, JST + LiPo charger, +20 dBm, simplest software stack (RadioLib / RadioHead).
-2. **Adafruit Feather M0 RFM95 LoRa** — SX1276, gives you OOK/FSK *and* LoRa fallback for max range.
-3. **SparkFun Pro RF (SAMD21 + RFM95W)** — only board here with u.FL pre-populated; same SX1276 capability set.
+### Chosen board
+
+This project uses the **Heltec WiFi LoRa 32 V4** (ESP32-S3 + SX1262): it's the
+only board in this survey with an **integrated external PA/LNA front-end**
+(+27 dBm / ~500 mW), plus an onboard OLED and LiPo charger, at the lowest price
+tier. The design only needs **GFSK**, so the SX126x family's lack of OOK is not a
+constraint. See `design-notes.md`.
+
+The RFM69 / SX1276 (Feather, SparkFun, LILYGO) rows above are retained as a
+market survey for reference only — they were evaluated and not chosen. If a build
+ever needs **OOK**, those are the fallback (the SX126x dropped OOK).

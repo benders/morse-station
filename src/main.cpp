@@ -22,7 +22,10 @@
 static constexpr uint32_t TONE_HZ      = 600;
 static constexpr uint8_t  WPM          = 13;
 static constexpr uint32_t REPEAT_PAUSE = 3000;
-static const char* FOX_MSG = "FOX NEAR THE BIG OAK BY THE LAKE";
+
+// Callsign and fox message live in NVS (config), set via the boot serial console
+// (see run_setup_console). The callsign is sent in the periodic station-ID
+// packet; include it in the fox message text too for an audible CW ID.
 
 enum Mode { MODE_HUNTER = 0, MODE_FOX = 1, MODE_LIVEKEY = 2, MODE_HIBERNATE = 3 };
 static Mode mode = MODE_HUNTER;
@@ -40,6 +43,7 @@ static MorseKey       key;
 
 static uint16_t seq = 0;
 static uint32_t last_tx = 0;
+static uint32_t last_ident = 0;
 static uint32_t pause_until = 0;
 static uint32_t last_draw = 0;
 
@@ -60,6 +64,70 @@ static void text_push(char c) {
     }
     text_buf[text_len++] = c;
     text_buf[text_len] = 0;
+}
+
+// Read a line from Serial into buf (NUL-terminated, trailing CR/LF stripped).
+// Returns false on timeout_ms with no complete line. Blocks while typing.
+static bool serial_read_line(char* buf, size_t cap, uint32_t timeout_ms) {
+    size_t n = 0;
+    uint32_t start = millis();
+    while (millis() - start < timeout_ms) {
+        while (Serial.available()) {
+            char c = (char)Serial.read();
+            if (c == '\n' || c == '\r') {
+                if (n == 0) continue;          // skip leading blank lines
+                buf[n] = 0;
+                return true;
+            }
+            if (n + 1 < cap) buf[n++] = c;
+            start = millis();                  // keep alive while characters flow
+        }
+        delay(5);
+    }
+    buf[n] = 0;
+    return n > 0;
+}
+
+// Boot-time serial provisioning. Offers a short window to enter a REPL that
+// writes callsign / fox message / station id to NVS. Commands:
+//   call <SIGN> | msg <text...> | id <n> | show | done
+static void run_setup_console() {
+    Serial.printf("\n# config: id=%u call=%s msg=\"%s\"\n",
+                  config::station_id(), config::callsign(), config::fox_message());
+    Serial.print("# send 's' within 2s for setup console... ");
+
+    char line[160];
+    if (!serial_read_line(line, sizeof(line), 2000) ||
+        !(line[0] == 's' || line[0] == 'S')) {
+        Serial.println("(skipped)");
+        return;
+    }
+    Serial.println("\n# setup: call <SIGN> | msg <text> | id <n> | show | done");
+
+    while (true) {
+        Serial.print("setup> ");
+        if (!serial_read_line(line, sizeof(line), 120000)) continue;
+
+        if (!strncmp(line, "call ", 5)) {
+            config::set_callsign(line + 5);
+            Serial.printf("  callsign = %s\n", config::callsign());
+        } else if (!strncmp(line, "msg ", 4)) {
+            config::set_fox_message(line + 4);
+            Serial.printf("  fox msg  = %s\n", config::fox_message());
+        } else if (!strncmp(line, "id ", 3)) {
+            config::set_station_id((uint8_t)atoi(line + 3));
+            Serial.printf("  id       = %u\n", config::station_id());
+        } else if (!strcmp(line, "show")) {
+            Serial.printf("  id=%u call=%s msg=\"%s\"\n",
+                          config::station_id(), config::callsign(),
+                          config::fox_message());
+        } else if (!strcmp(line, "done") || !strcmp(line, "exit")) {
+            Serial.println("# setup done");
+            return;
+        } else {
+            Serial.println("  ? call <SIGN> | msg <text> | id <n> | show | done");
+        }
+    }
 }
 
 // Blocking boot menu; returns the chosen mode.
@@ -112,6 +180,7 @@ void setup() {
     while (!Serial && (millis() - t0) < 2000) { delay(10); }
 
     config::begin();
+    run_setup_console();
     display::begin();
     sidetone_init(PIN_SIDETONE, TONE_HZ);
 
@@ -129,7 +198,7 @@ void setup() {
     switch (mode) {
         case MODE_FOX:
             player.begin(WPM);
-            player.start(FOX_MSG);
+            player.start(config::fox_message());
             radio::set_tx_power(PWR_LEVELS[pwr_idx].dbm);
             break;
         case MODE_LIVEKEY:
@@ -152,6 +221,17 @@ static void tx_keystate(uint32_t now, bool down) {
     uint8_t buf[proto::PACKET_LEN];
     proto::encode(ks, buf);
     radio::send(buf, proto::PACKET_LEN);
+}
+
+// Transmit the station-ID packet on the IDENT cadence (well under the Part 97
+// 10-minute limit). Sent once at fox start, then every IDENT_INTERVAL_MS. This
+// is a rare, ~ms transmission, so it doesn't perturb the 30 ms keystate stream.
+static void tx_ident(uint32_t now) {
+    if (last_ident != 0 && now - last_ident < proto::IDENT_INTERVAL_MS) return;
+    last_ident = now;
+    uint8_t buf[proto::IDENT_LEN];
+    proto::encode_ident(config::station_id(), config::callsign(), buf);
+    radio::send(buf, proto::IDENT_LEN);
 }
 
 // Debounced rising-edge detector for the PRG/BOOT button (already INPUT_PULLUP
@@ -177,15 +257,16 @@ static void loop_fox(uint32_t now) {
         player.update(now);
         if (player.finished()) pause_until = now + REPEAT_PAUSE;
     } else if (now >= pause_until) {
-        player.start(FOX_MSG);
+        player.start(config::fox_message());
     }
     bool down = player.down();
     set_tone(down);
     tx_keystate(now, down);
+    tx_ident(now);   // periodic station-ID packet (Part 97 callsign ID)
 
     if (now - last_draw >= 100) {
         last_draw = now;
-        display::fox(seq, FOX_MSG, down, PWR_LEVELS[pwr_idx].label);
+        display::fox(seq, config::fox_message(), down, PWR_LEVELS[pwr_idx].label);
     }
 }
 

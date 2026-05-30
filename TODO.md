@@ -147,4 +147,24 @@ Start at **low power, single fixed channel, no hopping** (§15.249, ~200–400 m
       bytes XOR-folded into 1..254) — stable per unit, no stored value needed.
       `set_station_id()` override still persists in NVS. (`src/config.cpp`,
       ref espressif/arduino-esp32#932.)
+- [x] Callsign + fox message in NVS (`src/config.cpp`), provisioned over serial:
+      boot setup console (`run_setup_console` in `src/main.cpp`, commands
+      `call`/`msg`/`id`/`show`/`done`) plus a host-side helper
+      `scripts/provision.sh` (--call/--msg/--id/--show). Builds clean; **not yet
+      exercised against hardware** — DTR/RTS auto-reset is best-effort and may
+      need a manual RST tap.
+- [ ] **Field provisioning via BLE** (preferred over serial for the field).
+      Stand up a BLE GATT config service on the S3 (it has BLE on-silicon) so a
+      phone — or a "master" unit — can set callsign/fox-message/station-id
+      without a laptop + USB. Serial console stays as the bench path. Considered
+      USB-OTG host (S3 supports it, full-speed) but rejected: it needs VBUS
+      sourcing and OTG-wired connectors the V4 doesn't provide, and ties up the
+      programming port. ESP-NOW broadcast is a lighter fallback if BLE proves
+      fiddly.
+- [ ] Callsign ID: fox sends a periodic station-ID packet (`proto::Ident`, 8-min
+      cadence, `tx_ident` in `src/main.cpp`) for Part 97 operation; the callsign
+      also rides in the fox message text for an audible CW ID. Still missing an
+      end-of-communication ID (no clean fox-exit path today). Only relevant if
+      run under an amateur license — see Stage 3 compliance note and
+      `design-notes.md`.
 - [ ] Enclosure, antenna build (hardware).

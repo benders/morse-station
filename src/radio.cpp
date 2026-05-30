@@ -38,6 +38,12 @@ void fem_enable() {
     digitalWrite(PIN_FEM_CSD, HIGH);    // V4.2 GC1109 chip enable
     pinMode(PIN_FEM_CTRL, OUTPUT);
     digitalWrite(PIN_FEM_CTRL, HIGH);   // V4.3.1 KCT8103L: LNA in RX path
+    // VERIFY ON HW (V4.3.1): this control line is held statically HIGH. Confirm
+    // against the KCT8103L datasheet that a constant HIGH selects the RX/LNA
+    // path and does NOT latch the FEM into a fixed mode that fights the DIO2/CTX
+    // TX/RX switch. If the part needs the mode pin to track TX vs RX, this must
+    // follow DIO2 instead of sitting constant. Power-up is fine either way;
+    // it's the switching behaviour to scope (TX power out + RX sensitivity).
     pinMode(PIN_FEM_CPS, OUTPUT);
     digitalWrite(PIN_FEM_CPS, LOW);     // V4.2 PA bypass (low power)
     delay(1);                           // let the FEM power up
