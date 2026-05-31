@@ -25,4 +25,26 @@ void        set_callsign(const char* call);
 const char* fox_message();           // keyed CW loop; include your call in it
 void        set_fox_message(const char* msg);
 
+// Overall (effective) keying speed, clamped to 5..40 wpm. Default 15.
+uint8_t wpm();
+void    set_wpm(uint8_t wpm);
+
+// Farnsworth character speed, clamped to wpm()..40. Default 18. When equal to
+// wpm() the keying reduces to plain timing.
+uint8_t char_wpm();
+void    set_char_wpm(uint8_t wpm);
+
+// Last-selected boot mode (the Mode enum in main.cpp, stored as a raw uint8_t).
+// The boot menu starts highlighted on this and persists the chosen mode, so a
+// unit powers back up in whatever it was last used as. Default 0 (Hunter).
+uint8_t boot_mode();
+void    set_boot_mode(uint8_t mode);
+
+// Last-selected fox TX power level, stored as a raw index into PWR_LEVELS in
+// main.cpp. The PRG tap cycles it and persists; on boot the fox restores it so
+// a power cycle keeps the last-used level. Default 0 (LO). main.cpp clamps to
+// its valid range in case the table size changes.
+uint8_t fox_pwr_idx();
+void    set_fox_pwr_idx(uint8_t idx);
+
 } // namespace config

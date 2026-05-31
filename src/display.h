@@ -15,9 +15,13 @@ void menu(const char* const* items, int n, int sel);
 // Fox transmit status. pwr is a short power-level label ("HI"/"MED"/"LO").
 void fox(uint16_t seq, const char* msg, bool tone_on, const char* pwr);
 
-// Hunter receive view: rolling decoded text, last-packet RSSI, tone indicator.
-// rssi_valid=false dims the bar (no packet yet).
-void hunter(const char* text, float rssi_dbm, bool rssi_valid, bool tone_on);
+// Hunter receive view: a single scrolling line of recent copy (last ~16 chars),
+// last-packet RSSI, tone indicator. The header shows the TX node's callsign (or
+// "----" until an Ident is heard) and the operating frequency. When ditdah is
+// true, `text` is interpreted as a raw dit/dah element stream (learning aid)
+// rather than decoded letters. rssi_valid=false dims the bar (no packet yet).
+void hunter(const char* text, float freq_mhz, const char* call, bool ditdah,
+            float rssi_dbm, bool rssi_valid, bool tone_on);
 
 // Live-key transmit view.
 void livekey(uint16_t seq, bool tone_on);

@@ -68,19 +68,30 @@ void fox(uint16_t seq, const char* msg, bool tone_on, const char* pwr) {
     oled.sendBuffer();
 }
 
-void hunter(const char* text, float rssi_dbm, bool rssi_valid, bool tone_on) {
+void hunter(const char* text, float freq_mhz, const char* call, bool ditdah,
+            float rssi_dbm, bool rssi_valid, bool tone_on) {
     oled.clearBuffer();
     oled.setFont(u8g2_font_6x12_tr);
-    oled.drawStr(0, 11, tone_on ? "HUNTER  *" : "HUNTER");
 
-    // last two lines of rolling decoded text
+    // Header: "HUNTER <CALL>" left, tone "*" indicator tucked after the title.
+    char hdr[20];
+    snprintf(hdr, sizeof(hdr), "HUNTER %s", (call && call[0]) ? call : "----");
+    oled.drawStr(0, 11, hdr);
+    if (tone_on) oled.drawStr(122, 11, "*");
+
+    // Operating frequency, right-justified on the header-adjacent row.
+    char fbuf[16];
+    snprintf(fbuf, sizeof(fbuf), "%.1f MHz", freq_mhz);
+    oled.drawStr(128 - (int)strlen(fbuf) * 6, 25, fbuf);
+
+    // Mode label, then a single scrolling line of recent copy. 21 glyphs fit at
+    // 6px; show the last 16 (decoded letters) or the last ~16 dit/dah elements,
+    // scrolling off the left as new copy arrives.
+    const size_t SHOW = 16;
     size_t len = strlen(text);
-    const char* l1 = text;
-    if (len > 42) l1 = text + (len - 42);   // show tail
-    char line[22];
-    strncpy(line, l1, 21); line[21] = 0;
-    oled.drawStr(0, 28, line);
-    if (strlen(l1) > 21) { strncpy(line, l1 + 21, 21); line[21] = 0; oled.drawStr(0, 42, line); }
+    const char* tail = len > SHOW ? text + (len - SHOW) : text;
+    oled.drawStr(0, 25, ditdah ? "./-" : "TXT");
+    oled.drawStr(0, 47, tail);
 
     // RSSI bar
     oled.drawFrame(0, 54, 128, 10);

@@ -28,10 +28,36 @@ const char* pattern(char c) {
     return nullptr;
 }
 
+// ---- Timing ---------------------------------------------------------------
+
+// Compute the element unit and the (Farnsworth-stretched) inter-character and
+// inter-word gaps, all in ms, for an overall speed `wpm` and character speed
+// `char_wpm`. Shared by the Player (to send) and the Decoder (to classify) so
+// both agree on the same gap durations.
+static void farns_gaps(uint8_t wpm, uint8_t char_wpm,
+                       uint16_t& unit, uint16_t& ichar, uint16_t& iword) {
+    if (char_wpm < wpm) char_wpm = wpm;        // never key slower than overall
+    unit = unit_ms(char_wpm);                  // dit/dah/intra-char at char speed
+    if (char_wpm == wpm) {                      // plain timing
+        ichar = (uint16_t)(3 * unit);
+        iword = (uint16_t)(7 * unit);
+    } else {
+        // ARRL Farnsworth: total padding delay (ms) added across one standard
+        // word to bring the average rate from char_wpm down to wpm. A standard
+        // word holds 19 units of gap (inter-char + inter-word), so distribute
+        // ta over them: 3/19 to each inter-char gap, 7/19 to each inter-word.
+        //   ta = (60*C - 37.2*S) / (C*S)  [seconds], C=char wpm, S=overall wpm
+        float ta = (60.0f * char_wpm - 37.2f * wpm) / (char_wpm * (float)wpm);
+        float ta_ms = ta * 1000.0f;
+        ichar = (uint16_t)(3 * unit + ta_ms * 3.0f / 19.0f);
+        iword = (uint16_t)(7 * unit + ta_ms * 7.0f / 19.0f);
+    }
+}
+
 // ---- Player ---------------------------------------------------------------
 
-void Player::begin(uint8_t wpm) {
-    unit_ = unit_ms(wpm);
+void Player::begin(uint8_t wpm, uint8_t char_wpm) {
+    farns_gaps(wpm, char_wpm, unit_, ichar_gap_, iword_gap_);
     finished_ = true;
     down_ = false;
 }
@@ -42,14 +68,14 @@ void Player::start(const char* text) {
     for (const char* s = text; *s; s++) {
         const char* p = pattern(*s);
         if (!p) {                       // space / unsupported -> word gap
-            segs_.push_back({false, (uint16_t)(7 * u)});
+            segs_.push_back({false, iword_gap_});
             continue;
         }
         for (const char* e = p; *e; e++) {
             segs_.push_back({true, (uint16_t)((*e == '-') ? 3 * u : u)});
             segs_.push_back({false, u});            // intra-char gap
         }
-        if (!segs_.empty()) segs_.back().ms = (uint16_t)(3 * u);  // -> char gap
+        if (!segs_.empty()) segs_.back().ms = ichar_gap_;        // -> char gap
     }
     idx_ = 0;
     seg_start_ = millis();
@@ -69,8 +95,18 @@ void Player::update(uint32_t now_ms) {
 
 // ---- Decoder --------------------------------------------------------------
 
-void Decoder::begin(uint8_t wpm) {
-    unit_ = unit_ms(wpm);
+void Decoder::begin(uint8_t wpm, uint8_t char_wpm) {
+    uint16_t unit, ichar, iword;
+    farns_gaps(wpm, char_wpm, unit, ichar, iword);
+    // Split each boundary at the midpoint of the two durations it separates:
+    //   dit (1u) vs dah (3u)            -> 2u
+    //   intra-char gap (1u) vs char gap -> (1u + ichar)/2
+    //   char gap vs word gap            -> (ichar + iword)/2
+    // With plain timing this reduces to the old 2u / 5u thresholds; with
+    // Farnsworth the gap thresholds scale up with the stretched gaps.
+    dah_ms_     = (uint16_t)(2 * unit);
+    chargap_ms_ = (uint16_t)((unit + ichar) / 2);
+    wordgap_ms_ = (uint16_t)((ichar + iword) / 2);
     last_down_ = false;
     edge_ms_   = 0;
     n_elems_   = 0;
@@ -90,7 +126,7 @@ char Decoder::update(bool key_down, uint32_t now_ms) {
         uint32_t dur = now_ms - edge_ms_;
         if (last_down_) {                       // ON segment just ended
             if (n_elems_ < 7)
-                elems_[n_elems_++] = (dur >= 2u * unit_) ? '-' : '.';
+                elems_[n_elems_++] = (dur >= dah_ms_) ? '-' : '.';
         } else {                                // gap just ended, new element
             pending_   = false;                 // new char in progress
             have_edge_ = false;
@@ -101,7 +137,9 @@ char Decoder::update(bool key_down, uint32_t now_ms) {
     }
 
     if (!key_down && n_elems_ > 0 && !pending_) {
-        if (now_ms - edge_ms_ >= 2u * unit_) {  // char-gap boundary
+        if (now_ms - edge_ms_ >= chargap_ms_) { // char-gap boundary
+            elems_[n_elems_] = 0;
+            strcpy(last_elems_, elems_);         // stash for dit/dah display
             char c = classify();
             n_elems_ = 0;
             pending_ = true;                     // char emitted for this gap
@@ -109,7 +147,7 @@ char Decoder::update(bool key_down, uint32_t now_ms) {
         }
     }
     if (!key_down && pending_ && !have_edge_) {
-        if (now_ms - edge_ms_ >= 5u * unit_) {   // word-gap boundary
+        if (now_ms - edge_ms_ >= wordgap_ms_) {  // word-gap boundary
             have_edge_ = true;                   // word emitted
             return ' ';
         }

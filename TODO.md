@@ -73,6 +73,52 @@ Needs a second Heltec V4 flashed as the counterpart.
       §15.249 low-power unlicensed vs operating under an amateur license in the
       902-928 MHz (33 cm) band. Not blocking the hunt.
 
+## Stage 3a — Field-tuning punch list
+
+Round of tweaks from on-air testing — IDs, timing feel, display, power, build info.
+
+- [x] Station ID fixups: ID for **21301 → 43**, ID for **21101 → 42**
+      (provisioned into NVS via `scripts/provision.sh --port ... --id ...`).
+- [x] Change sidetone from **600 Hz → 750 Hz** (`TONE_HZ` in `src/main.cpp`).
+- [x] Slow keying to **15 WPM**; make WPM settable in NVS. `config::wpm()` (NVS
+      key `wpm`, default 15, clamp 5..40); console `wpm <n>` / `provision.sh --wpm`.
+- [x] Switch to **Farnsworth timing**; make the Farnsworth speed settable in NVS.
+      `config::char_wpm()` (NVS key `char_wpm`, default 18, clamp wpm..40);
+      `morse::Player::begin(wpm, char_wpm)` stretches the inter-char/word gaps via
+      the ARRL formula (reduces to plain timing when char==overall). Console
+      `farns <n>` / `provision.sh --farns`.
+- [x] Increase the end-of-message delay before the next repeat begins. (REPEAT_PAUSE 3000 -> 7000 ms)
+- [x] **Hunter decoder mis-reads the new slower / Farnsworth timing.** Fixed via
+      option (a): the fox now broadcasts its `wpm`/`char_wpm` in the `Ident`
+      packet (`src/protocol.h`), sent at the top of each message loop (plus the
+      8-min legal cadence). `morse::Decoder::begin(wpm, char_wpm)` derives
+      Farnsworth-aware thresholds (dit/dah, char-gap, word-gap) from a shared
+      `farns_gaps()` helper, and the hunter retunes its decoder + watchdog when
+      it hears an Ident (`loop_hunter` in `src/main.cpp`). Reduces to the old
+      2u/5u thresholds for plain timing. Live-keying still uses local config
+      speeds (no Ident) — fine until live-key is back in scope.
+- [x] Hunter display: show only the **last 16 characters**, scrolling off as new
+      ones arrive. Single copy line in `display::hunter` shows the tail of the
+      rolling buffer (last 16 glyphs, fits 21-wide row at 6px).
+- [x] Hunter display: show the **frequency/callsign of the TX node** from the
+      last received station-identification packet. Header shows `HUNTER <CALL>`
+      (callsign captured from the last `Ident` in `loop_hunter`, "----" until
+      heard) plus `radio::frequency_mhz()` (905.0 MHz) right-justified.
+- [x] Fox default power on boot → **Low** (`pwr_idx = 0` in `src/main.cpp`).
+- [x] Add a **MAX** power level to the fox — transmit at full **28 dBm**. Added
+      `{"MAX", 22}` to `PWR_LEVELS` (4th level); +22 dBm is the SX1262 chip
+      ceiling, ~28 dBm at the antenna after the FEM PA. "PWR MAX" fits the OLED.
+- [x] On bootup, show the **git revision** of the build — `scripts/git_rev.py`
+      injects `-DGIT_REV`; shown on the OLED splash for 2 s in `setup()`
+      (`display::status`) and also printed to serial.
+- [x] **Persist the fox TX power setting in NVS.** `config::fox_pwr_idx` /
+      `set_fox_pwr_idx` (NVS key `fox_pwr_idx`, default 0=LO) store the index;
+      restored into `pwr_idx` on boot (clamped) and saved on each PRG tap.
+- [x] **Hunter dit/dah display mode.** PRG/BOOT tap in hunter mode toggles the
+      copy line between decoded letters (default) and raw dit/dah elements. The
+      decoder stashes each completed char's elements (`morse::Decoder::
+      last_elements()`); `loop_hunter` mirrors them into `ditdah_buf`.
+
 ## Stage 4 — Fox message loop (pre-programmed transmit)
 
 - [x] Fox message stored in firmware (`FOX_MSG` in `src/main.cpp`).

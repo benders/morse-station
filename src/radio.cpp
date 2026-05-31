@@ -51,6 +51,8 @@ void fem_enable() {
 
 namespace radio {
 
+float frequency_mhz() { return FREQ_MHZ; }
+
 bool init(int& err) {
     fem_enable();
 

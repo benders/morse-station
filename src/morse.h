@@ -7,6 +7,11 @@
 // Standard timing in "units" where 1 unit = 1200 / wpm milliseconds:
 //   dit on = 1, dah on = 3, intra-char gap = 1, inter-char gap = 3,
 //   inter-word gap = 7.
+//
+// Farnsworth timing: characters are keyed at a fast "character wpm" while the
+// inter-character (3-unit) and inter-word (7-unit) gaps are stretched so the
+// overall word rate matches a slower "overall wpm". Uses the standard ARRL
+// formula. When character wpm == overall wpm it reduces to plain timing.
 
 namespace morse {
 
@@ -21,7 +26,9 @@ inline uint16_t unit_ms(uint8_t wpm) { return (uint16_t)(1200u / wpm); }
 // from down().
 class Player {
 public:
-    void begin(uint8_t wpm = 13);
+    // wpm = overall (effective) speed. char_wpm = Farnsworth character speed;
+    // 0 (default) or any value <= wpm means plain timing at wpm.
+    void begin(uint8_t wpm = 13, uint8_t char_wpm = 0);
     void start(const char* text);     // build timeline and begin playback
     void update(uint32_t now_ms);     // advance based on wall clock
     bool down() const { return down_; }
@@ -34,26 +41,39 @@ private:
     uint32_t seg_start_ = 0;
     bool     down_      = false;
     bool     finished_  = true;
-    uint16_t unit_      = 92;          // ~13 wpm
+    uint16_t unit_      = 92;          // dit/dah/intra-char unit (char speed)
+    uint16_t ichar_gap_ = 276;         // inter-character gap (3*unit, stretched)
+    uint16_t iword_gap_ = 644;         // inter-word gap (7*unit, stretched)
 };
 
 // Timing decoder: feed it the key state on every tick; it emits decoded
 // characters as gaps reveal element/character/word boundaries.
 class Decoder {
 public:
-    void begin(uint8_t wpm = 13);
+    // wpm = overall speed, char_wpm = Farnsworth character speed (0/<=wpm means
+    // plain timing). Thresholds are derived from both so the decoder tracks the
+    // sender's actual gaps — feed it the speeds the fox announces over the air.
+    void begin(uint8_t wpm = 13, uint8_t char_wpm = 0);
     // Call frequently with the current key state and wall clock. Returns a
     // decoded character when one completes, else 0. May return ' ' for words.
     char update(bool key_down, uint32_t now_ms);
 
+    // The dit/dah elements classified for the most recently completed character
+    // (e.g. ".-" for 'A'), as a NUL-terminated string. Used by the hunter's
+    // dit/dah display mode. Empty until the first character completes.
+    const char* last_elements() const { return last_elems_; }
+
 private:
     char classify();                  // turn collected elements into a char
 
-    uint16_t unit_       = 92;
+    uint16_t dah_ms_     = 184;       // ON >= this -> dah, else dit
+    uint16_t chargap_ms_ = 184;       // OFF >= this -> end of character
+    uint16_t wordgap_ms_ = 460;       // OFF >= this -> word space
     bool     last_down_  = false;
     uint32_t edge_ms_    = 0;
     bool     have_edge_  = false;
     char     elems_[8]   = {0};
+    char     last_elems_[8] = {0};    // elements of the last completed char
     uint8_t  n_elems_    = 0;
     bool     pending_    = false;     // have undecoded elements waiting on a gap
 };

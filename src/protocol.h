@@ -32,16 +32,21 @@ struct __attribute__((packed)) KeyState {
 
 constexpr size_t PACKET_LEN = sizeof(KeyState);   // 5 bytes
 
-// Dedicated station-ID packet (approach 2): carries the operator callsign,
-// transmitted periodically rather than in every KeyState. Distinguished from
-// KeyState by MAGIC_IDENT, so hunters that only parse KeyState simply ignore it.
+// Dedicated station-ID packet (approach 2): carries the operator callsign and
+// the fox's keying speeds, transmitted periodically (and at the top of each fox
+// message loop) rather than in every KeyState. Distinguished from KeyState by
+// MAGIC_IDENT, so hunters that only parse KeyState simply ignore it. The speeds
+// let a hunter seed its decoder thresholds to the fox's actual timing instead
+// of its own config — needed for correct decode of slow/Farnsworth sending.
 struct __attribute__((packed)) Ident {
     uint8_t magic;                 // MAGIC_IDENT
     uint8_t station_id;
+    uint8_t wpm;                   // overall (effective) speed
+    uint8_t char_wpm;              // Farnsworth character speed (>= wpm)
     char    call[CALLSIGN_MAX];    // ASCII, null-padded
 };
 
-constexpr size_t IDENT_LEN = sizeof(Ident);   // 12 bytes
+constexpr size_t IDENT_LEN = sizeof(Ident);   // 14 bytes
 
 // Serialize/parse. encode writes PACKET_LEN bytes. decode validates MAGIC and
 // length. Both little-endian (native ESP32-S3 layout).
@@ -63,14 +68,18 @@ inline bool decode(const uint8_t* buf, size_t len, KeyState& ks) {
     return true;
 }
 
-// Build a station-ID packet from a (possibly short) callsign string. Writes
-// IDENT_LEN bytes: the callsign is copied up to CALLSIGN_MAX and null-padded.
-inline size_t encode_ident(uint8_t station_id, const char* call, uint8_t* buf) {
+// Build a station-ID packet from a (possibly short) callsign string and the
+// keying speeds. Writes IDENT_LEN bytes: the callsign is copied up to
+// CALLSIGN_MAX and null-padded.
+inline size_t encode_ident(uint8_t station_id, const char* call,
+                           uint8_t wpm, uint8_t char_wpm, uint8_t* buf) {
     buf[0] = MAGIC_IDENT;
     buf[1] = station_id;
+    buf[2] = wpm;
+    buf[3] = char_wpm;
     for (size_t i = 0; i < CALLSIGN_MAX; ++i) {
         char c = (call && call[i]) ? call[i] : 0;
-        buf[2 + i] = (uint8_t)c;
+        buf[4 + i] = (uint8_t)c;
         if (!c) call = nullptr;   // pad the rest with zeros
     }
     return IDENT_LEN;
@@ -80,7 +89,9 @@ inline bool decode_ident(const uint8_t* buf, size_t len, Ident& id) {
     if (len < IDENT_LEN || buf[0] != MAGIC_IDENT) return false;
     id.magic      = buf[0];
     id.station_id = buf[1];
-    for (size_t i = 0; i < CALLSIGN_MAX; ++i) id.call[i] = (char)buf[2 + i];
+    id.wpm        = buf[2];
+    id.char_wpm   = buf[3];
+    for (size_t i = 0; i < CALLSIGN_MAX; ++i) id.call[i] = (char)buf[4 + i];
     return true;
 }
 

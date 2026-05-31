@@ -8,11 +8,28 @@ Preferences prefs;
 uint8_t cached_id = 1;
 char    cached_call[config::CALLSIGN_MAX + 1] = "N0CALL";
 char    cached_msg[config::FOX_MSG_MAX + 1]   = "DE N0CALL FOX NEAR THE BIG OAK BY THE LAKE";
+uint8_t cached_wpm      = 15;     // overall (effective) speed
+uint8_t cached_char_wpm = 18;     // Farnsworth character speed
+uint8_t cached_boot_mode = 0;     // last-selected boot mode (Mode enum, 0=Hunter)
+uint8_t cached_fox_pwr_idx = 0;   // last-selected fox TX power level (PWR_LEVELS index, 0=LO)
 
-constexpr const char* NS       = "morse";
-constexpr const char* KEY_ID   = "station_id";
-constexpr const char* KEY_CALL = "callsign";
-constexpr const char* KEY_MSG  = "fox_msg";
+constexpr uint8_t WPM_MIN = 5;
+constexpr uint8_t WPM_MAX = 40;
+
+constexpr const char* NS        = "morse";
+constexpr const char* KEY_ID    = "station_id";
+constexpr const char* KEY_CALL  = "callsign";
+constexpr const char* KEY_MSG   = "fox_msg";
+constexpr const char* KEY_WPM   = "wpm";
+constexpr const char* KEY_CWPM  = "char_wpm";
+constexpr const char* KEY_BMODE = "boot_mode";
+constexpr const char* KEY_FPWR  = "fox_pwr_idx";
+
+uint8_t clamp_u8(int v, uint8_t lo, uint8_t hi) {
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return (uint8_t)v;
+}
 
 // Default station id derived from the factory eFuse MAC, folded into 1..254
 // (255 is broadcast). Stable per unit with no provisioning or stored value.
@@ -37,6 +54,19 @@ void begin() {
         prefs.getString(KEY_CALL, cached_call, sizeof(cached_call));
     if (prefs.isKey(KEY_MSG))
         prefs.getString(KEY_MSG, cached_msg, sizeof(cached_msg));
+
+    if (prefs.isKey(KEY_WPM))
+        cached_wpm = clamp_u8(prefs.getUChar(KEY_WPM, cached_wpm), WPM_MIN, WPM_MAX);
+    if (prefs.isKey(KEY_CWPM))
+        cached_char_wpm = clamp_u8(prefs.getUChar(KEY_CWPM, cached_char_wpm),
+                                   cached_wpm, WPM_MAX);
+    if (cached_char_wpm < cached_wpm) cached_char_wpm = cached_wpm;
+
+    if (prefs.isKey(KEY_BMODE))
+        cached_boot_mode = prefs.getUChar(KEY_BMODE, cached_boot_mode);
+
+    if (prefs.isKey(KEY_FPWR))
+        cached_fox_pwr_idx = prefs.getUChar(KEY_FPWR, cached_fox_pwr_idx);
 
     prefs.end();
 }
@@ -67,6 +97,46 @@ void set_fox_message(const char* msg) {
     strlcpy(cached_msg, msg, sizeof(cached_msg));
     prefs.begin(NS, false);
     prefs.putString(KEY_MSG, cached_msg);
+    prefs.end();
+}
+
+uint8_t wpm() { return cached_wpm; }
+
+void set_wpm(uint8_t wpm) {
+    cached_wpm = clamp_u8(wpm, WPM_MIN, WPM_MAX);
+    if (cached_char_wpm < cached_wpm) cached_char_wpm = cached_wpm;  // keep C >= S
+    prefs.begin(NS, false);
+    prefs.putUChar(KEY_WPM, cached_wpm);
+    prefs.putUChar(KEY_CWPM, cached_char_wpm);
+    prefs.end();
+}
+
+uint8_t char_wpm() { return cached_char_wpm; }
+
+void set_char_wpm(uint8_t wpm) {
+    cached_char_wpm = clamp_u8(wpm, cached_wpm, WPM_MAX);  // never below overall
+    prefs.begin(NS, false);
+    prefs.putUChar(KEY_CWPM, cached_char_wpm);
+    prefs.end();
+}
+
+uint8_t boot_mode() { return cached_boot_mode; }
+
+void set_boot_mode(uint8_t mode) {
+    if (mode == cached_boot_mode) return;   // avoid a needless flash write
+    cached_boot_mode = mode;
+    prefs.begin(NS, false);
+    prefs.putUChar(KEY_BMODE, mode);
+    prefs.end();
+}
+
+uint8_t fox_pwr_idx() { return cached_fox_pwr_idx; }
+
+void set_fox_pwr_idx(uint8_t idx) {
+    if (idx == cached_fox_pwr_idx) return;   // avoid a needless flash write
+    cached_fox_pwr_idx = idx;
+    prefs.begin(NS, false);
+    prefs.putUChar(KEY_FPWR, idx);
     prefs.end();
 }
 

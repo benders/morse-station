@@ -11,6 +11,9 @@ namespace radio {
 // Returns true on success. On failure, err holds the RadioLib status code.
 bool init(int& err);
 
+// The fixed operating frequency, in MHz (single-channel for now).
+float frequency_mhz();
+
 // Blocking transmit of a small payload. Returns true on success.
 bool send(const uint8_t* data, size_t len);
 

@@ -19,9 +19,10 @@
 //
 // One protocol (proto::KeyState) carries both FOX and LIVEKEY to any HUNTER.
 
-static constexpr uint32_t TONE_HZ      = 600;
-static constexpr uint8_t  WPM          = 13;
-static constexpr uint32_t REPEAT_PAUSE = 3000;
+static constexpr uint32_t TONE_HZ      = 750;
+// Gap after a full message before it repeats; long enough for a hunter to
+// register the end-of-message before the loop restarts.
+static constexpr uint32_t REPEAT_PAUSE = 7000;
 
 // Callsign and fox message live in NVS (config), set via the boot serial console
 // (see run_setup_console). The callsign is sent in the periodic station-ID
@@ -31,11 +32,15 @@ enum Mode { MODE_HUNTER = 0, MODE_FOX = 1, MODE_LIVEKEY = 2, MODE_HIBERNATE = 3 
 static Mode mode = MODE_HUNTER;
 
 // Fox TX power levels, cycled with the PRG button (SX1262 output; the FEM PA
-// follows). Default MED — bump to HI for open ground, drop to LO in a room.
+// follows). Default LO — bump up for open ground. LO keeps the hunter volume
+// gradient working in a small space (RSSI saturates at MED/HI).
 struct PwrLevel { const char* label; int dbm; };
-static const PwrLevel PWR_LEVELS[] = {{"LO", -9}, {"MED", 2}, {"HI", 14}};
-static const int N_PWR  = 3;
-static int       pwr_idx = 1;   // MED (+2 dBm), matches the radio init default
+// dbm is the SX1262 *chip* output; the external FEM PA adds its gain on top.
+// MAX = +22 dBm, the SX1262's own ceiling (setOutputPower clamps/rejects above
+// this); through the FEM that's ~28 dBm at the antenna.
+static const PwrLevel PWR_LEVELS[] = {{"LO", -9}, {"MED", 2}, {"HI", 14}, {"MAX", 22}};
+static const int N_PWR  = 4;
+static int       pwr_idx = 0;   // LO (-9 dBm)
 
 static morse::Player  player;
 static morse::Decoder decoder;
@@ -51,6 +56,13 @@ static uint32_t last_draw = 0;
 static char text_buf[128];
 static size_t text_len = 0;
 
+// Raw dit/dah element stream for the hunter's learning-aid display mode, and the
+// callsign learned from the last Ident packet ("----" until one is heard).
+static char ditdah_buf[64];
+static size_t ditdah_len = 0;
+static char rx_call[proto::CALLSIGN_MAX + 1] = {0};
+static bool hunter_ditdah = false;   // false = letters, true = dit/dah
+
 static void set_tone(bool on) {
     static bool cur = false;
     if (on != cur) { cur = on; if (on) sidetone_on(); else sidetone_off(); }
@@ -64,6 +76,20 @@ static void text_push(char c) {
     }
     text_buf[text_len++] = c;
     text_buf[text_len] = 0;
+}
+
+// Append a chunk to the rolling dit/dah stream (elements of one decoded char,
+// or a space for a word gap), dropping the oldest half when full.
+static void ditdah_push(const char* s) {
+    size_t n = strlen(s);
+    if (ditdah_len + n + 1 >= sizeof(ditdah_buf)) {
+        memmove(ditdah_buf, ditdah_buf + sizeof(ditdah_buf) / 2,
+                sizeof(ditdah_buf) / 2);
+        ditdah_len = sizeof(ditdah_buf) / 2;
+    }
+    memcpy(ditdah_buf + ditdah_len, s, n);
+    ditdah_len += n;
+    ditdah_buf[ditdah_len] = 0;
 }
 
 // Read a line from Serial into buf (NUL-terminated, trailing CR/LF stripped).
@@ -92,8 +118,9 @@ static bool serial_read_line(char* buf, size_t cap, uint32_t timeout_ms) {
 // writes callsign / fox message / station id to NVS. Commands:
 //   call <SIGN> | msg <text...> | id <n> | show | done
 static void run_setup_console() {
-    Serial.printf("\n# config: id=%u call=%s msg=\"%s\"\n",
-                  config::station_id(), config::callsign(), config::fox_message());
+    Serial.printf("\n# config: id=%u call=%s wpm=%u farns=%u msg=\"%s\"\n",
+                  config::station_id(), config::callsign(), config::wpm(),
+                  config::char_wpm(), config::fox_message());
     Serial.print("# send 's' within 2s for setup console... ");
 
     char line[160];
@@ -102,7 +129,8 @@ static void run_setup_console() {
         Serial.println("(skipped)");
         return;
     }
-    Serial.println("\n# setup: call <SIGN> | msg <text> | id <n> | show | done");
+    Serial.println("\n# setup: call <SIGN> | msg <text> | id <n> | wpm <n> | "
+                   "farns <n> | show | done");
 
     while (true) {
         Serial.print("setup> ");
@@ -117,15 +145,25 @@ static void run_setup_console() {
         } else if (!strncmp(line, "id ", 3)) {
             config::set_station_id((uint8_t)atoi(line + 3));
             Serial.printf("  id       = %u\n", config::station_id());
+        } else if (!strncmp(line, "wpm ", 4)) {
+            config::set_wpm((uint8_t)atoi(line + 4));
+            Serial.printf("  wpm      = %u (farns %u)\n",
+                          config::wpm(), config::char_wpm());
+        } else if (!strncmp(line, "farns ", 6)) {
+            config::set_char_wpm((uint8_t)atoi(line + 6));
+            Serial.printf("  farns    = %u (overall %u)\n",
+                          config::char_wpm(), config::wpm());
         } else if (!strcmp(line, "show")) {
-            Serial.printf("  id=%u call=%s msg=\"%s\"\n",
+            Serial.printf("  id=%u call=%s wpm=%u farns=%u msg=\"%s\"\n",
                           config::station_id(), config::callsign(),
+                          config::wpm(), config::char_wpm(),
                           config::fox_message());
         } else if (!strcmp(line, "done") || !strcmp(line, "exit")) {
             Serial.println("# setup done");
             return;
         } else {
-            Serial.println("  ? call <SIGN> | msg <text> | id <n> | show | done");
+            Serial.println("  ? call <SIGN> | msg <text> | id <n> | wpm <n> | "
+                           "farns <n> | show | done");
         }
     }
 }
@@ -135,7 +173,10 @@ static Mode run_menu() {
     static const char* items[] = {"Hunter (RX)", "Fox (TX loop)", "Live key (TX)",
                                    "Hibernate"};
     const int n = 4;
-    int sel = 0;
+    // Start highlighted on the last-used mode (persisted in NVS), so a power
+    // cycle defaults back to it. Hibernate is never stored, so this is 0..2.
+    int sel = config::boot_mode();
+    if (sel < 0 || sel >= n) sel = 0;
 
     pinMode(PIN_MODE_BTN, INPUT_PULLUP);
     display::menu(items, n, sel);
@@ -179,12 +220,29 @@ void setup() {
     uint32_t t0 = millis();
     while (!Serial && (millis() - t0) < 2000) { delay(10); }
 
+#ifndef GIT_REV
+#define GIT_REV "unknown"
+#endif
+    Serial.printf("\n# morse-station build %s\n", GIT_REV);
+
     config::begin();
+    // Restore the last-used fox TX power level (clamp in case the table shrank).
+    pwr_idx = config::fox_pwr_idx();
+    if (pwr_idx >= N_PWR) pwr_idx = 0;
     run_setup_console();
     display::begin();
+    char splash_id[24];
+    snprintf(splash_id, sizeof(splash_id), "build %s", GIT_REV);
+    char splash_line2[24];
+    snprintf(splash_line2, sizeof(splash_line2), "station id %u", config::station_id());
+    display::status("Morse Station", splash_id, splash_line2);
+    delay(3500);                       // hold the splash so rev + id are readable
     sidetone_init(PIN_SIDETONE, TONE_HZ);
 
     mode = run_menu();
+    // Remember the choice as the boot default (Hibernate is transient — never
+    // store it, or the unit would sleep again on every restart).
+    if (mode != MODE_HIBERNATE) config::set_boot_mode((uint8_t)mode);
     Serial.printf("\n# mode=%d station_id=%u\n", (int)mode, config::station_id());
 
     if (mode == MODE_HIBERNATE) hibernate();   // does not return
@@ -197,7 +255,7 @@ void setup() {
 
     switch (mode) {
         case MODE_FOX:
-            player.begin(WPM);
+            player.begin(config::wpm(), config::char_wpm());
             player.start(config::fox_message());
             radio::set_tx_power(PWR_LEVELS[pwr_idx].dbm);
             break;
@@ -205,7 +263,9 @@ void setup() {
             key.begin(PIN_KEY);
             break;
         case MODE_HUNTER:
-            decoder.begin(WPM);
+            // Seed from our own config; the fox's Ident packet retunes this to
+            // the actual on-air timing (see loop_hunter).
+            decoder.begin(config::wpm(), config::char_wpm());
             radio::start_receive();
             break;
         case MODE_HIBERNATE:
@@ -223,15 +283,23 @@ static void tx_keystate(uint32_t now, bool down) {
     radio::send(buf, proto::PACKET_LEN);
 }
 
-// Transmit the station-ID packet on the IDENT cadence (well under the Part 97
-// 10-minute limit). Sent once at fox start, then every IDENT_INTERVAL_MS. This
-// is a rare, ~ms transmission, so it doesn't perturb the 30 ms keystate stream.
-static void tx_ident(uint32_t now) {
-    if (last_ident != 0 && now - last_ident < proto::IDENT_INTERVAL_MS) return;
+// Send a station-ID packet now (callsign + keying speeds). A rare, ~ms
+// transmission, so it doesn't perturb the 30 ms keystate stream.
+static void send_ident(uint32_t now) {
     last_ident = now;
     uint8_t buf[proto::IDENT_LEN];
-    proto::encode_ident(config::station_id(), config::callsign(), buf);
+    proto::encode_ident(config::station_id(), config::callsign(),
+                        config::wpm(), config::char_wpm(), buf);
     radio::send(buf, proto::IDENT_LEN);
+}
+
+// Transmit the station-ID packet on the IDENT cadence (well under the Part 97
+// 10-minute limit). Sent once at fox start, then every IDENT_INTERVAL_MS — plus
+// the fox forces one at the top of each message loop (see loop_fox) so a hunter
+// learns the timing within a loop.
+static void tx_ident(uint32_t now) {
+    if (last_ident != 0 && now - last_ident < proto::IDENT_INTERVAL_MS) return;
+    send_ident(now);
 }
 
 // Debounced rising-edge detector for the PRG/BOOT button (already INPUT_PULLUP
@@ -250,6 +318,7 @@ static void loop_fox(uint32_t now) {
     if (prg_tapped(now)) {
         pwr_idx = (pwr_idx + 1) % N_PWR;
         radio::set_tx_power(PWR_LEVELS[pwr_idx].dbm);
+        config::set_fox_pwr_idx((uint8_t)pwr_idx);
         last_draw = 0;   // force an immediate redraw of the new level
     }
 
@@ -257,6 +326,7 @@ static void loop_fox(uint32_t now) {
         player.update(now);
         if (player.finished()) pause_until = now + REPEAT_PAUSE;
     } else if (now >= pause_until) {
+        send_ident(now);                     // announce timing at each loop top
         player.start(config::fox_message());
     }
     bool down = player.down();
@@ -285,16 +355,27 @@ static void loop_hunter(uint32_t now) {
     static bool     rssi_valid = false;
     static uint32_t last_rx = 0;
 
+    // On-air keying speeds, seeded from our config and retuned by the fox's
+    // Ident packet so the decoder and watchdog track the actual sender.
+    static uint8_t  rx_wpm      = config::wpm();
+    static uint8_t  rx_char_wpm = config::char_wpm();
+
     // Signal-loss watchdog: TX streams keystate every 30 ms. If we hear nothing
-    // for ~one dah (3 units at WPM), the link dropped mid-key — force key-up so
-    // the sidetone doesn't latch on and the decoder doesn't hang.
-    static constexpr uint32_t RX_TIMEOUT_MS = (1200u / WPM) * 3u;
+    // for ~one dah (3 units at the fast character speed), the link dropped
+    // mid-key — force key-up so the sidetone doesn't latch and the decoder
+    // doesn't hang. A real dah is never mistaken for signal loss.
+    uint32_t rx_timeout_ms = (1200u / rx_char_wpm) * 3u;
+
+    // PRG/BOOT tap toggles the copy display between decoded letters and raw
+    // dit/dah elements (same debounced detector the fox uses for power).
+    if (prg_tapped(now)) { hunter_ditdah = !hunter_ditdah; last_draw = 0; }
 
     uint8_t buf[32];
     size_t n;
     float r;
     if (radio::poll(buf, sizeof(buf), n, r)) {
         proto::KeyState ks;
+        proto::Ident    id;
         if (proto::decode(buf, n, ks)) {
             rx_down = ks.key_down != 0;
             last_rx = now;
@@ -304,21 +385,40 @@ static void loop_hunter(uint32_t now) {
             // so the ear tracks the meter (classic "tune for max volume" feel).
             float clamped = rssi < -110.0f ? -110.0f : (rssi > -40.0f ? -40.0f : rssi);
             sidetone_set_volume((uint8_t)((clamped + 110.0f) / 70.0f * 255.0f));
+        } else if (proto::decode_ident(buf, n, id) && id.wpm && id.char_wpm) {
+            // Retune the decoder to the fox's announced timing (only on change).
+            if (id.wpm != rx_wpm || id.char_wpm != rx_char_wpm) {
+                rx_wpm = id.wpm;
+                rx_char_wpm = id.char_wpm;
+                decoder.begin(id.wpm, id.char_wpm);
+            }
+            // Learn the TX node's callsign for the header.
+            memcpy(rx_call, id.call, proto::CALLSIGN_MAX);
+            rx_call[proto::CALLSIGN_MAX] = 0;
         }
     }
 
     // No fresh keystate for too long → drop to key-up (silent/idle).
-    if (rx_down && (now - last_rx) > RX_TIMEOUT_MS) {
+    if (rx_down && (now - last_rx) > rx_timeout_ms) {
         rx_down = false;
     }
     set_tone(rx_down);
 
     char c = decoder.update(rx_down, now);
-    if (c) { text_push(c); Serial.print(c); }
+    if (c) {
+        text_push(c);
+        Serial.print(c);
+        // Mirror into the dit/dah stream: the elements of the decoded char, or a
+        // space for a word gap.
+        if (c == ' ') ditdah_push(" ");
+        else { ditdah_push(decoder.last_elements()); ditdah_push(" "); }
+    }
 
     if (now - last_draw >= 100) {
         last_draw = now;
-        display::hunter(text_buf, rssi, rssi_valid, rx_down);
+        const char* copy = hunter_ditdah ? ditdah_buf : text_buf;
+        display::hunter(copy, radio::frequency_mhz(), rx_call, hunter_ditdah,
+                        rssi, rssi_valid, rx_down);
     }
 }
 

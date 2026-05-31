@@ -28,14 +28,20 @@ On boot the OLED shows a mode menu. Use the **PRG/BOOT** button:
 
 Modes:
 
-- **Hunter (RX)** — receives, plays the Morse sidetone, shows decoded text and
-  an RSSI bar (fuller bar = stronger signal, a warmer/colder hint). The sidetone
-  **volume tracks signal strength** (dB-linear, so it sounds like a classic
-  "tune for max volume" meter) — run the fox at LO power so the signal actually
-  falls off with distance and the gradient is audible as you close in.
+- **Hunter (RX)** — receives, plays the Morse sidetone, and shows a scrolling
+  line of the last decoded characters, the transmitting fox's **callsign and
+  frequency** (from its periodic station-ID packet), and an RSSI bar (fuller bar
+  = stronger signal, a warmer/colder hint). The sidetone **volume tracks signal
+  strength** (dB-linear, so it sounds like a classic "tune for max volume"
+  meter) — run the fox at LO power so the signal actually falls off with distance
+  and the gradient is audible as you close in. A **short PRG tap toggles the copy
+  line** between decoded letters (default) and raw dit/dah elements (a learning
+  aid).
 - **Fox (TX loop)** — repeats the canned location message on the air. A **short
-  PRG tap cycles TX power** LO / MED / HI (shown as "PWR x" on the OLED, boots
-  MED) — pull it down to LO in a small space.
+  PRG tap cycles TX power** LO / MED / HI / MAX (shown as "PWR x" on the OLED).
+  The level is **remembered across power cycles** (boots LO the first time) —
+  pull it down to LO in a small space. MAX (~28 dBm) exceeds the Part-15 §15.249
+  limit, so only use it under an amateur license.
 - **Live key (TX)** — transmits a telegraph key wired to the key GPIO, with
   local sidetone, so students can key to a hunter.
 - **Hibernate** — power-off stand-in (the boards have no hardware switch):
@@ -43,4 +49,5 @@ Modes:
   **RST** to wake — the sketch restarts back into this menu. So RST turns the
   unit off (via Hibernate) and on again in the field.
 
-To re-pick a mode, reset the board (the menu runs again at boot).
+The menu starts highlighted on the **last-used mode** (remembered across power
+cycles). To re-pick a mode, reset the board (the menu runs again at boot).

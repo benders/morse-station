@@ -85,13 +85,18 @@ def main() -> int:
     p.add_argument("--call", default=None, help="operator callsign")
     p.add_argument("--msg", default=None, help="fox message text")
     p.add_argument("--id", type=int, default=None, help="station id (1..254)")
+    p.add_argument("--wpm", type=int, default=None,
+                   help="overall (effective) keying speed, 5..40 wpm")
+    p.add_argument("--farns", type=int, default=None,
+                   help="Farnsworth character speed, wpm..40 (>= --wpm)")
     p.add_argument("--show", action="store_true", help="read back values and exit")
     p.add_argument("--reset-timeout", type=float, default=12.0,
                    help="seconds to wait for the boot setup prompt")
     args = p.parse_args()
 
-    if not (args.call or args.msg or args.id is not None or args.show):
-        p.error("nothing to do: pass --call/--msg/--id or --show")
+    if not (args.call or args.msg or args.id is not None or
+            args.wpm is not None or args.farns is not None or args.show):
+        p.error("nothing to do: pass --call/--msg/--id/--wpm/--farns or --show")
 
     port = args.port or find_port()
     s = serial.Serial(port, args.baud, timeout=0.2)
@@ -116,6 +121,10 @@ def main() -> int:
             send_cmd(s, f"msg {args.msg}")
         if args.id is not None:
             send_cmd(s, f"id {args.id}")
+        if args.wpm is not None:        # set overall first; it may raise farns
+            send_cmd(s, f"wpm {args.wpm}")
+        if args.farns is not None:
+            send_cmd(s, f"farns {args.farns}")
 
         send_cmd(s, "show")
         send_cmd(s, "done")
