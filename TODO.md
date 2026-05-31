@@ -184,6 +184,13 @@ uses.
       (`RX_TIMEOUT_MS`, 3 units at WPM) forces key-up → sidetone off → idle.
       **Verified on hardware.**
 - [ ] Field test at range; tune power and message cadence (hardware).
+- [ ] "RECV" station ID and signal strength bar should clear after timeout from
+      last received packet.
+- [ ] When receiving from one Fox (not timed out), packets from other stations
+      must be ignored.
+- [ ] "dit dah" display scrolling needs to be per Morse character
+- [ ] "text" scrolling needs duration testing. There seem to be eventual issues
+
 
 ## Stage 7 — Range & polish
 
