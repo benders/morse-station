@@ -56,11 +56,18 @@ Needs a second Heltec V4 flashed as the counterpart.
       RX prints bytes + RSSI (`src/radio.cpp`, 905.0 MHz).
 - [x] RadioLib SX1262 FSK config per design notes — 4.8 kbps, 5 kHz dev,
       sync word {0x2D,0xD4}, rxBw 39 kHz, low power (+2 dBm).
-- [x] **V4 external FEM (PA+LNA) brought up** — `radio::fem_enable()` powers
-      VFEM (GPIO7), enables the FEM, sets PA-bypass, and `setDio2AsRfSwitch`
-      lets DIO2 switch TX/RX. Without it RX was dead (~-107 dBm). One image
-      drives the superset of V4.2 (GC1109) and V4.3.1 (KCT8103L) control pins.
+- [x] **V4 external FEM (PA+LNA) brought up** — `radio::fem_power_on()` powers
+      VFEM (GPIO7), enables the FEM (CSD), sets PA-bypass, and `setDio2AsRfSwitch`
+      lets DIO2 switch TX/RX on the V4.2. Without it RX was dead (~-107 dBm). One
+      image drives the superset of V4.2 (GC1109) and V4.3.1 (KCT8103L) pins.
       See memory `heltec-v4-fem-rf-frontend`.
+- [x] **V4.3 RX LNA fixed** — the KCT8103L CTX line is GPIO5 (`PIN_FEM_CTX`),
+      software-driven (not DIO2), and doubles as the RX LNA select (LOW=LNA,
+      HIGH=bypass). The old static-HIGH left V4.3 RX permanently LNA-bypassed →
+      gauge read far below the V4.2. Now `fem_set_rx()`/`fem_set_tx()` track the
+      radio state around `send()`/`start_receive()`. Confirmed on hardware: V4.3
+      hunter gauge jumped to ~full, matching the V4.2 (fox on LO). Pin map from
+      meshcore-dev/MeshCore PR #1867.
 - [x] Bench link verified both directions, huge margin (two floors away ~-40
       dBm). Link is solid; see TX-gain note below.
 - [ ] **Polish/range + compliance:** TX gain mismatched between revisions

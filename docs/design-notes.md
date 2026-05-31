@@ -144,6 +144,13 @@ USB-C ──► onboard charger ──► LiPo (SH1.25-2)
 - The **FEM** must be enabled via `PIN_FEM_VFEM` (GPIO7) before transmit *or*
   receive; leaving it off desensitises RX by tens of dB. The PA mode / control
   pins differ by board revision (V4.2 vs V4.3.1) — `src/pins.h` documents both.
+  On the **V4.3.1 (KCT8103L)** the FEM's TX/RX switch is GPIO5 (`PIN_FEM_CTX`),
+  driven by software (not DIO2), and that level *also* selects the RX LNA:
+  **LOW = LNA in path, HIGH = TX / LNA bypass**. So GPIO5 must track TX vs RX —
+  `radio.cpp` calls `fem_set_rx()` / `fem_set_tx()` around send/receive. Holding
+  it HIGH (the original bug) left V4.3 RX permanently LNA-bypassed: the gauge
+  read tens of dB below an otherwise-identical V4.2. (V4.2's GC1109 keeps its LNA
+  in the RX path whenever CSD=1, with CTX on DIO2.)
 - Speaker amp (PAM8403) runs off the 3.3V rail or VBAT.
 
 ## Decoupling
@@ -204,6 +211,9 @@ void setup() {
   pinMode(PIN_KEY, INPUT_PULLUP);
   pinMode(PIN_FEM_VFEM, OUTPUT);
   digitalWrite(PIN_FEM_VFEM, HIGH);          // FEM on (required for TX and RX)
+  pinMode(PIN_FEM_CTX, OUTPUT);
+  digitalWrite(PIN_FEM_CTX, LOW);            // V4.3 KCT8103L: LNA in RX path
+                                             // (drive HIGH only while transmitting)
 
   chip.beginFSK(915.0, 4.8, 9.6);            // 4.8 kbps, 9.6 kHz deviation
   chip.setSyncWord(SYNC_WORD, sizeof(SYNC_WORD));

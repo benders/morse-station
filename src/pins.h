@@ -26,14 +26,22 @@ static constexpr int PIN_DIO1 = 14;
 // the FEM sits between the SX1262 and the antenna and MUST be powered/enabled
 // or receive is badly desensitised. The two board revisions wire it
 // differently, so we drive the superset of control pins (the pins a given
-// revision doesn't use for its FEM are just free GPIOs there):
-//   V4.2  (GC1109):   VFEM=7, CSD=2,  CPS=46
-//   V4.3.1(KCT8103L): VFEM=7, FEM ctrl=5,  (46 freed)
-// TX/RX path (CTX) is driven automatically by SX1262 DIO2 (RF switch).
+// revision doesn't use for its FEM are just free GPIOs there). Pin roles per
+// the Heltec/MeshCore V4 variant (meshcore-dev/MeshCore PR #1867):
+//   V4.2  (GC1109):   VFEM=7, CSD(EN)=2, CPS(TX_EN)=46;  CTX(TX/RX) on DIO2.
+//   V4.3.1(KCT8103L): VFEM=7, CSD=2,     CTX=5;          (46 freed).
+//
+// IMPORTANT difference: on the GC1109 (V4.2) the FEM TX/RX switch (CTX) is wired
+// to the SX1262 DIO2 and flips automatically (setDio2AsRfSwitch). On the
+// KCT8103L (V4.3) that CTX line is GPIO5 — driven by the MCU in software — and
+// its level ALSO selects the RX LNA: CTX=LOW -> LNA in RX path, CTX=HIGH -> TX
+// path / LNA bypass. So GPIO5 must track TX vs RX (see radio.cpp fem_set_rx/tx);
+// holding it HIGH leaves V4.3 RX permanently LNA-bypassed (badly desensitised).
 #define HAS_FEM 1
 static constexpr int PIN_FEM_VFEM = 7;     // FEM LDO power enable (both revs)
-static constexpr int PIN_FEM_CSD  = 2;     // V4.2 GC1109 chip enable
-static constexpr int PIN_FEM_CTRL = 5;     // V4.3.1 KCT8103L FEM control
+static constexpr int PIN_FEM_CSD  = 2;     // chip enable: GC1109 CSD / KCT8103L CSD
+static constexpr int PIN_FEM_CTX  = 5;     // KCT8103L CTX: LOW=RX/LNA, HIGH=TX
+                                           // (V4.2: free GPIO; its CTX is DIO2)
 static constexpr int PIN_FEM_CPS  = 46;    // V4.2 GC1109 PA mode (LOW = bypass)
 
 // OLED (SSD1315 / SSD1306-compatible) on I2C (fixed on-board)

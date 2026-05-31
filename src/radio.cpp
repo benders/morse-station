@@ -36,25 +36,28 @@ void IRAM_ATTR on_rx() { rx_flag = true; }
 // or RX is badly desensitised. We drive the superset of both board revisions'
 // control pins (see pins.h): the pins a given revision doesn't use are just
 // free GPIOs there, so driving them is harmless.
-//   RX-LNA path: CSD/ctrl = 1, CTX = 0  (CTX is DIO2, auto)
-//   CPS = 0 -> PA bypass, matching our low-power (~+2 dBm) operation.
-void fem_enable() {
+//   CSD = 1 -> chip enabled (GC1109 EN / KCT8103L CSD)
+//   CPS = 0 -> GC1109 PA bypass, matching our low-power (~+2 dBm) operation.
+// CTX (GPIO5) is left to fem_set_rx()/fem_set_tx(): on the V4.3 KCT8103L it is
+// the software TX/RX switch *and* the RX LNA select, so it must track the radio
+// state. (On the V4.2 GC1109 the real CTX is DIO2; GPIO5 is a free pin there.)
+void fem_set_rx() { digitalWrite(PIN_FEM_CTX, LOW); }   // KCT8103L: LNA in RX path
+void fem_set_tx() { digitalWrite(PIN_FEM_CTX, HIGH); }  // KCT8103L: TX path
+
+void fem_power_on() {
     pinMode(PIN_FEM_VFEM, OUTPUT);
     digitalWrite(PIN_FEM_VFEM, HIGH);   // power the FEM LDO (both revs)
     pinMode(PIN_FEM_CSD, OUTPUT);
-    digitalWrite(PIN_FEM_CSD, HIGH);    // V4.2 GC1109 chip enable
-    pinMode(PIN_FEM_CTRL, OUTPUT);
-    digitalWrite(PIN_FEM_CTRL, HIGH);   // V4.3.1 KCT8103L: LNA in RX path
-    // VERIFY ON HW (V4.3.1): this control line is held statically HIGH. Confirm
-    // against the KCT8103L datasheet that a constant HIGH selects the RX/LNA
-    // path and does NOT latch the FEM into a fixed mode that fights the DIO2/CTX
-    // TX/RX switch. If the part needs the mode pin to track TX vs RX, this must
-    // follow DIO2 instead of sitting constant. Power-up is fine either way;
-    // it's the switching behaviour to scope (TX power out + RX sensitivity).
+    digitalWrite(PIN_FEM_CSD, HIGH);    // chip enable (GC1109 EN / KCT8103L CSD)
     pinMode(PIN_FEM_CPS, OUTPUT);
     digitalWrite(PIN_FEM_CPS, LOW);     // V4.2 PA bypass (low power)
+    pinMode(PIN_FEM_CTX, OUTPUT);
+    fem_set_rx();                       // default to RX/LNA until we transmit
     delay(1);                           // let the FEM power up
 }
+#else
+inline void fem_set_rx() {}
+inline void fem_set_tx() {}
 #endif // HAS_FEM
 
 namespace radio {
@@ -63,7 +66,7 @@ float frequency_mhz() { return FREQ_MHZ; }
 
 bool init(int& err) {
 #ifdef HAS_FEM
-    fem_enable();
+    fem_power_on();
 #endif
 
     radioSpi.begin(PIN_SCK, PIN_MISO, PIN_MOSI, PIN_NSS);
@@ -84,7 +87,9 @@ bool init(int& err) {
 }
 
 bool send(const uint8_t* data, size_t len) {
+    fem_set_tx();                  // KCT8103L (V4.3): switch FEM to the TX path
     int state = chip.transmit(const_cast<uint8_t*>(data), len);
+    fem_set_rx();                  // back to RX/LNA so we don't sit LNA-bypassed
     return state == RADIOLIB_ERR_NONE;
 }
 
@@ -93,6 +98,7 @@ bool set_tx_power(int dbm) {
 }
 
 void start_receive() {
+    fem_set_rx();                  // KCT8103L (V4.3): LNA in the RX path
     rx_flag = false;
     chip.startReceive();
 }
