@@ -1,4 +1,7 @@
 #include "display.h"
+#ifndef DEVICE_CARDPUTER_ADV
+// Heltec V4 path: 128x64 mono SSD1306 OLED via U8g2. The Cardputer ADV has a
+// 240x135 colour ST7789V2 driven by M5.Display; see display_cardputer.cpp.
 #include "pins.h"
 #include <Arduino.h>
 #include <U8g2lib.h>
@@ -68,14 +71,15 @@ void fox(uint16_t seq, const char* msg, bool tone_on, const char* pwr) {
     oled.sendBuffer();
 }
 
-void hunter(const char* text, float freq_mhz, const char* call, bool ditdah,
+void hunter(const char* text, float freq_mhz, int station_id, bool ditdah,
             float rssi_dbm, bool rssi_valid, bool tone_on) {
     oled.clearBuffer();
     oled.setFont(u8g2_font_6x12_tr);
 
-    // Header: "HUNTER <CALL>" left, tone "*" indicator tucked after the title.
+    // Header: "RECV <ID>" of the station being copied, tone "*" after the title.
     char hdr[20];
-    snprintf(hdr, sizeof(hdr), "HUNTER %s", (call && call[0]) ? call : "----");
+    if (station_id >= 0) snprintf(hdr, sizeof(hdr), "RECV %d", station_id);
+    else                 snprintf(hdr, sizeof(hdr), "RECV ---");
     oled.drawStr(0, 11, hdr);
     if (tone_on) oled.drawStr(122, 11, "*");
 
@@ -120,3 +124,4 @@ void status(const char* title, const char* line1, const char* line2) {
 }
 
 } // namespace display
+#endif // !DEVICE_CARDPUTER_ADV

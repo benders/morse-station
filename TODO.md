@@ -100,10 +100,12 @@ Round of tweaks from on-air testing — IDs, timing feel, display, power, build 
 - [x] Hunter display: show only the **last 16 characters**, scrolling off as new
       ones arrive. Single copy line in `display::hunter` shows the tail of the
       rolling buffer (last 16 glyphs, fits 21-wide row at 6px).
-- [x] Hunter display: show the **frequency/callsign of the TX node** from the
-      last received station-identification packet. Header shows `HUNTER <CALL>`
-      (callsign captured from the last `Ident` in `loop_hunter`, "----" until
-      heard) plus `radio::frequency_mhz()` (905.0 MHz) right-justified.
+- [x] Hunter display: show the **station ID of the TX node** plus the operating
+      frequency. Header shows `RECV <id>` (the `station_id` from the last received
+      `KeyState`/`Ident` in `loop_hunter`, so it populates on first signal, not
+      just on Ident; `RECV ---` until anything is heard) plus
+      `radio::frequency_mhz()` (905.0 MHz) right-justified. (Earlier revisions
+      showed the TX callsign as `HUNTER <CALL>`; a numeric ID is terser for DF.)
 - [x] Fox default power on boot → **Low** (`pwr_idx = 0` in `src/main.cpp`).
 - [x] Add a **MAX** power level to the fox — transmit at full **28 dBm**. Added
       `{"MAX", 22}` to `PWR_LEVELS` (4th level); +22 dBm is the SX1262 chip
@@ -219,3 +221,125 @@ Start at **low power, single fixed channel, no hopping** (§15.249, ~200–400 m
       run under an amateur license — see Stage 3 compliance note and
       `design-notes.md`.
 - [ ] Enclosure, antenna build (hardware).
+
+---
+
+## Cardputer ADV port (experimental fox)
+
+Port the firmware to the **M5Stack Cardputer ADV** (Stamp-S3A / ESP32-S3) to use
+as an experimental **fox** with onboard sound, a keyboard, and a colour LCD. The
+two platforms share one `src/` tree, selected by `-DDEVICE_HELTEC_V4` /
+`-DDEVICE_CARDPUTER_ADV` (PlatformIO env). Device-specific code lives behind that
+define or in `*_cardputer.cpp` files whose whole body is `#ifdef
+DEVICE_CARDPUTER_ADV` (so only one display/sidetone implementation compiles per
+env). The Heltec build is untouched.
+
+### Hardware facts (researched, confirm on HW)
+
+- **Radio is NOT onboard.** It rides on the removable **Cap LoRa-1262** (bare
+  **SX1262** + ATGM336H GNSS, RP-SMA antenna, **no external PA/FEM**).
+  - **Max TX power = +22 dBm** (SX1262 chip ceiling). vs the Heltec V4's
+    ~+27–28 dBm through its FEM. `PWR_LEVELS` already tops out at `MAX`=+22, so
+    the table maps directly — there's just no FEM gain on top, and **no FEM
+    bring-up** (simpler than V4). The cap is installed.
+  - Pins (M5 docs): NSS=G5, DIO1=G4, RST=G3, BUSY=G6, SCK=G40, MOSI=G14,
+    MISO=G39. SPI bus is shared with the microSD slot. `setDio2AsRfSwitch(true)`
+    drives the on-cap TX/RX switch (same as the Heltec).
+  - **[x] TCXO = 1.8 V confirmed on HW** — `beginFSK()` succeeds and the cap
+    receives real off-air Morse, so the 1.8 V TCXO setting in `radio.cpp` is
+    correct (not a plain crystal).
+- **Audio = ES8311 codec + NS4150B amp** (I2S, no PWM-to-pin shortcut). Driven by
+  **M5Unified `M5.Speaker`**. I2S pins (FYI, M5 owns them): SCLK=G41, LRCK=G43,
+  DSDIN=G42, ASDOUT=G46 (no MCLK).
+- **Display = ST7789V2** 240x135 colour. BL=G38, RST=G33, DC=G34, MOSI=G35,
+  SCK=G36, CS=G37. Driven by **M5.Display (M5GFX)**.
+- **Keyboard = TCA8418** I2C keypad controller @ **0x34** on the internal I2C bus
+  (SDA=G8, SCL=G9), **INT=G11** (active-low, falling edge). Bus is shared with
+  the ES8311 (0x18) and BMI270 IMU (0x68).
+- Button G0 (BtnA/BOOT) reused as the boot-menu / power-cycle button.
+
+### Decisions
+
+- **[x] M5Unified for audio.** `M5.Speaker` drives the ES8311 sidetone
+  (`sidetone_cardputer.cpp`). `M5.begin()` also claims the LCD, so the display
+  uses **`M5.Display` (M5GFX, same LovyanGFX family)** rather than a standalone
+  LovyanGFX instance — both funnel through `cardputer_m5_begin()`
+  (`platform_cardputer.{h,cpp}`). LovyanGFX dropped from the env's `lib_deps`
+  (M5GFX comes with M5Unified).
+
+### Stage C0 — Build + groundwork (firmware, no HW yet)
+
+- [x] Device-split `pins.h` (Heltec / Cardputer blocks, `#error` if neither).
+- [x] `radio.cpp` device-aware: FEM guarded by `HAS_FEM` (Heltec only); Cap pins
+      + DIO2 RF switch for the Cardputer.
+- [x] Sidetone: existing LEDC path guarded to Heltec; new `sidetone_cardputer.cpp`
+      (M5.Speaker), same `sidetone.{on,off,set_volume,init}` API.
+- [x] Display: existing U8g2 path guarded to Heltec; new `display_cardputer.cpp`
+      reimplementing the `display::` API on the 240x135 panel via M5.Display.
+- [x] `main.cpp` hibernate FEM/Vext pins guarded by `HAS_FEM`.
+- [x] platformio `cardputer_adv` env: RadioLib + M5Unified.
+- [ ] **`pio run -e cardputer_adv` builds clean.** Resolve any M5Unified API
+      drift (Speaker `tone`/`stop` signatures, `TFT_*` colour macros).
+
+### Stage C1 — Fox bring-up on hardware (existing functionality)
+
+Goal: the Cardputer runs the **fox** exactly like the Heltec — message in NVS,
+set via the **serial console**, simple LCD status, keystate TX on the cap.
+
+- [x] Flash + boot OK: `M5.begin()` (LCD + ES8311) comes up with no crash; boots
+      through splash + menu (auto-select). `mode=N station_id=73` printed.
+- [x] **Radio init succeeds** — `beginFSK()` returns OK both as hunter and fox;
+      as a hunter the cap decoded real off-air Morse ("IS K"), proving SPI pins +
+      TCXO + sync + frequency. Serial-provisioned `mode 1` boots straight to fox.
+- [x] Serial provisioning REPL works over USB-CDC; added `mode <0..2>` to set the
+      default boot mode without the G0 button. `call`/`msg`/`mode` persisted and
+      confirmed via `show` across reboot.
+- [ ] **Sidetone (needs an ear):** confirm a clean keyed tone from the onboard
+      speaker / 3.5 mm jack via M5.Speaker at the fox WPM; volume sane.
+- [ ] **On-air TX (needs a hunter):** confirm a Heltec hunter copies the
+      Cardputer fox on 905.0 MHz. Check `setOutputPower` LO/MED/HI/MAX (no FEM →
+      MAX +22 dBm is the real ceiling). G0 tap should cycle power.
+- [x] Sound + text confirmed good on HW (M5.Speaker sidetone + fox message
+      render). Fox loop runs as KC8HOB.
+- [x] **Display flicker fixed** — the panel was cleared+redrawn directly each
+      ~10 Hz frame. `display_cardputer.cpp` now renders into a full-frame
+      `M5Canvas` back buffer and `pushSprite`s it once per frame. Stable on HW:
+      ran ~100 s, seq→2727, free heap flat at 275 KB (no leak), zero reboots. A
+      brief early "reboot loop" did not reproduce. Boot now logs its reset reason
+      to NVS (`# boot #N reason now=.. prev=..`) so any recurrence is diagnosable.
+- [x] **Fox runs silent** — local sidetone disabled in fox mode (a beeping
+      transmitter is easy to find by ear). Hunters still copy it from the
+      received keystate. Applies to both platforms (`loop_fox` in `main.cpp`).
+- [ ] Fox `setOutputPower` LO/MED/HI/MAX + G0 power-cycle; Ident cadence; LCD "*".
+
+### Stage C2 — Keyboard entry (Cardputer-native config)
+
+Goal: set the **fox message and callsign from the keyboard**, no laptop.
+
+- [x] TCA8418 driver (`keyboard_cardputer.cpp`): register init (matrix 7x8, event
+      mode, falling-edge int enables) over **M5.In_I2C** (shares M5's bus on
+      G8/G9 — no second I2C master), polled event FIFO, keynum→(row,col) decode,
+      and the 4x14 keymap with shift/capslock. Adapted from the M5Cardputer-ADV
+      reference HAL. Returns ASCII + `\b`/`\r`/`\t`. INT=G11 parked as input
+      (we poll the event count, not the line).
+- [x] On-screen text-entry editor (`config_ui_cardputer.cpp`): field editor
+      (append / backspace / ENTER-commit) on the LCD, reused for callsign and
+      message.
+- [x] Boot hook: `config_ui::run()` after the splash (Cardputer only) — a 2 s
+      "press any key" window opens a 1=Callsign / 2=Message menu; writes go
+      through `config::set_callsign` / `set_fox_message` (same NVS keys as the
+      serial console). Builds clean.
+- [ ] **Verify on hardware:** keymap/shift correctness (esp. symbols), debounce
+      feel, that the opt-in window times out cleanly, and that edited values
+      persist + drive the fox loop.
+- [ ] Decide whether keyboard config also covers wpm/farns/id, or those stay
+      serial-only (currently serial-only).
+
+### Stage C3 — Polish (later)
+
+- [ ] Confirm legal power basis at +22 dBm (no FEM) — see Stage 3 compliance note.
+- [ ] Optional: use the cap's ATGM336H GNSS to put the fox's grid/coordinates in
+      the message automatically.
+- [ ] Battery/run-time check (1750 mAh onboard) for a fox left running.
+- [ ] Live-key mode: needs a physical key on a free GPIO (Grove G1/G2 — confirm);
+      out of scope for the experimental fox.

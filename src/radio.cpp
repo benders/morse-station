@@ -14,7 +14,13 @@ constexpr float    FREQ_DEV_KHZ  = 5.0f;
 constexpr float    RX_BW_KHZ     = 39.0f;   // ~Carson BW for 4.8k/5k dev, w/ margin
 constexpr int      TX_POWER_DBM  = 2;       // low power, 15.249-ish
 constexpr int      PREAMBLE_BITS = 16;
+#if defined(DEVICE_HELTEC_V4)
+constexpr float    TCXO_V        = 1.8f;    // Heltec V4 SX1262 has a 1.8 V TCXO
+#elif defined(DEVICE_CARDPUTER_ADV)
+// VERIFY ON HW: Cap LoRa-1262. If beginFSK() fails (RADIOLIB_ERR_SPI_CMD_*),
+// the module likely uses a plain crystal — set this to 0.0f.
 constexpr float    TCXO_V        = 1.8f;
+#endif
 
 // Sync word identifying our net (2 bytes).
 uint8_t SYNC_WORD[] = {0x2D, 0xD4};
@@ -25,6 +31,7 @@ void IRAM_ATTR on_rx() { rx_flag = true; }
 
 } // namespace
 
+#ifdef HAS_FEM
 // Power and enable the external front-end module (PA + LNA). The V4 needs this
 // or RX is badly desensitised. We drive the superset of both board revisions'
 // control pins (see pins.h): the pins a given revision doesn't use are just
@@ -48,20 +55,24 @@ void fem_enable() {
     digitalWrite(PIN_FEM_CPS, LOW);     // V4.2 PA bypass (low power)
     delay(1);                           // let the FEM power up
 }
+#endif // HAS_FEM
 
 namespace radio {
 
 float frequency_mhz() { return FREQ_MHZ; }
 
 bool init(int& err) {
+#ifdef HAS_FEM
     fem_enable();
+#endif
 
     radioSpi.begin(PIN_SCK, PIN_MISO, PIN_MOSI, PIN_NSS);
     err = chip.beginFSK(FREQ_MHZ, BITRATE_KBPS, FREQ_DEV_KHZ, RX_BW_KHZ,
                         TX_POWER_DBM, PREAMBLE_BITS, TCXO_V, false);
     if (err != RADIOLIB_ERR_NONE) return false;
 
-    // Let DIO2 drive the FEM TX/RX switch (CTX): high in TX, low otherwise.
+    // DIO2 drives the TX/RX antenna switch. On the Heltec V4 that's the FEM CTX
+    // line; the Cap LoRa-1262 wires DIO2 to its on-cap RF switch the same way.
     err = chip.setDio2AsRfSwitch(true);
     if (err != RADIOLIB_ERR_NONE) return false;
 

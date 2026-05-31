@@ -29,8 +29,8 @@ On boot the OLED shows a mode menu. Use the **PRG/BOOT** button:
 Modes:
 
 - **Hunter (RX)** — receives, plays the Morse sidetone, and shows a scrolling
-  line of the last decoded characters, the transmitting fox's **callsign and
-  frequency** (from its periodic station-ID packet), and an RSSI bar (fuller bar
+  line of the last decoded characters, the transmitting fox's **station ID and
+  frequency** (`RECV <id>`, from the received packets), and an RSSI bar (fuller bar
   = stronger signal, a warmer/colder hint). The sidetone **volume tracks signal
   strength** (dB-linear, so it sounds like a classic "tune for max volume"
   meter) — run the fox at LO power so the signal actually falls off with distance
