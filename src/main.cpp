@@ -34,13 +34,18 @@ static constexpr uint32_t REPEAT_PAUSE = 7000;
 enum Mode { MODE_HUNTER = 0, MODE_FOX = 1, MODE_LIVEKEY = 2, MODE_HIBERNATE = 3 };
 static Mode mode = MODE_HUNTER;
 
-// Fox TX power levels, cycled with the PRG button (SX1262 output; the FEM PA
-// follows). Default LO — bump up for open ground. LO keeps the hunter volume
-// gradient working in a small space (RSSI saturates at MED/HI).
+// Fox TX power levels, cycled with the PRG button (sets the SX1262 *chip*
+// output only). Default LO — bump up for open ground. LO keeps the hunter
+// volume gradient working in a small space (RSSI saturates at MED/HI).
 struct PwrLevel { const char* label; int dbm; };
-// dbm is the SX1262 *chip* output; the external FEM PA adds its gain on top.
-// MAX = +22 dBm, the SX1262's own ceiling (setOutputPower clamps/rejects above
-// this); through the FEM that's ~28 dBm at the antenna.
+// dbm is the SX1262 *chip* output. On the Cardputer (no FEM) that is the
+// antenna power directly; +22 dBm is the SX1262 ceiling (setOutputPower
+// clamps/rejects above this). On the Heltec V4 the FEM sits after the chip but
+// its PA mode is NOT switched per level — CPS is set once to bypass at init
+// (see radio::fem_power_on) and set_tx_power never re-touches it, so the antenna
+// power is the chip output through the FEM bypass path (less a small insertion
+// loss). NOTE: the V4.2 (GC1109) PA appears to engage anyway in practice, so its
+// real EIRP runs hotter and mismatched vs the V4.3 — see the FEM-PA TODO.
 static const PwrLevel PWR_LEVELS[] = {{"LO", -9}, {"MED", 2}, {"HI", 14}, {"MAX", 22}};
 static const int N_PWR  = 4;
 static int       pwr_idx = 0;   // LO (-9 dBm)

@@ -40,8 +40,11 @@ current plan.
 - SX1262 is a pure FSK/GFSK part — simple software stack via RadioLib `SX1262`.
   (Note: the SX126x family dropped OOK; this design only needs GFSK.)
 - The V4 is the **high-power variant**: an external RF front-end (PA + LNA) sits
-  between the SX1262 and the antenna, pushing up to **+27 dBm (~500 mW)**. The
-  FEM **must be powered/enabled or receive is badly desensitised** — see
+  between the SX1262 and the antenna, *capable* of up to **+27 dBm (~500 mW)**.
+  We don't currently exploit that — the FEM PA mode is fixed at init and not
+  driven per power level (see the FEM-PA TODO), so today's antenna power tracks
+  the SX1262 chip output (≤ +22 dBm) through the FEM bypass path. The FEM **must
+  still be powered/enabled or receive is badly desensitised** — see
   *Power architecture* and `src/pins.h`. Two board revisions (V4.2 GC1109,
   V4.3.1 KCT8103L) wire the FEM control pins differently; the firmware drives
   the superset.
@@ -217,7 +220,7 @@ void setup() {
 
   chip.beginFSK(915.0, 4.8, 9.6);            // 4.8 kbps, 9.6 kHz deviation
   chip.setSyncWord(SYNC_WORD, sizeof(SYNC_WORD));
-  chip.setOutputPower(0);                     // low power; FEM PA sits after this
+  chip.setOutputPower(0);                     // chip output; FEM PA mode fixed at init, not switched here
   // No encryption — keeps the door open for Part 97 fox operation.
 }
 

@@ -40,8 +40,11 @@ Modes:
 - **Fox (TX loop)** — repeats the canned location message on the air. A **short
   PRG tap cycles TX power** LO / MED / HI / MAX (shown as "PWR x" on the OLED).
   The level is **remembered across power cycles** (boots LO the first time) —
-  pull it down to LO in a small space. MAX (~28 dBm) exceeds the Part-15 §15.249
-  limit, so only use it under an amateur license.
+  pull it down to LO in a small space. MAX is the SX1262 chip ceiling (+22 dBm),
+  which still exceeds the Part-15 §15.249 limit, so only use it under an amateur
+  license. (On the Heltec V4 a FEM PA could add more, but its PA mode is left
+  unmanaged today — see TODO.md; the Cardputer has no FEM, so +22 dBm is its real
+  antenna ceiling.)
 - **Live key (TX)** — transmits a telegraph key wired to the key GPIO, with
   local sidetone, so students can key to a hunter.
 - **Hibernate** — power-off stand-in (the boards have no hardware switch):

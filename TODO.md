@@ -79,6 +79,21 @@ Needs a second Heltec V4 flashed as the counterpart.
       equalise both boards to a matched power and decide the legal basis —
       §15.249 low-power unlicensed vs operating under an amateur license in the
       902-928 MHz (33 cm) band. Not blocking the hunt.
+- [ ] **Long-term: deliberately enable + control the Heltec V4 FEM PA.** Today
+      `fem_power_on()` writes `PIN_FEM_CPS` LOW **once at init** (intended PA
+      bypass) and never touches it again — `set_tx_power()` only calls the SX1262
+      `setOutputPower()`, so the FEM PA mode does **not** track the LO/MED/HI/MAX
+      level. Net effect on the antenna is ill-defined and mismatched between revs:
+      the V4.3 (KCT8103L) genuinely runs bypassed, but the V4.2 (GC1109) PA is
+      empirically engaging anyway (SDR several floors away at -80..-90 dBm, no RX
+      gain — see the Stage-3 compliance note). To use the V4 as a real higher-power
+      fox we should: (1) understand each rev's CPS/mode truth table (GC1109 vs
+      KCT8103L differ), (2) drive the PA mode pin deliberately — ideally per power
+      level, engaging the PA only at HI/MAX — so the antenna power matches the
+      label, (3) equalise the two revisions to a known EIRP, and (4) settle the
+      legal basis (§15.249 vs Part 97) before any boosted outdoor deploy. Not
+      needed while the **Cardputer ADV is the fox** (no FEM, chip output =
+      antenna power, +22 dBm ceiling). See memory `heltec-v4-fem-rf-frontend`.
 
 ## Stage 3a — Field-tuning punch list
 
@@ -115,9 +130,11 @@ Round of tweaks from on-air testing — IDs, timing feel, display, power, build 
       `radio::frequency_mhz()` (905.0 MHz) right-justified. (Earlier revisions
       showed the TX callsign as `HUNTER <CALL>`; a numeric ID is terser for DF.)
 - [x] Fox default power on boot → **Low** (`pwr_idx = 0` in `src/main.cpp`).
-- [x] Add a **MAX** power level to the fox — transmit at full **28 dBm**. Added
-      `{"MAX", 22}` to `PWR_LEVELS` (4th level); +22 dBm is the SX1262 chip
-      ceiling, ~28 dBm at the antenna after the FEM PA. "PWR MAX" fits the OLED.
+- [x] Add a **MAX** power level to the fox. Added `{"MAX", 22}` to `PWR_LEVELS`
+      (4th level); +22 dBm is the SX1262 chip ceiling. On the Cardputer (no FEM)
+      that is the antenna power; on the Heltec V4 the FEM PA is *not* switched per
+      level (CPS fixed at init), so MAX is not a deliberate ~28 dBm boost — see the
+      FEM-PA TODO under Stage 3. "PWR MAX" fits the OLED.
 - [x] On bootup, show the **git revision** of the build — `scripts/git_rev.py`
       injects `-DGIT_REV`; shown on the OLED splash for 2 s in `setup()`
       (`display::status`) and also printed to serial.
@@ -178,7 +195,8 @@ uses.
       the search area. (`sidetone_set_volume` in `src/sidetone.cpp`,
       `loop_hunter` in `src/main.cpp`.)
 - [x] Fox adjustable TX power — short PRG tap cycles LO(-9)/MED(+2)/HI(+14) dBm
-      via `radio::set_tx_power` (SX1262 output; FEM PA follows). Shown as
+      via `radio::set_tx_power` (SX1262 *chip* output; the FEM PA mode is not
+      switched per level — see the FEM-PA TODO). Shown as
       "PWR x" on the fox OLED, boots MED. Lets us pull power down in a small
       space. **Verified on hardware.** (`src/main.cpp`, `src/radio.cpp`,
       `src/display.cpp`.)
@@ -263,10 +281,12 @@ env). The Heltec build is untouched.
 
 - **Radio is NOT onboard.** It rides on the removable **Cap LoRa-1262** (bare
   **SX1262** + ATGM336H GNSS, RP-SMA antenna, **no external PA/FEM**).
-  - **Max TX power = +22 dBm** (SX1262 chip ceiling). vs the Heltec V4's
-    ~+27–28 dBm through its FEM. `PWR_LEVELS` already tops out at `MAX`=+22, so
-    the table maps directly — there's just no FEM gain on top, and **no FEM
-    bring-up** (simpler than V4). The cap is installed.
+  - **Max TX power = +22 dBm** (SX1262 chip ceiling) — and here that *is* the
+    antenna power, since there's no FEM. (The Heltec V4 has a FEM PA that could in
+    principle add ~6 dB, but its PA mode is currently left bypassed/unmanaged — see
+    the FEM-PA TODO — so neither platform deliberately exceeds +22 dBm at the chip
+    today.) `PWR_LEVELS` tops out at `MAX`=+22, so the table maps directly, with no
+    FEM gain on top and **no FEM bring-up** (simpler than V4). The cap is installed.
   - Pins (M5 docs): NSS=G5, DIO1=G4, RST=G3, BUSY=G6, SCK=G40, MOSI=G14,
     MISO=G39. SPI bus is shared with the microSD slot. `setDio2AsRfSwitch(true)`
     drives the on-cap TX/RX switch (same as the Heltec).

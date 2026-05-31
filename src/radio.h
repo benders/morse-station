@@ -17,8 +17,10 @@ float frequency_mhz();
 // Blocking transmit of a small payload. Returns true on success.
 bool send(const uint8_t* data, size_t len);
 
-// Set the SX1262 output power in dBm (the FEM PA sits after this). Returns true
-// on success. Used by the fox to switch high/medium/low for the space at hand.
+// Set the SX1262 *chip* output power in dBm. On the Heltec V4 the FEM sits after
+// this, but its PA mode is not changed here (CPS is fixed at init — see
+// fem_power_on); on the Cardputer there is no FEM. Returns true on success. Used
+// by the fox to switch high/medium/low for the space at hand.
 bool set_tx_power(int dbm);
 
 // Put the radio into continuous receive. Call once after init() on RX nodes.
