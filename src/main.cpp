@@ -427,10 +427,8 @@ static void loop_hunter(uint32_t now) {
             last_rx = now;
             rssi = r;
             rssi_valid = true;
-            // Louder for stronger signal — same -110..-40 dBm span as the bar,
-            // so the ear tracks the meter (classic "tune for max volume" feel).
-            float clamped = rssi < -110.0f ? -110.0f : (rssi > -40.0f ? -40.0f : rssi);
-            sidetone_set_volume((uint8_t)((clamped + 110.0f) / 70.0f * 255.0f));
+            // RSSI no longer modulates loudness — always play the pure tone at
+            // full volume. (The RSSI bar on the display still tracks signal.)
         } else if (proto::decode_ident(buf, n, id) && id.wpm && id.char_wpm) {
             // Retune the decoder to the fox's announced timing (only on change).
             if (id.wpm != rx_wpm || id.char_wpm != rx_char_wpm) {
