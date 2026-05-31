@@ -17,10 +17,11 @@ void fox(uint16_t seq, const char* msg, bool tone_on, const char* pwr);
 
 // Hunter receive view: a single scrolling line of recent copy (last ~16 chars),
 // last-packet RSSI, tone indicator. The header shows the TX node's callsign (or
-// "----" until an Ident is heard) and the operating frequency. When ditdah is
-// true, `text` is interpreted as a raw dit/dah element stream (learning aid)
+// "RECV ---" until a packet is heard) and the operating frequency. When ditdah
+// is true, `text` is interpreted as a raw dit/dah element stream (learning aid)
 // rather than decoded letters. rssi_valid=false dims the bar (no packet yet).
-void hunter(const char* text, float freq_mhz, const char* call, bool ditdah,
+// station_id < 0 means nothing has been received yet.
+void hunter(const char* text, float freq_mhz, int station_id, bool ditdah,
             float rssi_dbm, bool rssi_valid, bool tone_on);
 
 // Live-key transmit view.

@@ -7,7 +7,10 @@
 #include "protocol.h"
 #include "display.h"
 #include "config.h"
+#include "config_ui.h"
 #include <esp_sleep.h>
+#include <esp_system.h>   // esp_reset_reason()
+#include <Preferences.h>  // persist boot/reset-reason log
 
 // Stage 6 — integrated fox-hunt firmware.
 //
@@ -60,7 +63,7 @@ static size_t text_len = 0;
 // callsign learned from the last Ident packet ("----" until one is heard).
 static char ditdah_buf[64];
 static size_t ditdah_len = 0;
-static char rx_call[proto::CALLSIGN_MAX + 1] = {0};
+static int  rx_station_id = -1;      // station id from last packet, -1 = none
 static bool hunter_ditdah = false;   // false = letters, true = dit/dah
 
 static void set_tone(bool on) {
@@ -130,7 +133,7 @@ static void run_setup_console() {
         return;
     }
     Serial.println("\n# setup: call <SIGN> | msg <text> | id <n> | wpm <n> | "
-                   "farns <n> | show | done");
+                   "farns <n> | mode <0..2> | show | done");
 
     while (true) {
         Serial.print("setup> ");
@@ -153,6 +156,15 @@ static void run_setup_console() {
             config::set_char_wpm((uint8_t)atoi(line + 6));
             Serial.printf("  farns    = %u (overall %u)\n",
                           config::char_wpm(), config::wpm());
+        } else if (!strncmp(line, "mode ", 5)) {
+            int m = atoi(line + 5);
+            if (m < 0 || m > 2) {            // 0=Hunter 1=Fox 2=Livekey (not Hibernate)
+                Serial.println("  ? mode 0=Hunter 1=Fox 2=Livekey");
+            } else {
+                config::set_boot_mode((uint8_t)m);
+                static const char* names[] = {"Hunter", "Fox", "Livekey"};
+                Serial.printf("  boot mode = %d (%s)\n", m, names[m]);
+            }
         } else if (!strcmp(line, "show")) {
             Serial.printf("  id=%u call=%s wpm=%u farns=%u msg=\"%s\"\n",
                           config::station_id(), config::callsign(),
@@ -163,7 +175,7 @@ static void run_setup_console() {
             return;
         } else {
             Serial.println("  ? call <SIGN> | msg <text> | id <n> | wpm <n> | "
-                           "farns <n> | show | done");
+                           "farns <n> | mode <0..2> | show | done");
         }
     }
 }
@@ -210,8 +222,10 @@ static void hibernate() {
     display::status("Hibernating", "Press RST to wake", nullptr);
     delay(1500);
     sidetone_off();
+#ifdef HAS_FEM
     pinMode(PIN_FEM_VFEM, OUTPUT);  digitalWrite(PIN_FEM_VFEM, LOW);   // FEM off
     pinMode(PIN_VEXT_CTRL, OUTPUT); digitalWrite(PIN_VEXT_CTRL, HIGH); // peripheral rail off
+#endif
     esp_deep_sleep_start();         // only RST wakes us -> full restart
 }
 
@@ -224,6 +238,25 @@ void setup() {
 #define GIT_REV "unknown"
 #endif
     Serial.printf("\n# morse-station build %s\n", GIT_REV);
+    {
+        // Why did we (re)boot? An intermittent native-USB panic loses its
+        // backtrace mid-reset, so we persist each boot's reason to NVS and print
+        // the *previous* boot's reason too. After an organic crash-reboot, a
+        // controlled reset (easy to capture on serial) reports prev=<crash cause>.
+        static const char* rr[] = {"UNKNOWN","POWERON","EXT","SW","PANIC",
+                                   "INT_WDT","TASK_WDT","WDT","DEEPSLEEP",
+                                   "BROWNOUT","SDIO"};
+        auto lbl = [&](int x){ return (x >= 0 && x < 11) ? rr[x] : "?"; };
+        int r = (int)esp_reset_reason();
+        Preferences bl; bl.begin("boot", false);
+        int prev = bl.getUChar("rr", 0);
+        uint32_t bc = bl.getUInt("cnt", 0) + 1;
+        bl.putUChar("rr", (uint8_t)r);
+        bl.putUInt("cnt", bc);
+        bl.end();
+        Serial.printf("# boot #%u reason now=%d(%s) prev=%d(%s)\n",
+                      bc, r, lbl(r), prev, lbl(prev));
+    }
 
     config::begin();
     // Restore the last-used fox TX power level (clamp in case the table shrank).
@@ -237,6 +270,12 @@ void setup() {
     snprintf(splash_line2, sizeof(splash_line2), "station id %u", config::station_id());
     display::status("Morse Station", splash_id, splash_line2);
     delay(3500);                       // hold the splash so rev + id are readable
+#ifdef DEVICE_CARDPUTER_ADV
+    // On-device keyboard provisioning (callsign / fox message). Brief opt-in
+    // window; falls through to normal boot if no key is tapped. The serial
+    // console above still works as the bench path.
+    config_ui::run();
+#endif
     sidetone_init(PIN_SIDETONE, TONE_HZ);
 
     mode = run_menu();
@@ -330,7 +369,10 @@ static void loop_fox(uint32_t now) {
         player.start(config::fox_message());
     }
     bool down = player.down();
-    set_tone(down);
+    // Fox runs SILENT: a transmitter that beeps is easy to find by ear, which
+    // defeats the hunt. The fox only keys the radio; hunters hear the Morse from
+    // the received keystate. (The display still shows "*" as a keying indicator.)
+    set_tone(false);
     tx_keystate(now, down);
     tx_ident(now);   // periodic station-ID packet (Part 97 callsign ID)
 
@@ -378,6 +420,7 @@ static void loop_hunter(uint32_t now) {
         proto::Ident    id;
         if (proto::decode(buf, n, ks)) {
             rx_down = ks.key_down != 0;
+            rx_station_id = ks.station_id;
             last_rx = now;
             rssi = r;
             rssi_valid = true;
@@ -392,9 +435,7 @@ static void loop_hunter(uint32_t now) {
                 rx_char_wpm = id.char_wpm;
                 decoder.begin(id.wpm, id.char_wpm);
             }
-            // Learn the TX node's callsign for the header.
-            memcpy(rx_call, id.call, proto::CALLSIGN_MAX);
-            rx_call[proto::CALLSIGN_MAX] = 0;
+            rx_station_id = id.station_id;
         }
     }
 
@@ -417,7 +458,7 @@ static void loop_hunter(uint32_t now) {
     if (now - last_draw >= 100) {
         last_draw = now;
         const char* copy = hunter_ditdah ? ditdah_buf : text_buf;
-        display::hunter(copy, radio::frequency_mhz(), rx_call, hunter_ditdah,
+        display::hunter(copy, radio::frequency_mhz(), rx_station_id, hunter_ditdah,
                         rssi, rssi_valid, rx_down);
     }
 }

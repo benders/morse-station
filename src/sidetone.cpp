@@ -1,4 +1,8 @@
 #include "sidetone.h"
+#ifndef DEVICE_CARDPUTER_ADV
+// Heltec V4 path: LEDC PWM on a GPIO feeding the PAM8403 amp. The Cardputer ADV
+// has no such pin — its sidetone goes through the ES8311 codec; see
+// sidetone_cardputer.cpp.
 #include <Arduino.h>
 #include <math.h>
 
@@ -124,3 +128,4 @@ void sidetone_off() {
 }
 
 #endif // SIDETONE_SQUARE
+#endif // !DEVICE_CARDPUTER_ADV
