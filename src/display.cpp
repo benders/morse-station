@@ -88,10 +88,10 @@ void hunter(const char* text, float freq_mhz, int station_id, bool ditdah,
     snprintf(fbuf, sizeof(fbuf), "%.1f MHz", freq_mhz);
     oled.drawStr(128 - (int)strlen(fbuf) * 6, 25, fbuf);
 
-    // Mode label, then a single scrolling line of recent copy. 21 glyphs fit at
-    // 6px; show the last 16 (decoded letters) or the last ~16 dit/dah elements,
-    // scrolling off the left as new copy arrives.
-    const size_t SHOW = 16;
+    // Mode label, then a single scrolling line of recent copy. 21 glyphs fit
+    // across the 128px panel at 6px; show that many of the most recent letters
+    // (or dit/dah elements), scrolling off the left as new copy arrives.
+    const size_t SHOW = 21;
     size_t len = strlen(text);
     const char* tail = len > SHOW ? text + (len - SHOW) : text;
     oled.drawStr(0, 25, ditdah ? "./-" : "TXT");

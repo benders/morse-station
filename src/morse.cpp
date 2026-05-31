@@ -125,8 +125,11 @@ char Decoder::update(bool key_down, uint32_t now_ms) {
     if (key_down != last_down_) {
         uint32_t dur = now_ms - edge_ms_;
         if (last_down_) {                       // ON segment just ended
-            if (n_elems_ < 7)
-                elems_[n_elems_++] = (dur >= dah_ms_) ? '-' : '.';
+            if (n_elems_ < 7) {
+                char e = (dur >= dah_ms_) ? '-' : '.';
+                elems_[n_elems_++] = e;
+                new_elem_ = e;                  // expose for live dit/dah scroll
+            }
         } else {                                // gap just ended, new element
             pending_   = false;                 // new char in progress
             have_edge_ = false;
@@ -139,7 +142,6 @@ char Decoder::update(bool key_down, uint32_t now_ms) {
     if (!key_down && n_elems_ > 0 && !pending_) {
         if (now_ms - edge_ms_ >= chargap_ms_) { // char-gap boundary
             elems_[n_elems_] = 0;
-            strcpy(last_elems_, elems_);         // stash for dit/dah display
             char c = classify();
             n_elems_ = 0;
             pending_ = true;                     // char emitted for this gap

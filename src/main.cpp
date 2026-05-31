@@ -64,35 +64,38 @@ static size_t text_len = 0;
 static char ditdah_buf[64];
 static size_t ditdah_len = 0;
 static int  rx_station_id = -1;      // station id from last packet, -1 = none
-static bool hunter_ditdah = false;   // false = letters, true = dit/dah
+static bool hunter_ditdah = true;    // false = letters, true = dit/dah (default)
 
 static void set_tone(bool on) {
     static bool cur = false;
     if (on != cur) { cur = on; if (on) sidetone_on(); else sidetone_off(); }
 }
 
-static void text_push(char c) {
-    if (text_len + 1 >= sizeof(text_buf)) {
-        // drop oldest half to make room
-        memmove(text_buf, text_buf + sizeof(text_buf) / 2, sizeof(text_buf) / 2);
-        text_len = sizeof(text_buf) / 2;
+// Append n bytes to a rolling, NUL-terminated buffer. When it would overflow,
+// drop the oldest half: keep the newest `cap/2` bytes, moving relative to len
+// (not a fixed offset) and re-terminating so the NUL never lands mid-buffer —
+// that off-by-one used to sever the string and freeze the hunter copy line once
+// the buffer first filled. Shared by the decoded-text and dit/dah views.
+static void rolling_append(char* buf, size_t& len, size_t cap,
+                           const char* s, size_t n) {
+    if (len + n + 1 >= cap) {
+        const size_t half = cap / 2;
+        memmove(buf, buf + len - half, half);
+        len = half;
     }
-    text_buf[text_len++] = c;
-    text_buf[text_len] = 0;
+    memcpy(buf + len, s, n);
+    len += n;
+    buf[len] = 0;
+}
+
+static void text_push(char c) {
+    rolling_append(text_buf, text_len, sizeof(text_buf), &c, 1);
 }
 
 // Append a chunk to the rolling dit/dah stream (elements of one decoded char,
 // or a space for a word gap), dropping the oldest half when full.
 static void ditdah_push(const char* s) {
-    size_t n = strlen(s);
-    if (ditdah_len + n + 1 >= sizeof(ditdah_buf)) {
-        memmove(ditdah_buf, ditdah_buf + sizeof(ditdah_buf) / 2,
-                sizeof(ditdah_buf) / 2);
-        ditdah_len = sizeof(ditdah_buf) / 2;
-    }
-    memcpy(ditdah_buf + ditdah_len, s, n);
-    ditdah_len += n;
-    ditdah_buf[ditdah_len] = 0;
+    rolling_append(ditdah_buf, ditdah_len, sizeof(ditdah_buf), s, strlen(s));
 }
 
 // Read a line from Serial into buf (NUL-terminated, trailing CR/LF stripped).
@@ -446,13 +449,20 @@ static void loop_hunter(uint32_t now) {
     set_tone(rx_down);
 
     char c = decoder.update(rx_down, now);
+
+    // Live dit/dah scroll: push each element ('.'/'-') the instant the decoder
+    // classifies it, so the dit/dah view advances one element at a time rather
+    // than a whole character at once.
+    char e = decoder.take_element();
+    if (e) rolling_append(ditdah_buf, ditdah_len, sizeof(ditdah_buf), &e, 1);
+
     if (c) {
         text_push(c);
         Serial.print(c);
-        // Mirror into the dit/dah stream: the elements of the decoded char, or a
-        // space for a word gap.
-        if (c == ' ') ditdah_push(" ");
-        else { ditdah_push(decoder.last_elements()); ditdah_push(" "); }
+        // Separate the dit/dah stream: a single space between letters, " / "
+        // between words (the word-gap char ' ' arrives after the letter's space).
+        if (c == ' ') ditdah_push("/ ");
+        else          ditdah_push(" ");
     }
 
     if (now - last_draw >= 100) {

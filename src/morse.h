@@ -58,10 +58,11 @@ public:
     // decoded character when one completes, else 0. May return ' ' for words.
     char update(bool key_down, uint32_t now_ms);
 
-    // The dit/dah elements classified for the most recently completed character
-    // (e.g. ".-" for 'A'), as a NUL-terminated string. Used by the hunter's
-    // dit/dah display mode. Empty until the first character completes.
-    const char* last_elements() const { return last_elems_; }
+    // Per-element side-channel for live dit/dah display: returns the single
+    // element ('.' or '-') classified on the most recent key-up edge, then
+    // clears it, so the hunter can scroll one element at a time as it arrives
+    // (rather than a whole character's worth at once). Returns 0 if none new.
+    char take_element() { char e = new_elem_; new_elem_ = 0; return e; }
 
 private:
     char classify();                  // turn collected elements into a char
@@ -73,7 +74,7 @@ private:
     uint32_t edge_ms_    = 0;
     bool     have_edge_  = false;
     char     elems_[8]   = {0};
-    char     last_elems_[8] = {0};    // elements of the last completed char
+    char     new_elem_   = 0;         // freshest element for live dit/dah display
     uint8_t  n_elems_    = 0;
     bool     pending_    = false;     // have undecoded elements waiting on a gap
 };

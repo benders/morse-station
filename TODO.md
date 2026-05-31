@@ -97,9 +97,10 @@ Round of tweaks from on-air testing — IDs, timing feel, display, power, build 
       it hears an Ident (`loop_hunter` in `src/main.cpp`). Reduces to the old
       2u/5u thresholds for plain timing. Live-keying still uses local config
       speeds (no Ident) — fine until live-key is back in scope.
-- [x] Hunter display: show only the **last 16 characters**, scrolling off as new
+- [x] Hunter display: show only the most recent characters, scrolling off as new
       ones arrive. Single copy line in `display::hunter` shows the tail of the
-      rolling buffer (last 16 glyphs, fits 21-wide row at 6px).
+      rolling buffer (last 21 glyphs — the full 128px width at 6px; see the
+      per-element / freeze-fix notes in Stage 6).
 - [x] Hunter display: show the **station ID of the TX node** plus the operating
       frequency. Header shows `RECV <id>` (the `station_id` from the last received
       `KeyState`/`Ident` in `loop_hunter`, so it populates on first signal, not
@@ -188,8 +189,18 @@ uses.
       last received packet.
 - [ ] When receiving from one Fox (not timed out), packets from other stations
       must be ignored.
-- [ ] "dit dah" display scrolling needs to be per Morse character
-- [ ] "text" scrolling needs duration testing. There seem to be eventual issues
+- [x] "dit dah" display scrolling is now **per element** (each `.`/`-` scrolls as
+      the decoder classifies it on the key-up edge, via `morse::Decoder::
+      take_element()`), and dit/dah is the **default** view (PRG tap still toggles
+      to letters). Letters separated by a space, words by `" / "`. (`loop_hunter`,
+      `src/main.cpp`.)
+- [x] "text" scrolling freeze fixed — the rolling copy buffer's "drop oldest half"
+      had an off-by-one that dragged the NUL terminator into mid-buffer once the
+      buffer first filled (~127 chars), severing the string so `strlen` froze and
+      the display stopped advancing. Trim now moves relative to `len` and
+      re-terminates; both buffers share one `rolling_append()` helper. Copy line
+      also widened from 16 → **21 glyphs** (full 128px width). **Verified on HW**
+      (decode-timing capture confirmed steady per-char advance past the wrap point).
 
 
 ## Stage 7 — Range & polish
@@ -339,6 +350,14 @@ Goal: set the **fox message and callsign from the keyboard**, no laptop.
 - [ ] **Verify on hardware:** keymap/shift correctness (esp. symbols), debounce
       feel, that the opt-in window times out cleanly, and that edited values
       persist + drive the fox loop.
+- [ ] **Intermittent crash while typing a message on the keyboard**, followed by
+      several reboots (seen once on HW 2026-05-31, did not reproduce on a second
+      try). No serial capture of the panic yet — the USB port re-enumerates on the
+      reboot so a plain `cat` of the port dies; capture with a reconnecting loop
+      and watch for the ESP32 backtrace next time. Suspects: TCA8418 FIFO handling
+      / keynum decode in `keyboard_cardputer.cpp`, or the editor buffer in
+      `config_ui_cardputer.cpp` (bounds on append?). The `# boot #N reason` NVS log
+      should record the reset reason — check it after a recurrence.
 - [ ] Decide whether keyboard config also covers wpm/farns/id, or those stay
       serial-only (currently serial-only).
 
