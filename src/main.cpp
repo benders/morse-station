@@ -404,6 +404,12 @@ static void loop_hunter(uint32_t now) {
     static float    rssi = 0.0f;
     static bool     rssi_valid = false;
     static uint32_t last_rx = 0;
+    static uint32_t last_signal = 0;   // any decoded packet (keystate or ident)
+
+    // Presence timeout: the fox streams keystate every 30 ms and an Ident in the
+    // message gap, so a few seconds of total silence means the station is gone.
+    // Clear the RECV id and RSSI bar so a stale reading doesn't linger on screen.
+    const uint32_t signal_timeout_ms = 3000;
 
     // On-air keying speeds, seeded from our config and retuned by the fox's
     // Ident packet so the decoder and watchdog track the actual sender.
@@ -430,6 +436,7 @@ static void loop_hunter(uint32_t now) {
             rx_down = ks.key_down != 0;
             rx_station_id = ks.station_id;
             last_rx = now;
+            last_signal = now;
             rssi = r;
             rssi_valid = true;
             // RSSI no longer modulates loudness — always play the pure tone at
@@ -442,12 +449,20 @@ static void loop_hunter(uint32_t now) {
                 decoder.begin(id.wpm, id.char_wpm);
             }
             rx_station_id = id.station_id;
+            last_signal = now;
         }
     }
 
     // No fresh keystate for too long → drop to key-up (silent/idle).
     if (rx_down && (now - last_rx) > rx_timeout_ms) {
         rx_down = false;
+    }
+
+    // Prolonged silence → the station is gone. Clear the RECV id and RSSI bar so
+    // the display shows "RECV ---" with no bar instead of a stale last reading.
+    if (rssi_valid && (now - last_signal) > signal_timeout_ms) {
+        rssi_valid = false;
+        rx_station_id = -1;
     }
     set_tone(rx_down);
 

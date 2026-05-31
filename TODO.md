@@ -209,6 +209,12 @@ uses.
       with a watchdog in `loop_hunter` — no keystate packet for ~one dah
       (`RX_TIMEOUT_MS`, 3 units at WPM) forces key-up → sidetone off → idle.
       **Verified on hardware.**
+- [ ] **Battery meter display** — show battery state on the OLED/LCD (voltage or
+      percentage, ideally a small gauge in a header corner). Heltec V4 has an
+      on-board LiPo divider on its battery ADC pin; the Cardputer ADV reports its
+      1750 mAh pack via M5Unified (`M5.Power.getBatteryLevel()`). Add a
+      `power::battery_pct()` (device-split) and render it in `display::` for both
+      fox and hunter screens.
 - [ ] Field test at range; tune power and message cadence (hardware).
 - [ ] "RECV" station ID and signal strength bar should clear after timeout from
       last received packet.
