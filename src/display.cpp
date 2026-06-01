@@ -2,6 +2,7 @@
 #ifndef DEVICE_CARDPUTER_ADV
 // Heltec V4 path: 128x64 mono SSD1306 OLED via U8g2. The Cardputer ADV has a
 // 240x135 colour ST7789V2 driven by M5.Display; see display_cardputer.cpp.
+#include "battery.h"
 #include "pins.h"
 #include <Arduino.h>
 #include <U8g2lib.h>
@@ -18,6 +19,24 @@ int rssi_to_px(float dbm) {
     if (dbm < lo) dbm = lo;
     if (dbm > hi) dbm = hi;
     return (int)((dbm - lo) / (hi - lo) * 128.0f);
+}
+
+// Draw a small battery glyph anchored at the top-right of the header row, with
+// a fill proportional to charge. Returns the x of its left edge so callers can
+// right-justify other header text clear of it. On the 1-bit OLD there's no
+// colour cue, so a near-empty pack is shown by an empty (unfilled) body.
+int draw_battery() {
+    const int bw = 18, bh = 9, ty = 1;   // body w/h, top y
+    const int nub = 2;
+    const int bx = 128 - bw - nub;       // body left x (nub on the right)
+    oled.drawFrame(bx, ty, bw, bh);
+    oled.drawBox(bx + bw, ty + 2, nub, bh - 4);
+    int pct = battery::percent();
+    if (pct > 0) {
+        int fw = (bw - 4) * pct / 100;
+        if (fw > 0) oled.drawBox(bx + 2, ty + 2, fw, bh - 4);
+    }
+    return bx;
 }
 
 } // namespace
@@ -55,10 +74,12 @@ void fox(uint16_t seq, const char* msg, bool tone_on, const char* pwr) {
     oled.clearBuffer();
     oled.setFont(u8g2_font_6x12_tr);
     oled.drawStr(0, 11, tone_on ? "FOX TX  *" : "FOX TX");
-    // power level, right-justified on the header row (PRG cycles it)
+    int bx = draw_battery();
+    // power level, right-justified on the header row, clear of the battery glyph
+    // (PRG cycles it).
     char pbuf[12];
     snprintf(pbuf, sizeof(pbuf), "PWR %s", pwr);
-    oled.drawStr(128 - (int)strlen(pbuf) * 6, 11, pbuf);
+    oled.drawStr(bx - 4 - (int)strlen(pbuf) * 6, 11, pbuf);
     // message wrapped across two lines (21 chars per line at 6px)
     char line[22];
     size_t len = strlen(msg);
@@ -81,7 +102,8 @@ void hunter(const char* text, float freq_mhz, int station_id, bool ditdah,
     if (station_id >= 0) snprintf(hdr, sizeof(hdr), "RECV %d", station_id);
     else                 snprintf(hdr, sizeof(hdr), "RECV ---");
     oled.drawStr(0, 11, hdr);
-    if (tone_on) oled.drawStr(122, 11, "*");
+    int bx = draw_battery();
+    if (tone_on) oled.drawStr(bx - 4 - 6, 11, "*");
 
     // Operating frequency, right-justified on the header-adjacent row.
     char fbuf[16];
@@ -107,6 +129,7 @@ void livekey(uint16_t seq, bool tone_on) {
     oled.clearBuffer();
     oled.setFont(u8g2_font_6x12_tr);
     oled.drawStr(0, 11, tone_on ? "LIVE KEY  *" : "LIVE KEY");
+    draw_battery();
     oled.drawStr(0, 30, "keying on air");
     char buf[20];
     snprintf(buf, sizeof(buf), "seq=%u", seq);

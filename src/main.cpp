@@ -5,6 +5,7 @@
 #include "morse.h"
 #include "radio.h"
 #include "protocol.h"
+#include "battery.h"
 #include "display.h"
 #include "config.h"
 #include "config_ui.h"
@@ -132,10 +133,10 @@ static void run_setup_console() {
     Serial.printf("\n# config: id=%u call=%s wpm=%u farns=%u msg=\"%s\"\n",
                   config::station_id(), config::callsign(), config::wpm(),
                   config::char_wpm(), config::fox_message());
-    Serial.print("# send 's' within 2s for setup console... ");
+    Serial.print("# send 's' within 1s for setup console... ");
 
     char line[160];
-    if (!serial_read_line(line, sizeof(line), 2000) ||
+    if (!serial_read_line(line, sizeof(line), 1000) ||
         !(line[0] == 's' || line[0] == 'S')) {
         Serial.println("(skipped)");
         return;
@@ -218,7 +219,7 @@ static Mode run_menu() {
             display::menu(items, n, sel);
             t_start = now;                              // reset idle timeout
         }
-        if (now - t_start > 8000) return (Mode)sel;     // idle auto-select
+        if (now - t_start > 5000) return (Mode)sel;     // idle auto-select
         delay(10);
     }
 }
@@ -240,7 +241,7 @@ static void hibernate() {
 void setup() {
     Serial.begin(115200);
     uint32_t t0 = millis();
-    while (!Serial && (millis() - t0) < 2000) { delay(10); }
+    while (!Serial && (millis() - t0) < 500) { delay(10); }
 
 #ifndef GIT_REV
 #define GIT_REV "unknown"
@@ -272,12 +273,13 @@ void setup() {
     if (pwr_idx >= N_PWR) pwr_idx = 0;
     run_setup_console();
     display::begin();
+    battery::begin();
     char splash_id[24];
     snprintf(splash_id, sizeof(splash_id), "build %s", GIT_REV);
     char splash_line2[24];
     snprintf(splash_line2, sizeof(splash_line2), "station id %u", config::station_id());
     display::status("Morse Station", splash_id, splash_line2);
-    delay(3500);                       // hold the splash so rev + id are readable
+    delay(3000);                       // hold the splash so rev + id are readable
 #ifdef DEVICE_CARDPUTER_ADV
     // On-device keyboard provisioning (callsign / fox message). Brief opt-in
     // window; falls through to normal boot if no key is tapped. The serial

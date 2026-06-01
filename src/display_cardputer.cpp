@@ -1,6 +1,7 @@
 #ifdef DEVICE_CARDPUTER_ADV
 
 #include "display.h"
+#include "battery.h"
 #include "platform_cardputer.h"
 #include <M5Unified.h>
 #include <stdio.h>
@@ -39,15 +40,55 @@ int rssi_to_px(float dbm) {
     return (int)((dbm - lo) / (hi - lo) * (float)W);
 }
 
+// Draw a small battery glyph with a fill proportional to charge, plus a "NN%"
+// label to its left, anchored at the top-right corner. Returns the x of the
+// left edge of the whole widget so the header can keep its right-text clear of
+// it. When charge is unknown the body is drawn empty.
+int draw_battery() {
+    auto& d = gfx();
+    const int bw = 26, bh = 13, ty = 3;      // body w/h, top y
+    const int nub = 3;
+    const int bx = W - bw - nub;             // body left x (nub sticks out right)
+    int pct = battery::percent();
+
+    uint16_t col = TFT_GREEN;
+    if (pct >= 0 && pct <= 20) col = TFT_RED;
+    else if (pct >= 0 && pct <= 40) col = TFT_YELLOW;
+
+    d.drawRect(bx, ty, bw, bh, col);
+    d.fillRect(bx + bw, ty + 3, nub, bh - 6, col);
+    if (pct > 0) {
+        int fw = (bw - 4) * pct / 100;
+        if (fw > 0) d.fillRect(bx + 2, ty + 2, fw, bh - 4, col);
+    }
+    if (battery::charging()) {                // a small "+" mark when charging
+        int cx = bx + bw / 2, cy = ty + bh / 2;
+        d.drawFastHLine(cx - 3, cy, 7, TFT_BLACK);
+        d.drawFastVLine(cx, cy - 3, 7, TFT_BLACK);
+    }
+
+    // "NN%" label to the left of the glyph (size 1, green).
+    char lbl[8];
+    if (pct >= 0) snprintf(lbl, sizeof(lbl), "%d%%", pct);
+    else          snprintf(lbl, sizeof(lbl), "--");
+    int lw = (int)strlen(lbl) * 6;
+    d.setTextSize(1);
+    d.setTextColor(TFT_GREEN, TFT_BLACK);
+    d.setCursor(bx - lw - 4, ty + 3);
+    d.print(lbl);
+    return bx - lw - 4;
+}
+
 void header(const char* left, const char* right) {
     auto& d = gfx();
+    int batt_left = draw_battery();
     d.setTextSize(2);
     d.setTextColor(TFT_GREEN, TFT_BLACK);
     d.setCursor(0, 2);
     d.print(left);
     if (right && right[0]) {
-        int w = (int)strlen(right) * 12;   // 6px * size 2
-        d.setCursor(W - w, 2);
+        int w = (int)strlen(right) * 12;       // 6px * size 2
+        d.setCursor(batt_left - w - 6, 2);     // keep clear of the battery widget
         d.print(right);
     }
 }

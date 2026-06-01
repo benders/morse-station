@@ -50,6 +50,14 @@ static constexpr int PIN_OLED_SCL  = 18;
 static constexpr int PIN_OLED_RST  = 21;
 static constexpr int PIN_VEXT_CTRL = 36;   // LOW = peripheral 3.3V rail on
 
+// Battery fuel gauge: the cell is read through a 390k/100k divider on GPIO1,
+// gated by an ADC-enable MOSFET on GPIO37. NOTE the gate is active-HIGH on V4
+// (both 4.2 and 4.3) — opposite of the V3 "GPIO37 low" convention. Verified on
+// hardware: drive HIGH to connect the divider, LOW to disconnect it and stop
+// the idle drain (LOW reads 0 on both V4 revisions). See battery.cpp.
+static constexpr int PIN_VBAT_ADC  = 1;
+static constexpr int PIN_VBAT_CTRL = 37;
+
 // Our wiring (confirm on hardware)
 static constexpr int PIN_SIDETONE = 4;     // -> PAM8403 audio input
                                            // (was GPIO 7: that pin is FEM power
