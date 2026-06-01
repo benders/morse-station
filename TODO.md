@@ -255,14 +255,28 @@ Start at **low power, single fixed channel, no hopping** (§15.249, ~200–400 m
       `scripts/provision.sh` (--call/--msg/--id/--show). **Verified on hardware:**
       provisioned both units to KC8HOB and confirmed in the fox loop. DTR/RTS
       auto-reset is best-effort; pass `--port` and tap RST if the window is missed.
-- [ ] **Field provisioning via BLE** (preferred over serial for the field).
+- [~] **Field provisioning via BLE** (preferred over serial for the field).
       Stand up a BLE GATT config service on the S3 (it has BLE on-silicon) so a
       phone — or a "master" unit — can set callsign/fox-message/station-id
       without a laptop + USB. Serial console stays as the bench path. Considered
       USB-OTG host (S3 supports it, full-speed) but rejected: it needs VBUS
       sourcing and OTG-wired connectors the V4 doesn't provide, and ties up the
       programming port. ESP-NOW broadcast is a lighter fallback if BLE proves
-      fiddly.
+      fiddly. **Full plan in `docs/ble-provisioning.md`.** Plan: expose the
+      **Nordic UART Service** so generic phone apps (nRF Connect / LightBlue /
+      Bluefruit) work with **no custom app** on iOS (which only allows BLE GATT,
+      not classic SPP).
+      - [x] **Step 0 — parser refactor (done).** Split command *dispatch* from the
+            *I/O transport*: `handle_setup_command(const char* line, Print& out)`
+            is pure dispatch (mutates NVS, writes to a `Print&` sink, returns true
+            on `done`); `run_setup_console()` now just reads a `Serial` line and
+            calls it. Behavioral no-op on the bench path; unblocks a shared BLE
+            parser without pulling in NimBLE yet. (`src/main.cpp`.)
+      - [ ] Step 1 — NimBLE NUS peripheral + a `Print` wrapper over the TX-notify
+            characteristic; RX `onWrite` buffers a line and calls
+            `handle_setup_command`. Size-check flash on the Heltec first.
+      - [ ] Step 2 — decide boot-window-only config (smallest) vs always-on live
+            control (needs runtime-effective config changes). See the doc.
 - [ ] Callsign ID: fox sends a periodic station-ID packet (`proto::Ident`, 8-min
       cadence, `tx_ident` in `src/main.cpp`) for Part 97 operation; the callsign
       also rides in the fox message text for an audible CW ID. Still missing an

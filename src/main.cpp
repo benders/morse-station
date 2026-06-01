@@ -26,7 +26,9 @@
 static constexpr uint32_t TONE_HZ      = 750;
 // Gap after a full message before it repeats; long enough for a hunter to
 // register the end-of-message before the loop restarts.
-static constexpr uint32_t REPEAT_PAUSE = 7000;
+// Longer than the hunter's 10 s copy-blanking window (see loop_hunter) so each
+// message clears from the hunter's screen before the next repeat begins.
+static constexpr uint32_t REPEAT_PAUSE = 12000;
 
 // Callsign and fox message live in NVS (config), set via the boot serial console
 // (see run_setup_console). The callsign is sent in the periodic station-ID
@@ -126,6 +128,52 @@ static bool serial_read_line(char* buf, size_t cap, uint32_t timeout_ms) {
     return n > 0;
 }
 
+// Dispatch one provisioning command line, writing responses to `out`. Pure of
+// any transport: `out` is a Print& so the serial REPL (Serial) and a future
+// BLE-UART session can share this parser. Returns true when the session should
+// end (the "done"/"exit" command). See docs/ble-provisioning.md.
+static bool handle_setup_command(const char* line, Print& out) {
+    if (!strncmp(line, "call ", 5)) {
+        config::set_callsign(line + 5);
+        out.printf("  callsign = %s\n", config::callsign());
+    } else if (!strncmp(line, "msg ", 4)) {
+        config::set_fox_message(line + 4);
+        out.printf("  fox msg  = %s\n", config::fox_message());
+    } else if (!strncmp(line, "id ", 3)) {
+        config::set_station_id((uint8_t)atoi(line + 3));
+        out.printf("  id       = %u\n", config::station_id());
+    } else if (!strncmp(line, "wpm ", 4)) {
+        config::set_wpm((uint8_t)atoi(line + 4));
+        out.printf("  wpm      = %u (farns %u)\n",
+                   config::wpm(), config::char_wpm());
+    } else if (!strncmp(line, "farns ", 6)) {
+        config::set_char_wpm((uint8_t)atoi(line + 6));
+        out.printf("  farns    = %u (overall %u)\n",
+                   config::char_wpm(), config::wpm());
+    } else if (!strncmp(line, "mode ", 5)) {
+        int m = atoi(line + 5);
+        if (m < 0 || m > 2) {            // 0=Hunter 1=Fox 2=Livekey (not Hibernate)
+            out.println("  ? mode 0=Hunter 1=Fox 2=Livekey");
+        } else {
+            config::set_boot_mode((uint8_t)m);
+            static const char* names[] = {"Hunter", "Fox", "Livekey"};
+            out.printf("  boot mode = %d (%s)\n", m, names[m]);
+        }
+    } else if (!strcmp(line, "show")) {
+        out.printf("  id=%u call=%s wpm=%u farns=%u msg=\"%s\"\n",
+                   config::station_id(), config::callsign(),
+                   config::wpm(), config::char_wpm(),
+                   config::fox_message());
+    } else if (!strcmp(line, "done") || !strcmp(line, "exit")) {
+        out.println("# setup done");
+        return true;
+    } else {
+        out.println("  ? call <SIGN> | msg <text> | id <n> | wpm <n> | "
+                    "farns <n> | mode <0..2> | show | done");
+    }
+    return false;
+}
+
 // Boot-time serial provisioning. Offers a short window to enter a REPL that
 // writes callsign / fox message / station id to NVS. Commands:
 //   call <SIGN> | msg <text...> | id <n> | show | done
@@ -147,45 +195,7 @@ static void run_setup_console() {
     while (true) {
         Serial.print("setup> ");
         if (!serial_read_line(line, sizeof(line), 120000)) continue;
-
-        if (!strncmp(line, "call ", 5)) {
-            config::set_callsign(line + 5);
-            Serial.printf("  callsign = %s\n", config::callsign());
-        } else if (!strncmp(line, "msg ", 4)) {
-            config::set_fox_message(line + 4);
-            Serial.printf("  fox msg  = %s\n", config::fox_message());
-        } else if (!strncmp(line, "id ", 3)) {
-            config::set_station_id((uint8_t)atoi(line + 3));
-            Serial.printf("  id       = %u\n", config::station_id());
-        } else if (!strncmp(line, "wpm ", 4)) {
-            config::set_wpm((uint8_t)atoi(line + 4));
-            Serial.printf("  wpm      = %u (farns %u)\n",
-                          config::wpm(), config::char_wpm());
-        } else if (!strncmp(line, "farns ", 6)) {
-            config::set_char_wpm((uint8_t)atoi(line + 6));
-            Serial.printf("  farns    = %u (overall %u)\n",
-                          config::char_wpm(), config::wpm());
-        } else if (!strncmp(line, "mode ", 5)) {
-            int m = atoi(line + 5);
-            if (m < 0 || m > 2) {            // 0=Hunter 1=Fox 2=Livekey (not Hibernate)
-                Serial.println("  ? mode 0=Hunter 1=Fox 2=Livekey");
-            } else {
-                config::set_boot_mode((uint8_t)m);
-                static const char* names[] = {"Hunter", "Fox", "Livekey"};
-                Serial.printf("  boot mode = %d (%s)\n", m, names[m]);
-            }
-        } else if (!strcmp(line, "show")) {
-            Serial.printf("  id=%u call=%s wpm=%u farns=%u msg=\"%s\"\n",
-                          config::station_id(), config::callsign(),
-                          config::wpm(), config::char_wpm(),
-                          config::fox_message());
-        } else if (!strcmp(line, "done") || !strcmp(line, "exit")) {
-            Serial.println("# setup done");
-            return;
-        } else {
-            Serial.println("  ? call <SIGN> | msg <text> | id <n> | wpm <n> | "
-                           "farns <n> | mode <0..2> | show | done");
-        }
+        if (handle_setup_command(line, Serial)) return;
     }
 }
 
@@ -407,6 +417,13 @@ static void loop_hunter(uint32_t now) {
     static bool     rssi_valid = false;
     static uint32_t last_rx = 0;
     static uint32_t last_signal = 0;   // any decoded packet (keystate or ident)
+    static uint32_t last_code = 0;     // last newly decoded char/dit-dah element
+
+    // Copy-blanking timeout: after this long with no fresh decoded code, wipe the
+    // text and dit/dah copy lines so a stale message doesn't linger. The fox's
+    // inter-message gap (REPEAT_PAUSE) is deliberately longer than this, so the
+    // screen clears between repeats.
+    const uint32_t copy_blank_ms = 10000;
 
     // Presence timeout: the fox streams keystate every 30 ms and an Ident in the
     // message gap, so a few seconds of total silence means the station is gone.
@@ -466,6 +483,15 @@ static void loop_hunter(uint32_t now) {
         rssi_valid = false;
         rx_station_id = -1;
     }
+
+    // No fresh decoded code for 10 s → blank the copy lines (text and dit/dah).
+    if (last_code != 0 && (now - last_code) > copy_blank_ms &&
+        (text_len || ditdah_len)) {
+        text_buf[0] = '\0';   text_len = 0;
+        ditdah_buf[0] = '\0'; ditdah_len = 0;
+        last_draw = 0;        // force an immediate redraw of the cleared copy
+    }
+
     set_tone(rx_down);
 
     char c = decoder.update(rx_down, now);
@@ -474,9 +500,13 @@ static void loop_hunter(uint32_t now) {
     // classifies it, so the dit/dah view advances one element at a time rather
     // than a whole character at once.
     char e = decoder.take_element();
-    if (e) rolling_append(ditdah_buf, ditdah_len, sizeof(ditdah_buf), &e, 1);
+    if (e) {
+        rolling_append(ditdah_buf, ditdah_len, sizeof(ditdah_buf), &e, 1);
+        last_code = now;
+    }
 
     if (c) {
+        last_code = now;
         text_push(c);
         Serial.print(c);
         // Separate the dit/dah stream: a single space between letters, " / "
