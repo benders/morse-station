@@ -19,15 +19,23 @@ How each field is obtained:
 The MAC default id is `(XOR of the 6 MAC bytes) % 254 + 1` (config.cpp's
 mac_station_id). NOTES flags whether the live id matches that default.
 
-Modes:
-    scripts/devices.sh              # full: USB port + board + live id/mode/mute
-    scripts/devices.sh --ble        # reset-free: live id/mode/mute over the
-                                     #   always-on BLE, but NOT mapped to USB
-                                     #   ports (macOS hides the BLE MAC)
+Modes (all read the same live id/call/mode/mute; they differ in transport):
+    scripts/devices.sh              # --usb (default): reset-free live read over
+                                     #   the runtime serial console; maps to USB
+                                     #   port + MAC. Non-disruptive.
+    scripts/devices.sh --ble        # reset-free over always-on BLE, but NOT
+                                     #   mapped to USB ports (macOS hides the
+                                     #   BLE MAC)
+    scripts/devices.sh --boot       # resets each board (~10s/board) and reads
+                                     #   via the boot setup console; adds the
+                                     #   BOARD column. Disruptive; for older
+                                     #   firmware without the runtime console.
 
-The default (USB) mode resets each board (~10s/board) to read its live settings,
-which interrupts a running fox/exercise. `--ble` reads the same id/mode/mute over
-the always-on NUS without touching the boards, at the cost of the USB port column.
+The default (--usb) and --ble are both non-disruptive: a running station answers
+`show` without rebooting (over USB serial or BLE NUS respectively). --boot is the
+old default — it resets each board, so it interrupts a running fox/exercise, but
+it is the fallback for firmware predating the runtime serial console and is the
+only mode that reports the BOARD type (needs a bootloader reset).
 """
 from __future__ import annotations
 
@@ -210,6 +218,49 @@ def read_station(port: str, timeout: float = 18.0) -> dict:
     return info
 
 
+def read_station_live(port: str, timeout: float = 3.0) -> dict:
+    """Read live settings over the *runtime* serial console — no reset.
+
+    The firmware polls Serial for commands inside loop() (the sibling of the BLE
+    console — see serial_console_process in main.cpp), so a running station
+    answers `show` without rebooting. Opening the USB-JTAG/serial CDC does not
+    reset the ESP32-S3 (the HWCDC unit has no auto-reset on DTR/RTS — esptool
+    resets it with a dedicated USB-JTAG command instead), so this is
+    non-disruptive: the USB analogue of --ble, but mappable to a port/MAC.
+
+    A station parked in the boot menu (pre-loop) won't answer; we resend `show`
+    across the window so one that auto-selects mid-read is still caught. If it
+    never replies, the caller falls back to the MAC default and flags it.
+    """
+    info: dict = {}
+    try:
+        s = serial.Serial(port, 115200, timeout=0.1)
+    except Exception:
+        return info
+    try:
+        s.reset_input_buffer()
+        buf = ""
+        last_send = 0.0
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if time.time() - last_send > 0.5:
+                try:
+                    s.write(b"show\r\n")     # read-only; changes nothing
+                except Exception:
+                    break
+                last_send = time.time()
+            chunk = s.read(256).decode("utf-8", "replace")
+            if chunk:
+                buf += chunk
+                parsed = parse_show(buf)
+                if parsed:
+                    info.update(parsed)
+                    break
+    finally:
+        s.close()
+    return info
+
+
 # --- BLE mode: read live station ids over the always-on NUS, no reset --------
 # Nordic UART Service UUIDs (must match src/ble_provision.cpp).
 NUS_SVC = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
@@ -301,24 +352,66 @@ def ble_mode(scan_timeout: float, enrich: bool, reply_timeout: float) -> int:
     return 0
 
 
-def main() -> int:
-    p = argparse.ArgumentParser(description="List morse-station boards and station IDs.")
-    p.add_argument("--no-flash", action="store_true",
-                   help="skip esptool board detection (one fewer reset per board)")
-    p.add_argument("--ble", action="store_true",
-                   help="reset-free: scan always-on BLE for live station ids "
-                        "(no USB port mapping — macOS hides the BLE MAC)")
-    p.add_argument("--no-enrich", action="store_true",
-                   help="--ble: list advertised ids only; skip the per-device NUS show")
-    p.add_argument("--scan-timeout", type=float, default=8.0,
-                   help="--ble: BLE scan duration in seconds (default 8)")
-    p.add_argument("--reply-timeout", type=float, default=4.0,
-                   help="--ble: per-device NUS show reply timeout (default 4)")
-    args = p.parse_args()
+def _print_table(headers: tuple, rows: list) -> None:
+    """Render an aligned fixed-width table."""
+    cols = list(zip(headers, *rows)) if rows else [(h,) for h in headers]
+    widths = [max(len(str(c)) for c in col) for col in cols]
+    fmt = "  ".join("{:<%d}" % w for w in widths)
+    print(fmt.format(*headers))
+    for row in rows:
+        print(fmt.format(*row))
 
-    if args.ble:
-        return ble_mode(args.scan_timeout, not args.no_enrich, args.reply_timeout)
 
+def _classify(station, default_id: int | None, got_reply: bool) -> str:
+    """NOTES text: how the read id relates to the MAC default."""
+    if not got_reply:
+        return "no reply (running? at boot menu? try --boot)"
+    if default_id is None:
+        return "live"
+    if station == default_id:
+        return "default"
+    return f"provisioned (MAC default {default_id})"
+
+
+def usb_mode() -> int:
+    """Default: read live id/mode/mute over the runtime serial console — no reset.
+
+    The USB analogue of --ble: non-disruptive (a running station answers `show`
+    without rebooting), but unlike BLE it maps to /dev/cu.usbmodem* + MAC via
+    ioreg. No BOARD column — flash-size detection needs a bootloader reset, which
+    only --boot does.
+    """
+    macs = port_mac_map()
+    ports = sorted(glob.glob("/dev/cu.usbmodem*"))
+    if not ports:
+        print("no /dev/cu.usbmodem* devices found")
+        return 1
+
+    rows = []
+    for port in ports:
+        mac = macs.get(port, "?")
+        default_id = mac_default_id(mac) if MAC_RE.match(mac) else None
+        print(f"# reading {port} (live, no reset) ...", file=sys.stderr)
+        info = read_station_live(port)
+        station = info.get("id", default_id)
+        note = _classify(station, default_id, "id" in info)
+        rows.append((port, mac,
+                     str(station) if station is not None else "?",
+                     info.get("call", "?"), info.get("mode", "?"),
+                     info.get("mute", "?"), note))
+
+    print(f"\n# morse-station devices ({len(rows)} found) — live over USB, no reset")
+    _print_table(("PORT", "MAC", "STATION", "CALLSIGN", "MODE", "MUTE", "NOTES"), rows)
+    return 0
+
+
+def boot_mode(no_flash: bool) -> int:
+    """Reset each board and read its settings via the boot setup console.
+
+    Slower and disruptive (a reset interrupts a running fox/exercise), but it is
+    the fallback for firmware too old to have the runtime serial console, and it
+    adds the BOARD column from `esptool flash_id`.
+    """
     macs = port_mac_map()
     ports = sorted(glob.glob("/dev/cu.usbmodem*"))
     if not ports:
@@ -331,44 +424,54 @@ def main() -> int:
         default_id = mac_default_id(mac) if MAC_RE.match(mac) else None
 
         board = "?"
-        if not args.no_flash:
+        if not no_flash:
             print(f"# probing {port} ...", file=sys.stderr)
             _, board = flash_board(port)
 
         print(f"# reading station id on {port} (resetting) ...", file=sys.stderr)
         info = read_station(port)
-        if "id" in info:
-            station = info["id"]
-            call = info.get("call", "?")
-            mode = info.get("mode", "?")
-            mute = info.get("mute", "?")
-            if default_id is None:
-                note = "live"
-            elif station == default_id:
-                note = "default"
-            else:
-                note = f"provisioned (MAC default {default_id})"
-        else:
-            station = default_id
-            call = "?"
-            mode = "?"
-            mute = "?"
-            note = "UNVERIFIED — console window missed; showing MAC default"
-
+        got = "id" in info
+        station = info.get("id", default_id)
+        note = (_classify(station, default_id, True) if got
+                else "UNVERIFIED — console window missed; showing MAC default")
         rows.append((port, board, mac,
                      str(station) if station is not None else "?",
-                     call, mode, mute, note))
+                     info.get("call", "?"), info.get("mode", "?"),
+                     info.get("mute", "?"), note))
 
-    # Render an aligned table.
-    headers = ("PORT", "BOARD", "MAC", "STATION", "CALLSIGN", "MODE", "MUTE", "NOTES")
-    cols = list(zip(headers, *rows)) if rows else []
-    widths = [max(len(str(c)) for c in col) for col in cols]
-    print(f"\n# morse-station devices ({len(rows)} found)")
-    fmt = "  ".join("{:<%d}" % w for w in widths)
-    print(fmt.format(*headers))
-    for row in rows:
-        print(fmt.format(*row))
+    print(f"\n# morse-station devices ({len(rows)} found) — boot read, resets each board")
+    _print_table(("PORT", "BOARD", "MAC", "STATION", "CALLSIGN", "MODE", "MUTE", "NOTES"),
+                 rows)
     return 0
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(description="List morse-station boards and station IDs.")
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--usb", action="store_true",
+                   help="(default) reset-free live read over the runtime serial "
+                        "console; maps to USB port + MAC")
+    g.add_argument("--boot", action="store_true",
+                   help="reset each board and read via the boot setup console; "
+                        "adds the BOARD column. Use for older firmware. Disruptive")
+    g.add_argument("--ble", action="store_true",
+                   help="reset-free: scan always-on BLE for live station ids "
+                        "(no USB port mapping — macOS hides the BLE MAC)")
+    p.add_argument("--no-flash", action="store_true",
+                   help="--boot: skip esptool board detection (one fewer reset per board)")
+    p.add_argument("--no-enrich", action="store_true",
+                   help="--ble: list advertised ids only; skip the per-device NUS show")
+    p.add_argument("--scan-timeout", type=float, default=8.0,
+                   help="--ble: BLE scan duration in seconds (default 8)")
+    p.add_argument("--reply-timeout", type=float, default=4.0,
+                   help="--ble: per-device NUS show reply timeout (default 4)")
+    args = p.parse_args()
+
+    if args.ble:
+        return ble_mode(args.scan_timeout, not args.no_enrich, args.reply_timeout)
+    if args.boot:
+        return boot_mode(args.no_flash)
+    return usb_mode()
 
 
 if __name__ == "__main__":

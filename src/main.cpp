@@ -235,6 +235,32 @@ static bool handle_setup_command(const char* line, Print& out) {
     return false;
 }
 
+// Runtime serial console: the non-blocking sibling of ble_provision::process().
+// The boot REPL (run_setup_console) blocks the task, so it only works before a
+// mode starts; this drains whatever complete command lines have arrived on
+// Serial and feeds them to the same handle_setup_command() the BLE-UART path
+// uses. Result: a USB terminal can drive a running station (show / mute / mode
+// / pwr / wpm ...) for development, with close parity to the over-the-air BLE
+// console. Kept transport-neutral like BLE — no prompt or banner; type a
+// command + Enter and read the echoed result. The handler's done/exit return is
+// ignored: there is no session to end at runtime.
+static void serial_console_process() {
+    static char   buf[160];          // matches serial_read_line / BLE RX_LINE_MAX
+    static size_t len = 0;
+    while (Serial.available()) {
+        char c = (char)Serial.read();
+        if (c == '\n' || c == '\r') {
+            if (len == 0) continue;              // skip blank lines / CRLF pairs
+            buf[len] = 0;
+            handle_setup_command(buf, Serial);
+            len = 0;
+        } else if (len + 1 < sizeof(buf)) {
+            buf[len++] = c;
+        }
+        // else: line too long — drop the byte until a terminator arrives.
+    }
+}
+
 // Boot-time serial provisioning. Offers a short window to enter a REPL that
 // writes callsign / fox message / station id to NVS. Commands:
 //   call <SIGN> | msg <text...> | id <n> | show | done
@@ -609,6 +635,9 @@ void loop() {
     // Dispatch any BLE provisioning commands on this (main) task, so the parser
     // never races the loop's config reads. Cheap when idle.
     ble_provision::process();
+    // Same parser over USB serial, so a terminal can drive a running station
+    // during development (parity with the BLE console). Non-blocking.
+    serial_console_process();
 #ifdef DEVICE_CARDPUTER_ADV
     // 'm' toggles the sidetone mute — the Cardputer has no volume pot, so this
     // is the local "quiet it now" control for a node sitting near people. The
