@@ -14,8 +14,10 @@
 // columns; the TCA8418 reports a key *number* which we fold back into M5's
 // "picture" coordinates (4 rows x 14 columns) to index the legend.
 //
-// We read over M5.In_I2C (the internal bus M5.begin already owns), so there is
-// no second I2C master on GPIO8/9.
+// We read over M5.In_I2C, so there is no second I2C master on GPIO8/9.
+// cardputer_m5_begin() (re)begins that bus on GPIO8/9 after M5.begin(): without
+// that the TCA8418 NACKs and the keypad is dead, even though M5 detects the
+// board correctly as CardputerADV. See the note there.
 
 namespace {
 
