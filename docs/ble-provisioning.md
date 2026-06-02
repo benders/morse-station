@@ -5,8 +5,8 @@ wpm / farns / boot-mode over **BLE** in the field, without a laptop + USB. The
 serial console stays as the bench path. The ESP32-S3 has BLE on-silicon, so no
 extra hardware is needed.
 
-This doc captures the plan. **Step 0 (the parser refactor) is done**; the BLE
-transport itself is not yet built.
+This doc captures the plan. **Steps 0–2 are done**: the parser refactor, the
+NimBLE NUS transport, and always-on field provisioning of a running node.
 
 ## Why this is cheap on the firmware side
 
@@ -47,33 +47,59 @@ share one parser:
 This unblocks BLE without committing to the NimBLE dependency yet, and it makes
 the dispatch independently testable.
 
-## Step 1 — BLE-UART transport (TODO)
+## Step 1 — BLE-UART transport (DONE)
 
-- Add **NimBLE-Arduino** to the Heltec + Cardputer envs (`lib_deps`).
-- Stand up a NUS peripheral: advertise, RX characteristic with an `onWrite`
-  callback, TX characteristic for notify.
-- Wrap the TX characteristic in a small `Print` subclass whose `write()` calls
-  `pTxChar->notify()` — call it `BleOut`. Then every existing response line in
-  `handle_setup_command` flows back to the phone unchanged.
-- In the RX `onWrite` callback, buffer bytes into a line (strip CR/LF, same as
-  `serial_read_line`) and call `handle_setup_command(line, bleOut)`.
+- Added **NimBLE-Arduino** to the Heltec + Cardputer envs (`lib_deps`).
+- `src/ble_provision.{h,cpp}` stands up a NUS peripheral: advertises as
+  `MorseStn-<station_id>`, RX characteristic (write) + TX characteristic (notify).
+- `BleOut : public Print` wraps the TX characteristic, chunking `notify()` to a
+  safe 20-byte MTU, so every response line in `handle_setup_command` flows back
+  unchanged.
+- The RX `onWrite` callback assembles bytes into a CR/LF-terminated line.
 
-## Step 2 — When BLE is live (TODO / decisions)
+## Step 2 — Always-on field provisioning (DONE)
 
-- **Boot-window config (smallest, preferred first):** start advertising in the
-  same opt-in window as the serial console; config takes effect on reboot, exactly
-  like the serial path today. Mirrors existing semantics.
-- **Always-on control (bigger lift):** keep NimBLE up in the main loop to change
-  wpm / power / mode live. Requires making those config changes take effect at
-  runtime, not just on reboot.
+We took the **always-on** path: NimBLE stays up for the whole session (not just a
+boot window), so an exercise operator can adjust a *running* node over the air —
+no reset, no laptop, no physical access.
+
+- **Coexistence:** the SX1262 is a separate SPI sub-GHz radio, so it coexists with
+  the ESP32-S3 2.4 GHz BLE core; the cost is heap + a little CPU, not RF. Verified
+  on hardware running fox TX (30 ms keystate) with BLE connected.
+- **Thread safety:** the RX `onWrite` runs on the NimBLE host task, but
+  `config::set_*` mutates the RAM-cached config and writes NVS. To keep that
+  single-threaded, `onWrite` only *queues* completed lines (FreeRTOS queue);
+  `ble_provision::process()` drains and dispatches them from `loop()` — the same
+  task that reads config. Responses notify back from that task.
+- **Live apply (params + TX power):** a `g_live_apply` flag (set once setup() has
+  brought up the radio + run mode) lets the parser apply changes to the running
+  node. In fox mode, `wpm`/`farns` re-arm the player (effective at the next
+  message loop) and a new `pwr <0..3>` command retunes the SX1262 immediately.
+  `call` / `id` / `msg` are read live by the TX paths already. Before
+  `g_live_apply`, the boot serial/keyboard console behaves exactly as before
+  (NVS-only, applied at the normal boot points).
+- **Mode changes via remote reboot:** switching operating mode (Hunter/Fox/Livekey)
+  live is out of scope (it would mean tearing down and re-initing the radio and
+  per-mode state). Instead, `mode <n>` sets the boot mode and a new `reboot`
+  command resets the node; the boot menu auto-selects the stored mode after its
+  idle timeout, so the node comes back in the new mode with **no physical
+  interaction**.
+- **Reconnectable:** server callbacks re-start advertising on disconnect, so the
+  operator can connect, tweak, disconnect, and reconnect throughout the exercise.
+
+Grammar (serial and BLE share it):
+```
+call <SIGN> | msg <text> | id <n> | wpm <n> | farns <n> | pwr <0..3> |
+mode <0..2> | show | reboot | done
+```
 
 ## Caveats / watch-items
 
-- **Flash budget:** NimBLE + RadioLib is heavy. The Heltec V4 is the smaller part;
-  `pio run` size-check before committing. The Cardputer (8 MB) has more room.
-- **Radio coexistence:** BLE and the SX1262 both lean on the ESP32 radio-core
-  scheduler. The fox transmits keystate every 30 ms; prefer BLE config as a
-  **boot-time / idle-time** activity, not concurrent with active fox TX, to avoid
-  timing jitter on the keystate stream.
-- **ESP-NOW fallback:** if BLE proves fiddly, an ESP-NOW broadcast from a "master"
-  unit is a lighter alternative (see `esp-now.md`).
+- **No authentication:** the NUS is open — anyone in BLE range with a generic
+  BLE-UART app can reconfigure or reboot a node. For a hobby fox hunt that is an
+  acceptable trade for zero-friction access; if it ever matters, add NimBLE
+  bonding / a passkey, or gate writes behind a shared secret.
+- **Flash/heap budget:** NimBLE + RadioLib is heavy but fits — Heltec V4 ~18 %
+  flash, Cardputer ~23 %; always-on NimBLE adds ~10 KB RAM at runtime.
+- **ESP-NOW fallback:** an ESP-NOW broadcast from a "master" unit remains a lighter
+  alternative for one-to-many push (see `esp-now.md`).

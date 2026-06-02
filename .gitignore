@@ -1,3 +1,6 @@
 .pio/
 .cache/
 compile_commands.json
+
+# Python venv for BLE test tooling
+tools/blevenv/
