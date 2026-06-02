@@ -58,6 +58,13 @@ static morse::Player  player;
 static morse::Decoder decoder;
 static MorseKey       key;
 
+// True once setup() has finished bringing up the radio and run mode, so the
+// provisioning parser may apply changes live (re-key the player, retune the
+// SX1262). False during the boot serial/keyboard console, where the parser only
+// writes NVS and the values take effect at the normal boot points — keeping the
+// bench path behaviorally identical to before. See docs/ble-provisioning.md.
+static bool g_live_apply = false;
+
 static uint16_t seq = 0;
 static uint32_t last_tx = 0;
 static uint32_t last_ident = 0;
@@ -145,12 +152,40 @@ static bool handle_setup_command(const char* line, Print& out) {
         out.printf("  id       = %u\n", config::station_id());
     } else if (!strncmp(line, "wpm ", 4)) {
         config::set_wpm((uint8_t)atoi(line + 4));
+        // Live fox: re-arm the player timing; takes effect at the next message
+        // loop (the current message finishes at its existing speed).
+        if (g_live_apply && mode == MODE_FOX)
+            player.begin(config::wpm(), config::char_wpm());
         out.printf("  wpm      = %u (farns %u)\n",
                    config::wpm(), config::char_wpm());
     } else if (!strncmp(line, "farns ", 6)) {
         config::set_char_wpm((uint8_t)atoi(line + 6));
+        if (g_live_apply && mode == MODE_FOX)
+            player.begin(config::wpm(), config::char_wpm());
         out.printf("  farns    = %u (overall %u)\n",
                    config::char_wpm(), config::wpm());
+    } else if (!strncmp(line, "pwr ", 4)) {
+        int p = atoi(line + 4);
+        if (p < 0 || p >= N_PWR) {
+            out.println("  ? pwr 0=LO 1=MED 2=HI 3=MAX");
+        } else {
+            pwr_idx = p;
+            config::set_fox_pwr_idx((uint8_t)pwr_idx);
+            // Live fox: retune the SX1262 now and force a redraw of the level.
+            if (g_live_apply && mode == MODE_FOX) {
+                radio::set_tx_power(PWR_LEVELS[pwr_idx].dbm);
+                last_draw = 0;
+            }
+            out.printf("  tx pwr   = %d (%s, %d dBm)\n", pwr_idx,
+                       PWR_LEVELS[pwr_idx].label, PWR_LEVELS[pwr_idx].dbm);
+        }
+    } else if (!strcmp(line, "reboot") || !strcmp(line, "restart")) {
+        // Remote reboot: the boot menu auto-selects the stored boot_mode after
+        // its idle timeout, so this applies a "mode <n>" change with no physical
+        // interaction. Give the BLE notify a moment to flush before resetting.
+        out.println("# rebooting");
+        delay(150);
+        esp_restart();
     } else if (!strncmp(line, "mode ", 5)) {
         int m = atoi(line + 5);
         if (m < 0 || m > 2) {            // 0=Hunter 1=Fox 2=Livekey (not Hibernate)
@@ -170,7 +205,7 @@ static bool handle_setup_command(const char* line, Print& out) {
         return true;
     } else {
         out.println("  ? call <SIGN> | msg <text> | id <n> | wpm <n> | "
-                    "farns <n> | mode <0..2> | show | done");
+                    "farns <n> | pwr <0..3> | mode <0..2> | show | reboot | done");
     }
     return false;
 }
@@ -191,7 +226,7 @@ static void run_setup_console() {
         return;
     }
     Serial.println("\n# setup: call <SIGN> | msg <text> | id <n> | wpm <n> | "
-                   "farns <n> | mode <0..2> | show | done");
+                   "farns <n> | pwr <0..3> | mode <0..2> | show | reboot | done");
 
     while (true) {
         Serial.print("setup> ");
@@ -284,10 +319,10 @@ void setup() {
     if (pwr_idx >= N_PWR) pwr_idx = 0;
     run_setup_console();
 
-    // Start BLE-UART (NUS) field provisioning for the boot window. Advertise a
-    // per-unit name so three devices are distinguishable from a Mac (where
-    // CoreBluetooth hides the MAC). Torn down before radio::init() because BLE
-    // and the SX1262 share the ESP32 radio core — boot-window-only activity.
+    // Start BLE-UART (NUS) field provisioning and leave it up for the whole
+    // session, so an operator can adjust parameters on a running node over the
+    // air (docs/ble-provisioning.md, Step 2). Advertise a per-unit name so the
+    // units are distinguishable from a Mac (where CoreBluetooth hides the MAC).
     {
         char adv_name[24];
         snprintf(adv_name, sizeof(adv_name), "MorseStn-%u", config::station_id());
@@ -317,12 +352,10 @@ void setup() {
     if (mode != MODE_HIBERNATE) config::set_boot_mode((uint8_t)mode);
     Serial.printf("\n# mode=%d station_id=%u\n", (int)mode, config::station_id());
 
-    if (mode == MODE_HIBERNATE) hibernate();   // does not return
-
-    // Tear down BLE before the LoRa radio comes up — they contend for the
-    // ESP32 radio core. After this, provisioning is serial-only until reboot.
-    ble_provision::stop();
-    Serial.println("# BLE provisioning stopped (radio init)");
+    if (mode == MODE_HIBERNATE) {
+        ble_provision::stop();   // free the radio core before deep sleep
+        hibernate();             // does not return
+    }
 
     int err;
     if (!radio::init(err)) {
@@ -348,6 +381,9 @@ void setup() {
         case MODE_HIBERNATE:
             break;   // handled before radio init; never reached
     }
+
+    // Radio and run mode are up — let BLE provisioning apply changes live.
+    g_live_apply = true;
 }
 
 // Send the current key state as a packet on the 30 ms cadence.
@@ -543,6 +579,9 @@ static void loop_hunter(uint32_t now) {
 
 void loop() {
     uint32_t now = millis();
+    // Dispatch any BLE provisioning commands on this (main) task, so the parser
+    // never races the loop's config reads. Cheap when idle.
+    ble_provision::process();
     switch (mode) {
         case MODE_FOX:     loop_fox(now);     break;
         case MODE_LIVEKEY: loop_livekey(now); break;
