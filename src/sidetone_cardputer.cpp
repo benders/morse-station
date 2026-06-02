@@ -11,8 +11,10 @@
 // the I2S/codec on its own RTOS task, so on()/off() just start/stop a tone and
 // carry no key-down latency.
 
-static float   s_freq = 600.0f;
-static uint8_t s_vol  = 255;
+static float   s_freq    = 600.0f;
+static uint8_t s_vol     = 255;
+static bool    s_muted   = false;
+static bool    s_want_on = false;   // last on/off request, so unmute can resume
 
 void sidetone_init(int /*gpio*/, uint32_t freq_hz) {
     cardputer_m5_begin();           // idempotent; M5.begin owns the codec
@@ -25,13 +27,21 @@ void sidetone_set_volume(uint8_t vol) {
     M5.Speaker.setVolume(vol);
 }
 
+void sidetone_set_mute(bool m) {
+    s_muted = m;
+    if (m) M5.Speaker.stop();                       // silence a sounding tone now
+    else if (s_want_on) M5.Speaker.tone(s_freq, UINT32_MAX);  // resume held key
+}
+
 void sidetone_on() {
     // duration UINT32_MAX => play until stopped. stop_current_sound=true so a
     // re-trigger mid-tone is seamless.
-    M5.Speaker.tone(s_freq, UINT32_MAX);
+    s_want_on = true;
+    if (!s_muted) M5.Speaker.tone(s_freq, UINT32_MAX);
 }
 
 void sidetone_off() {
+    s_want_on = false;
     M5.Speaker.stop();
 }
 

@@ -388,14 +388,17 @@ set via the **serial console**, simple LCD status, keystate TX on the cap.
       confirmed via `show` across reboot.
 - [ ] **Sidetone (needs an ear):** confirm a clean keyed tone from the onboard
       speaker / 3.5 mm jack via M5.Speaker at the fox WPM; volume sane.
-- [ ] **Volume / mute control for the Cardputer.** The Heltec sets volume with
+- [~] **Volume / mute control for the Cardputer.** The Heltec sets volume with
       the amp's hardware pot; the Cardputer has no pot, so it needs a software
-      control. M5.Speaker has a master volume (`M5.Speaker.setVolume(0..255)`),
-      so add a `sidetone_set_master_volume()` (device-split; no-op or LEDC-duty on
-      the Heltec) and a way to drive it — a keyboard binding and/or a BLE
-      provisioning command (`vol <0..n>` / `mute`), persisted in NVS like the
-      other config. Mute is the priority for a node running near people.
-      (`sidetone_cardputer.cpp`, `handle_setup_command` in `src/main.cpp`.)
+      control. Mute is the priority for a node running near people. **Mute
+      done:** `sidetone_set_mute(bool)` (device-split — M5.Speaker stop on the
+      Cardputer, LEDC/ISR gate on the Heltec, both remember the held key so
+      unmute resumes), persisted as `config::muted()`, applied at boot, and
+      driven two ways — the Cardputer `'m'` key (polled in `loop()`) and the BLE/
+      serial `mute [on|off]` command (bare `mute` toggles). Still TODO: a
+      graduated `vol <0..n>` level (M5.Speaker master volume) for finer control.
+      (`sidetone_cardputer.cpp`, `sidetone.cpp`, `handle_setup_command`/`loop`
+      in `src/main.cpp`, `config.{h,cpp}`.)
 - [ ] **On-air TX (needs a hunter):** confirm a Heltec hunter copies the
       Cardputer fox on 905.0 MHz. Check `setOutputPower` LO/MED/HI/MAX (no FEM →
       MAX +22 dBm is the real ceiling). G0 tap should cycle power.

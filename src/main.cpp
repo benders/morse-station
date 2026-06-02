@@ -9,6 +9,7 @@
 #include "display.h"
 #include "config.h"
 #include "config_ui.h"
+#include "keyboard.h"     // Cardputer 'm' = mute (header self-guards to that board)
 #include "ble_provision.h"
 #include <esp_sleep.h>
 #include <esp_system.h>   // esp_reset_reason()
@@ -85,6 +86,14 @@ static bool hunter_ditdah = true;    // false = letters, true = dit/dah (default
 static void set_tone(bool on) {
     static bool cur = false;
     if (on != cur) { cur = on; if (on) sidetone_on(); else sidetone_off(); }
+}
+
+// Apply a mute state to the sidetone and persist it, so the Cardputer 'm' key
+// and the BLE/serial `mute` command stay in lockstep and survive a power cycle.
+static void apply_mute(bool m) {
+    config::set_muted(m);
+    sidetone_set_mute(m);
+    last_draw = 0;   // refresh any on-screen state on the next draw
 }
 
 // Append n bytes to a rolling, NUL-terminated buffer. When it would overflow,
@@ -195,17 +204,33 @@ static bool handle_setup_command(const char* line, Print& out) {
             static const char* names[] = {"Hunter", "Fox", "Livekey"};
             out.printf("  boot mode = %d (%s)\n", m, names[m]);
         }
+    } else if (!strcmp(line, "mute") || !strncmp(line, "mute ", 5)) {
+        // Bare "mute" toggles; "mute on|off" (or 1|0) sets explicitly. Persisted
+        // and applied live so a node near people can be silenced over the air.
+        const char* arg = line + 4;
+        while (*arg == ' ') arg++;
+        bool m;
+        if (!strcmp(arg, "on") || !strcmp(arg, "1"))       m = true;
+        else if (!strcmp(arg, "off") || !strcmp(arg, "0")) m = false;
+        else                                               m = !config::muted();
+        apply_mute(m);
+        out.printf("  mute     = %s\n", m ? "on" : "off");
     } else if (!strcmp(line, "show")) {
-        out.printf("  id=%u call=%s wpm=%u farns=%u msg=\"%s\"\n",
+        static const char* mnames[] = {"Hunter", "Fox", "Livekey", "Hibernate"};
+        uint8_t bm = config::boot_mode();
+        const char* mn = (bm < 4) ? mnames[bm] : "?";
+        out.printf("  id=%u call=%s wpm=%u farns=%u mute=%s mode=%s msg=\"%s\"\n",
                    config::station_id(), config::callsign(),
                    config::wpm(), config::char_wpm(),
+                   config::muted() ? "on" : "off", mn,
                    config::fox_message());
     } else if (!strcmp(line, "done") || !strcmp(line, "exit")) {
         out.println("# setup done");
         return true;
     } else {
         out.println("  ? call <SIGN> | msg <text> | id <n> | wpm <n> | "
-                    "farns <n> | pwr <0..3> | mode <0..2> | show | reboot | done");
+                    "farns <n> | pwr <0..3> | mode <0..2> | mute [on|off] | "
+                    "show | reboot | done");
     }
     return false;
 }
@@ -226,7 +251,8 @@ static void run_setup_console() {
         return;
     }
     Serial.println("\n# setup: call <SIGN> | msg <text> | id <n> | wpm <n> | "
-                   "farns <n> | pwr <0..3> | mode <0..2> | show | reboot | done");
+                   "farns <n> | pwr <0..3> | mode <0..2> | mute [on|off] | "
+                   "show | reboot | done");
 
     while (true) {
         Serial.print("setup> ");
@@ -345,6 +371,7 @@ void setup() {
     config_ui::run();
 #endif
     sidetone_init(PIN_SIDETONE, TONE_HZ);
+    sidetone_set_mute(config::muted());   // restore a persisted silent node
 
     mode = run_menu();
     // Remember the choice as the boot default (Hibernate is transient — never
@@ -582,6 +609,17 @@ void loop() {
     // Dispatch any BLE provisioning commands on this (main) task, so the parser
     // never races the loop's config reads. Cheap when idle.
     ble_provision::process();
+#ifdef DEVICE_CARDPUTER_ADV
+    // 'm' toggles the sidetone mute — the Cardputer has no volume pot, so this
+    // is the local "quiet it now" control for a node sitting near people. The
+    // keyboard was brought up in config_ui::run() at boot.
+    char kc;
+    if (keyboard::read_char(kc) && (kc == 'm' || kc == 'M')) {
+        bool m = !config::muted();
+        apply_mute(m);
+        Serial.printf("# mute %s (key)\n", m ? "on" : "off");
+    }
+#endif
     switch (mode) {
         case MODE_FOX:     loop_fox(now);     break;
         case MODE_LIVEKEY: loop_livekey(now); break;

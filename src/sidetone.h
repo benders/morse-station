@@ -16,3 +16,10 @@ void sidetone_off();
 // sidetone_on(). The hunter drives this from received RSSI; fox/live-key leave
 // it at full. Volume is the square-wave duty cycle, not a true amplitude.
 void sidetone_set_volume(uint8_t vol);
+
+// Master mute. Independent of sidetone_set_volume(): when muted, sidetone_on()
+// produces no sound and a tone already sounding is silenced immediately; the
+// gate is remembered so unmuting resumes a held key. For a node operating near
+// people. Driven by the Cardputer 'm' key and the BLE `mute` command, persisted
+// in config (see config::muted()).
+void sidetone_set_mute(bool muted);

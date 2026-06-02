@@ -31,8 +31,9 @@ static constexpr uint8_t  LEDC_RESOLUTION = 10;          // bits
 static constexpr uint32_t DUTY_MAX        = 1u << (LEDC_RESOLUTION - 1);  // 50% = loudest
 static constexpr uint32_t DUTY_MIN        = 3;           // near-silent floor
 
-static uint32_t s_duty = DUTY_MAX;
-static bool     s_on   = false;
+static uint32_t s_duty  = DUTY_MAX;
+static bool     s_on    = false;
+static bool     s_muted = false;
 
 void sidetone_init(int gpio_pin, uint32_t freq_hz) {
     ledcSetup(LEDC_CHANNEL, freq_hz, LEDC_RESOLUTION);
@@ -44,10 +45,15 @@ void sidetone_set_volume(uint8_t vol) {
     float n = (float)vol / 255.0f;
     float ratio = (float)DUTY_MAX / (float)DUTY_MIN;
     s_duty = (uint32_t)((float)DUTY_MIN * powf(ratio, n) + 0.5f);
-    if (s_on) ledcWrite(LEDC_CHANNEL, s_duty);
+    if (s_on && !s_muted) ledcWrite(LEDC_CHANNEL, s_duty);
 }
 
-void sidetone_on()  { s_on = true;  ledcWrite(LEDC_CHANNEL, s_duty); }
+void sidetone_set_mute(bool m) {
+    s_muted = m;
+    if (s_on) ledcWrite(LEDC_CHANNEL, m ? 0 : s_duty);
+}
+
+void sidetone_on()  { s_on = true;  ledcWrite(LEDC_CHANNEL, s_muted ? 0 : s_duty); }
 void sidetone_off() { s_on = false; ledcWrite(LEDC_CHANNEL, 0); }
 
 #else
@@ -66,6 +72,7 @@ static volatile uint32_t s_phase_inc = 0;                // DDS step per sample 
 // Amplitude gain in Q8 (256 = full swing). Driven by sidetone_set_volume().
 static volatile int32_t  s_gain_q8   = 256;
 static volatile bool     s_on        = false;
+static volatile bool     s_muted     = false;
 static hw_timer_t*       s_timer     = nullptr;
 
 // Write the LEDC duty register directly so the ISR touches no flash-resident
@@ -83,7 +90,7 @@ static inline void IRAM_ATTR ledc_write_duty(uint32_t duty) {
 }
 
 static void IRAM_ATTR on_sample() {
-    if (!s_on) return;
+    if (!s_on || s_muted) return;
     s_phase += s_phase_inc;
     uint8_t idx = (uint8_t)(s_phase >> 24);
     int32_t amp = ((int32_t)s_sine[idx] * s_gain_q8) >> 8;   // -127..127 scaled
@@ -115,6 +122,13 @@ void sidetone_set_volume(uint8_t vol) {
     constexpr float GAIN_MIN = 4.0f;     // faint floor (weak signal)
     float n = (float)vol / 255.0f;
     s_gain_q8 = (int32_t)(GAIN_MIN * powf(GAIN_MAX / GAIN_MIN, n) + 0.5f);
+}
+
+void sidetone_set_mute(bool m) {
+    s_muted = m;
+    // Park at mid-rail when muting so the ISR (which now early-returns) leaves no
+    // DC offset on the amp; unmuting lets the ISR resume tracing the sine.
+    if (m) ledc_write_duty(DUTY_MID);
 }
 
 void sidetone_on() {

@@ -47,4 +47,10 @@ void    set_boot_mode(uint8_t mode);
 uint8_t fox_pwr_idx();
 void    set_fox_pwr_idx(uint8_t idx);
 
+// Sidetone mute. Persisted so a node provisioned silent comes back silent after
+// a power cycle. Applied at boot (main.cpp) via sidetone_set_mute() and toggled
+// live by the Cardputer 'm' key / the BLE `mute` command. Default false.
+bool muted();
+void set_muted(bool muted);
+
 } // namespace config
