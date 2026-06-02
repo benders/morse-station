@@ -7,7 +7,7 @@ namespace {
 SPIClass radioSpi(HSPI);
 SX1262   chip = new Module(PIN_NSS, PIN_DIO1, PIN_NRST, PIN_BUSY, radioSpi);
 
-// Link parameters (mirror design-notes.md). Single channel for now.
+// Link parameters (mirror docs/protocol.md). Single channel for now.
 constexpr float    FREQ_MHZ      = 905.0f;
 constexpr float    BITRATE_KBPS  = 4.8f;
 constexpr float    FREQ_DEV_KHZ  = 5.0f;

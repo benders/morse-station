@@ -54,3 +54,19 @@ Modes:
 
 The menu starts highlighted on the **last-used mode** (remembered across power
 cycles). To re-pick a mode, reset the board (the menu runs again at boot).
+
+## Documentation
+
+- [`docs/protocol.md`](docs/protocol.md) — over-the-air protocol, link
+  parameters, packet formats, addressing, and the regulatory basis (§15.249 /
+  Part 97, FHSS plan).
+- [`docs/commands.md`](docs/commands.md) — the serial / BLE command reference
+  (provisioning and live control over all three transports).
+- [`docs/components/`](docs/components/) — per-component lessons learned:
+  [Heltec V4](docs/components/heltec-v4.md),
+  [Cardputer ADV](docs/components/cardputer-adv.md),
+  [SX1262](docs/components/sx1262.md),
+  [PAM8403](docs/components/pam8403.md).
+- [`docs/debug-heltec-v4.md`](docs/debug-heltec-v4.md) — capturing panic
+  backtraces over UART/JTAG.
+- [`TODO.md`](TODO.md) — open work · [`DONE.md`](DONE.md) — completed work.

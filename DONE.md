@@ -1,0 +1,222 @@
+# Morse Station — Completed Work
+
+Archive of finished items, moved out of `TODO.md`. The fox-hunt firmware: a
+stationary **fox** transmits a Morse description of its location; **hunters**
+decode it by ear and on the display. Primary platform **Heltec WiFi LoRa 32 V4**
+(ESP32-S3 + SX1262); the **M5Stack Cardputer ADV** is an experimental second fox
+sharing one `src/` tree. See `docs/` for the protocol, command reference, and
+per-component notes; open items remain in `TODO.md`.
+
+---
+
+## Stage 0 — Groundwork
+
+- [x] Project builds and flashes to Heltec V4 (PlatformIO `heltec_v4` env).
+- [x] RSSI band scanner to picture the 902–928 MHz noise floor for channel
+      selection.
+
+## Stage 1 — Audio out (sidetone)
+
+- [x] 600 Hz (later 750 Hz) sidetone on the MCU via the ESP32 LEDC peripheral
+      (square wave; S3 has no true DAC).
+- [x] Tone on/off behind `sidetone_on()` / `sidetone_off()` so the key handler
+      and RX decoder can both drive it.
+- [x] Flashed and confirmed a clean tone on hardware (GPIO4 → PAM8403; cap not
+      needed for a clean tone).
+
+## Stage 2 — Telegraph key input
+
+- [x] Key on a GPIO with `INPUT_PULLUP`, shorts to GND. Confirmed on **GPIO6**
+      (GPIO5 read LOW even floating — pull-up wouldn't hold).
+- [x] Software debounce (5 ms settling) in `src/morsekey.cpp`.
+- [x] Key down → `sidetone_on()`, key up → `sidetone_off()`. Verified on HW:
+      clean tone, no latency.
+
+## Stage 3 — Radio link bring-up (FSK TX/RX)
+
+- [x] Runtime-switchable TX/RX (hold PRG at boot = TX beacon, else RX listener).
+- [x] GFSK link on a single fixed channel (905.0 MHz), TX/RX of a short payload
+      with RSSI.
+- [x] RadioLib SX1262 FSK config — 4.8 kbps, 5 kHz dev, sync `{0x2D,0xD4}`,
+      rxBw 39 kHz, low power (+2 dBm). (See `docs/protocol.md`.)
+- [x] **V4 external FEM (PA+LNA) brought up** — `radio::fem_power_on()` powers
+      VFEM (GPIO7), enables the FEM (CSD), sets PA-bypass, and `setDio2AsRfSwitch`
+      switches TX/RX on the V4.2. Without it RX was dead (~−107 dBm). One image
+      drives the superset of V4.2 (GC1109) and V4.3.1 (KCT8103L) pins.
+- [x] **V4.3 RX LNA fixed** — the KCT8103L CTX line (GPIO5, `PIN_FEM_CTX`) is
+      software-driven and doubles as RX LNA select (LOW=LNA, HIGH=bypass). The
+      old static-HIGH left V4.3 RX permanently LNA-bypassed.
+      `fem_set_rx()`/`fem_set_tx()` now track radio state around send/receive.
+      Confirmed on HW. (See `docs/components/heltec-v4.md`.)
+- [x] Bench link verified both directions, huge margin (~−40 dBm two floors
+      away).
+
+## Stage 3a — Field-tuning punch list
+
+- [x] Station ID fixups: **21301 → 43**, **21101 → 42** (provisioned into NVS).
+- [x] Sidetone **600 → 750 Hz** (`TONE_HZ`).
+- [x] Keying slowed to **15 WPM**, WPM settable in NVS (`config::wpm()`, key
+      `wpm`, default 15, clamp 5..40; `wpm <n>` / `provision.sh --wpm`).
+- [x] **Farnsworth timing**, Farnsworth speed settable in NVS
+      (`config::char_wpm()`, key `char_wpm`, default 18, clamp wpm..40);
+      `morse::Player::begin(wpm, char_wpm)` stretches gaps via the ARRL formula.
+- [x] Longer end-of-message delay (REPEAT_PAUSE 3000 → 7000, later 12000 ms).
+- [x] **Hunter decoder mis-read the slower/Farnsworth timing** — fixed by
+      broadcasting `wpm`/`char_wpm` in the `Ident` packet (sent each message loop
+      + the 8-min cadence). `morse::Decoder::begin(wpm, char_wpm)` derives
+      Farnsworth-aware thresholds; the hunter retunes its decoder + watchdog from
+      the heard Ident. Live-keying still uses local config speeds.
+- [x] Hunter display: single rolling copy line shows the tail of the buffer (last
+      21 glyphs = full 128px width).
+- [x] Hunter header shows `RECV <id>` (station ID of the last received
+      KeyState/Ident, populated on first signal) plus `radio::frequency_mhz()`
+      (905.0 MHz) right-justified.
+- [x] Fox default power on boot → **LO** (`pwr_idx = 0`).
+- [x] Added a **MAX** power level (`{"MAX", 22}`); +22 dBm is the SX1262 chip
+      ceiling. (On the Heltec the FEM PA is not switched per level — see TODO.)
+- [x] Boot splash shows the **git revision** (`scripts/git_rev.py` injects
+      `-DGIT_REV`; shown for 2 s and printed to serial).
+- [x] **Persist fox TX power in NVS** (`config::fox_pwr_idx`, key `fox_pwr_idx`,
+      default 0=LO; restored on boot, saved on each PRG tap).
+- [x] **Hunter dit/dah display mode** — PRG tap toggles the copy line between
+      decoded letters and raw dit/dah elements (`morse::Decoder::last_elements()`).
+
+## Stage 4 — Fox message loop
+
+- [x] Fox message stored in firmware (`FOX_MSG`), later in NVS.
+- [x] Text → Morse timing via `morse::Player` (non-blocking timed key-state
+      stream feeding both sidetone and radio).
+- [x] Local sidetone driven from the Morse timing; verified by ear.
+- [x] Loops with a configurable `REPEAT_PAUSE`.
+- [x] Added `morse::Decoder` (key timing → text), used by RX in Stage 5/6.
+
+## Stage 5 — Morse over FSK (keystate broadcast)
+
+Decided on **keystate broadcast** (carries live keying *and* the canned fox loop
+identically). See `docs/protocol.md`.
+
+- [x] TX sends a 5-byte `KeyState` packet every 30 ms (magic, station id, key
+      state, seq). RX reconstructs timing and drives its sidetone. No ACKs.
+- [x] Fox loop feeds the keystate stream from `morse::Player` — same wire format
+      as a live key.
+- [x] RX: key stream → sidetone + `morse::Decoder` → text.
+- [x] End-to-end verified: fox transmit → hunter hears Morse + decodes text.
+
+## Stage 6 — Fox-hunt integration
+
+- [x] Fox mode: loops the message, transmits keystate, "FOX TX" status.
+- [x] Hunter mode: receives, plays sidetone, shows decoded text + RSSI bar.
+- [x] Live-key mode (students key to each other after the hunt).
+- [x] Mode select at boot — PRG-button menu (short = cycle, long = select, idle
+      auto-select).
+- [x] **Hunter volume tracks RSSI** (analog "tune for max volume"): RSSI mapped
+      over −110..−40 dBm onto the sidetone duty. Curve is **exponential
+      (dB-linear)** — a linear map was inaudible. Run the fox at LO so RSSI
+      varies. Verified on HW.
+- [x] **Fox adjustable TX power** — PRG tap cycles LO/MED/HI (+MAX added later)
+      via `radio::set_tx_power` (SX1262 chip output). Verified on HW.
+- [x] **Hibernate** (power-off stand-in) — boot-menu item powers down FEM +
+      peripheral rail and deep-sleeps with no wake source; RST restarts into the
+      menu. Verified on HW.
+- [x] **RX stuck-key on signal loss fixed** — a watchdog in `loop_hunter` forces
+      key-up after ~one dah with no keystate (`RX_TIMEOUT_MS`). Verified on HW.
+- [x] **dit/dah display is per-element** (each `.`/`-` scrolls as the decoder
+      classifies it on the key-up edge); dit/dah is the default view. Letters
+      separated by a space, words by `" / "`.
+- [x] **Text scrolling freeze fixed** — the rolling buffer's "drop oldest half"
+      off-by-one dragged the NUL terminator mid-buffer at ~127 chars, severing the
+      string. Trim now moves relative to `len` and re-terminates (shared
+      `rolling_append()`); copy line widened 16 → 21 glyphs. Verified on HW.
+- [x] **Battery meter display** — `battery::percent()` (device-split: Heltec
+      divider on GPIO1, gate GPIO37 active-HIGH; Cardputer via
+      `M5.Power.getBatteryLevel()`) rendered in the Hunter/Fox/Live-key headers on
+      both platforms. (commit dc5c429)
+
+## Stage 7 — Range & polish
+
+- [x] Per-unit station IDs in NVS (`src/config.cpp`; random id on first boot,
+      override via `set_station_id()`).
+- [x] Default station ID derived from the eFuse MAC (XOR-folded into 1..254) —
+      stable per unit, no stored value; override still persists.
+- [x] Callsign + fox message in NVS, provisioned over serial (boot console
+      `call`/`msg`/`id`/`show`/`done` + `scripts/provision.sh`). Verified on HW
+      (both units to KC8HOB).
+- [x] **Field provisioning via BLE** (Nordic UART Service) — see
+      `docs/commands.md`. No custom phone app needed (iOS BLE-GATT compatible).
+      - [x] **Step 0 — parser refactor.** `handle_setup_command(line, Print&)` is
+            pure dispatch; `run_setup_console()` reads a Serial line and calls it.
+      - [x] **Step 1 — NimBLE NUS peripheral.** `src/ble_provision.{h,cpp}`
+            advertises `MorseStn-<id>`, `BleOut : Print` over TX-notify, RX
+            `onWrite` assembles a CR/LF line. Verified round-trip from macOS.
+      - [x] **Step 2 — always-on live control.** NimBLE stays up the whole
+            session; RX `onWrite` queues lines, `process()` dispatches from
+            `loop()`. Live apply (params + TX power) behind `g_live_apply`; mode
+            changes via `mode <n>` + `reboot`. Re-advertises on disconnect.
+            Verified on HW swapping the fox role entirely over BLE.
+
+---
+
+## Cardputer ADV port (experimental fox)
+
+Shares one `src/` tree with the Heltec, selected by `-DDEVICE_CARDPUTER_ADV`.
+See `docs/components/cardputer-adv.md`.
+
+### Hardware facts / decisions
+
+- [x] **Cap LoRa-1262 TCXO = 1.8 V confirmed on HW** — `beginFSK()` succeeds and
+      the cap decoded real off-air Morse as a hunter.
+- [x] **M5Unified for audio + display.** `M5.Speaker` drives the ES8311 sidetone;
+      `M5.begin()` claims the LCD so display uses `M5.Display` (M5GFX). LovyanGFX
+      dropped from `lib_deps` (M5GFX ships with M5Unified). All via
+      `cardputer_m5_begin()`.
+
+### Stage C0 — Build + groundwork
+
+- [x] Device-split `pins.h` (Heltec / Cardputer blocks, `#error` if neither).
+- [x] `radio.cpp` device-aware: FEM guarded by `HAS_FEM` (Heltec only); Cap pins
+      + DIO2 RF switch for the Cardputer.
+- [x] Sidetone: LEDC path guarded to Heltec; new `sidetone_cardputer.cpp`
+      (M5.Speaker), same API.
+- [x] Display: U8g2 path guarded to Heltec; new `display_cardputer.cpp` on the
+      240×135 panel via M5.Display.
+- [x] `main.cpp` hibernate FEM/Vext pins guarded by `HAS_FEM`.
+- [x] platformio `cardputer_adv` env: RadioLib + M5Unified.
+- [x] **`pio run -e cardputer_adv` builds clean** — resolved M5Unified API drift
+      (Speaker `tone`/`stop`, `TFT_*` colour macros). Both `heltec_v4` and
+      `cardputer_adv` envs build clean.
+
+### Stage C1 — Fox bring-up on hardware
+
+- [x] Flash + boot OK: `M5.begin()` (LCD + ES8311) comes up with no crash; boots
+      through splash + menu.
+- [x] **Radio init succeeds** — `beginFSK()` OK as hunter and fox; as a hunter
+      the cap decoded real off-air Morse, proving SPI pins + TCXO + sync + freq.
+- [x] Serial provisioning REPL works over USB-CDC; added `mode <0..2>` to set the
+      default boot mode without the G0 button.
+- [x] Sound + text confirmed good on HW (M5.Speaker sidetone + fox message
+      render); fox loop runs as KC8HOB.
+- [x] **Display flicker fixed** — render into a full-frame `M5Canvas` back buffer
+      and `pushSprite` once per frame. Stable on HW (~100 s, heap flat, no
+      reboots). Boot now logs its reset reason to NVS (`# boot #N reason ...`).
+- [x] **Fox runs silent** — local sidetone disabled in fox mode (a beeping
+      transmitter is easy to find). Applies to both platforms.
+
+### Stage C2 — Keyboard entry
+
+- [x] TCA8418 driver (`keyboard_cardputer.cpp`): register init (7×8 matrix, event
+      mode), polled event FIFO over **M5.In_I2C**, keynum→(row,col) decode, 4×14
+      keymap with shift/capslock. (See the internal-I2C re-begin lesson in
+      `docs/components/cardputer-adv.md`.)
+- [x] On-screen text-entry editor (`config_ui_cardputer.cpp`): field editor
+      (append / backspace / ENTER-commit), reused for callsign and message.
+- [x] Boot hook: `config_ui::run()` after the splash — a "press any key" window
+      opens a 1=Callsign / 2=Message menu; writes go through the same NVS keys as
+      the serial console.
+
+### Mute / volume (partial)
+
+- [x] **Mute done** — `sidetone_set_mute(bool)` (device-split: M5.Speaker stop on
+      the Cardputer, LEDC/ISR gate on the Heltec; both remember the held key so
+      unmute resumes), persisted as `config::muted()`, applied at boot, driven by
+      the Cardputer `'m'` key and the BLE/serial `mute [on|off]` command.
+      (Graduated `vol <0..n>` still open — see TODO.)

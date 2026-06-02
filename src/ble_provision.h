@@ -7,7 +7,7 @@
 // (nRF Connect, LightBlue, Bluefruit Connect) to the existing line-based
 // provisioning parser. Each received line is dispatched through the supplied
 // handler with a Print& sink that notifies responses back over the TX
-// characteristic. See docs/ble-provisioning.md.
+// characteristic. See docs/commands.md.
 //
 // Always-on: begin() during setup and leave NimBLE up for the whole session so
 // an exercise operator can adjust parameters on a running node over the air

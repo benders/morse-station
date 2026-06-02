@@ -63,7 +63,7 @@ static MorseKey       key;
 // provisioning parser may apply changes live (re-key the player, retune the
 // SX1262). False during the boot serial/keyboard console, where the parser only
 // writes NVS and the values take effect at the normal boot points — keeping the
-// bench path behaviorally identical to before. See docs/ble-provisioning.md.
+// bench path behaviorally identical to before. See docs/commands.md.
 static bool g_live_apply = false;
 
 static uint16_t seq = 0;
@@ -148,7 +148,7 @@ static bool serial_read_line(char* buf, size_t cap, uint32_t timeout_ms) {
 // Dispatch one provisioning command line, writing responses to `out`. Pure of
 // any transport: `out` is a Print& so the serial REPL (Serial) and a future
 // BLE-UART session can share this parser. Returns true when the session should
-// end (the "done"/"exit" command). See docs/ble-provisioning.md.
+// end (the "done"/"exit" command). See docs/commands.md.
 static bool handle_setup_command(const char* line, Print& out) {
     if (!strncmp(line, "call ", 5)) {
         config::set_callsign(line + 5);
@@ -373,7 +373,7 @@ void setup() {
 
     // Start BLE-UART (NUS) field provisioning and leave it up for the whole
     // session, so an operator can adjust parameters on a running node over the
-    // air (docs/ble-provisioning.md, Step 2). Advertise a per-unit name so the
+    // air (docs/commands.md, BLE transport). Advertise a per-unit name so the
     // units are distinguishable from a Mac (where CoreBluetooth hides the MAC).
     {
         char adv_name[24];
