@@ -9,6 +9,7 @@
 #include "display.h"
 #include "config.h"
 #include "config_ui.h"
+#include "ble_provision.h"
 #include <esp_sleep.h>
 #include <esp_system.h>   // esp_reset_reason()
 #include <Preferences.h>  // persist boot/reset-reason log
@@ -282,6 +283,18 @@ void setup() {
     pwr_idx = config::fox_pwr_idx();
     if (pwr_idx >= N_PWR) pwr_idx = 0;
     run_setup_console();
+
+    // Start BLE-UART (NUS) field provisioning for the boot window. Advertise a
+    // per-unit name so three devices are distinguishable from a Mac (where
+    // CoreBluetooth hides the MAC). Torn down before radio::init() because BLE
+    // and the SX1262 share the ESP32 radio core — boot-window-only activity.
+    {
+        char adv_name[24];
+        snprintf(adv_name, sizeof(adv_name), "MorseStn-%u", config::station_id());
+        ble_provision::begin(adv_name, handle_setup_command);
+        Serial.printf("# BLE provisioning advertising as \"%s\"\n", adv_name);
+    }
+
     display::begin();
     battery::begin();
     char splash_id[24];
@@ -305,6 +318,11 @@ void setup() {
     Serial.printf("\n# mode=%d station_id=%u\n", (int)mode, config::station_id());
 
     if (mode == MODE_HIBERNATE) hibernate();   // does not return
+
+    // Tear down BLE before the LoRa radio comes up — they contend for the
+    // ESP32 radio core. After this, provisioning is serial-only until reboot.
+    ble_provision::stop();
+    Serial.println("# BLE provisioning stopped (radio init)");
 
     int err;
     if (!radio::init(err)) {
