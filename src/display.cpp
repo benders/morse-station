@@ -3,6 +3,7 @@
 // Heltec V4 path: 128x64 mono SSD1306 OLED via U8g2. The Cardputer ADV has a
 // 240x135 colour ST7789V2 driven by M5.Display; see display_cardputer.cpp.
 #include "battery.h"
+#include "config.h"
 #include "pins.h"
 #include <Arduino.h>
 #include <U8g2lib.h>
@@ -104,6 +105,12 @@ void hunter(const char* text, float freq_mhz, int station_id, bool ditdah,
     oled.drawStr(0, 11, hdr);
     int bx = draw_battery();
     if (tone_on) oled.drawStr(bx - 4 - 6, 11, "*");
+
+    // "MUTE" left-aligned just after the station header when silenced, so the
+    // operator can tell a quiet node from a muted one (see sidetone_set_mute).
+    // Fixed position (not anchored to the "*") so it stays put as the tone
+    // indicator blinks. Font is 6px-wide (u8g2_font_6x12_tr).
+    if (config::muted()) oled.drawStr((int)strlen(hdr) * 6 + 8, 11, "MUTE");
 
     // Operating frequency, right-justified on the header-adjacent row.
     char fbuf[16];

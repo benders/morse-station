@@ -2,6 +2,7 @@
 
 #include "display.h"
 #include "battery.h"
+#include "config.h"
 #include "platform_cardputer.h"
 #include <M5Unified.h>
 #include <stdio.h>
@@ -166,6 +167,17 @@ void hunter(const char* text, float freq_mhz, int station_id, bool ditdah,
     if (station_id >= 0) snprintf(hdr, sizeof(hdr), "RECV %d", station_id);
     else                 snprintf(hdr, sizeof(hdr), "RECV ---");
     header(hdr, tone_on ? "*" : "");
+
+    // "MUTE" left-aligned just after the station header when silenced, so the
+    // operator can tell a quiet node from a muted one (see sidetone_set_mute).
+    // Fixed position (not part of the right-justified "*" group) so it stays
+    // put as the tone indicator blinks. Header text is size 2 (12px/glyph).
+    if (config::muted()) {
+        d.setTextSize(2);
+        d.setTextColor(TFT_GREEN, TFT_BLACK);
+        d.setCursor((int)strlen(hdr) * 12 + 12, 2);
+        d.print("MUTE");
+    }
 
     char fbuf[16];
     snprintf(fbuf, sizeof(fbuf), "%.1f MHz", freq_mhz);
