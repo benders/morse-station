@@ -204,6 +204,22 @@ uses.
       powers down the FEM + peripheral rail and enters deep sleep with no wake
       source; RST restarts the sketch into the menu. **Verified on hardware.**
       (`hibernate()` in `src/main.cpp`.)
+- [ ] **New "standby" mode — radio off, BLE alive.** A mode that neither
+      transmits nor receives on the SX1262 and powers down the radio + RF
+      amplifiers (SX1262 to sleep; on the Heltec drop VFEM/FEM, on the Cardputer
+      no FEM), **but keeps NimBLE up and responsive** so an operator can stage,
+      transport, or pre-position a node and then arm it over the air. Unlike
+      `hibernate()` (deep sleep, only RST wakes, BLE dead), standby keeps the CPU
+      + BLE running and the display can show a "STANDBY" status. Add `MODE_STANDBY`
+      to the `Mode` enum and the boot menu, and make it remotely selectable: with
+      BLE always-on (see Stage 7), an operator sends `mode <standby>` + `reboot`
+      to park a node, and later `mode 0/1/2` + `reboot` to bring it on-air — no
+      physical interaction. Implementation: skip `radio::init()` (or init then
+      `radio::sleep()`), guard the per-mode `loop_*` so the main loop only services
+      `ble_provision::process()` + display, and add a `radio::sleep()`/power-down
+      that also drops the FEM rail on the Heltec. Note `mode <n>` currently clamps
+      to 0..2 in `handle_setup_command`; extend it for the new mode. (`src/main.cpp`,
+      `src/radio.cpp`.)
 - [x] **RX stuck-key on signal loss:** when an RX node lost the signal mid-key
       it could latch in "key active" (sidetone stuck on / decoder hung). Fixed
       with a watchdog in `loop_hunter` — no keystate packet for ~one dah
@@ -255,7 +271,7 @@ Start at **low power, single fixed channel, no hopping** (§15.249, ~200–400 m
       `scripts/provision.sh` (--call/--msg/--id/--show). **Verified on hardware:**
       provisioned both units to KC8HOB and confirmed in the fox loop. DTR/RTS
       auto-reset is best-effort; pass `--port` and tap RST if the window is missed.
-- [~] **Field provisioning via BLE** (preferred over serial for the field).
+- [x] **Field provisioning via BLE** (preferred over serial for the field).
       Stand up a BLE GATT config service on the S3 (it has BLE on-silicon) so a
       phone — or a "master" unit — can set callsign/fox-message/station-id
       without a laptop + USB. Serial console stays as the bench path. Considered
@@ -272,11 +288,22 @@ Start at **low power, single fixed channel, no hopping** (§15.249, ~200–400 m
             on `done`); `run_setup_console()` now just reads a `Serial` line and
             calls it. Behavioral no-op on the bench path; unblocks a shared BLE
             parser without pulling in NimBLE yet. (`src/main.cpp`.)
-      - [ ] Step 1 — NimBLE NUS peripheral + a `Print` wrapper over the TX-notify
-            characteristic; RX `onWrite` buffers a line and calls
-            `handle_setup_command`. Size-check flash on the Heltec first.
-      - [ ] Step 2 — decide boot-window-only config (smallest) vs always-on live
-            control (needs runtime-effective config changes). See the doc.
+      - [x] **Step 1 — NimBLE NUS peripheral (done).** `src/ble_provision.{h,cpp}`
+            advertises `MorseStn-<id>`, with a `BleOut : Print` wrapper over the
+            TX-notify characteristic; RX `onWrite` assembles a CR/LF line.
+            Size-checked: Heltec ~18 % flash, Cardputer ~23 %. **Verified
+            round-trip from macOS** (`tools/ble_provision_test.py`, bleak).
+      - [x] **Step 2 — always-on live control (done).** Chose always-on over
+            boot-window: NimBLE stays up the whole session so a running node can
+            be re-provisioned over the air. RX `onWrite` only *queues* lines;
+            `process()` dispatches them from `loop()` (same task as config r/w)
+            to avoid a race. Live apply (params + TX power) behind a `g_live_apply`
+            flag; mode changes via `mode <n>` + a new `reboot` command (boot menu
+            auto-selects → no physical interaction). Server callbacks re-advertise
+            on disconnect. **Verified on HW** swapping the fox role between units
+            entirely over BLE. Open follow-ups: no auth on the NUS (anyone in range
+            can reconfigure — fine for a hobby hunt, note in `docs/ble-provisioning.md`),
+            and the **standby mode** in Stage 6 depends on this always-on path.
 - [ ] Callsign ID: fox sends a periodic station-ID packet (`proto::Ident`, 8-min
       cadence, `tx_ident` in `src/main.cpp`) for Part 97 operation; the callsign
       also rides in the fox message text for an audible CW ID. Still missing an
@@ -361,9 +388,28 @@ set via the **serial console**, simple LCD status, keystate TX on the cap.
       confirmed via `show` across reboot.
 - [ ] **Sidetone (needs an ear):** confirm a clean keyed tone from the onboard
       speaker / 3.5 mm jack via M5.Speaker at the fox WPM; volume sane.
+- [ ] **Volume / mute control for the Cardputer.** The Heltec sets volume with
+      the amp's hardware pot; the Cardputer has no pot, so it needs a software
+      control. M5.Speaker has a master volume (`M5.Speaker.setVolume(0..255)`),
+      so add a `sidetone_set_master_volume()` (device-split; no-op or LEDC-duty on
+      the Heltec) and a way to drive it — a keyboard binding and/or a BLE
+      provisioning command (`vol <0..n>` / `mute`), persisted in NVS like the
+      other config. Mute is the priority for a node running near people.
+      (`sidetone_cardputer.cpp`, `handle_setup_command` in `src/main.cpp`.)
 - [ ] **On-air TX (needs a hunter):** confirm a Heltec hunter copies the
       Cardputer fox on 905.0 MHz. Check `setOutputPower` LO/MED/HI/MAX (no FEM →
       MAX +22 dBm is the real ceiling). G0 tap should cycle power.
+- [ ] **Poor RX sensitivity on the Cardputer.** As a hunter the cap reads weak —
+      the RSSI gauge sits ~halfway with devices only ~1 ft apart, where a Heltec
+      pins near full. The cap is a bare SX1262 with **no LNA/FEM** (the Heltec V4
+      has an LNA in its FEM RX path — see `heltec-v4-fem-rf-frontend`), so some
+      gap is expected, but halfway at a foot is worse than that should be.
+      Diagnose: confirm the RP-SMA antenna is actually fitted/seated, compare raw
+      RSSI numbers cap vs Heltec at a fixed distance, recheck the cap's SX1262 RX
+      config (rxBw, no accidental RX gain reduction / `setRxBoostedGainMode`), and
+      verify the shared SPI/SD bus isn't degrading the link. Decide whether the
+      cap is RX-capable enough to be a hunter or is fox-only. (`src/radio.cpp`,
+      `loop_hunter` RSSI mapping in `src/main.cpp`.)
 - [x] Sound + text confirmed good on HW (M5.Speaker sidetone + fox message
       render). Fox loop runs as KC8HOB.
 - [x] **Display flicker fixed** — the panel was cleared+redrawn directly each
