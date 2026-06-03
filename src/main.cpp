@@ -145,6 +145,79 @@ static bool serial_read_line(char* buf, size_t cap, uint32_t timeout_ms) {
     return n > 0;
 }
 
+// ── Boot/crash reason ring buffer ───────────────────────────────────────────
+// An intermittent native-USB panic loses its backtrace mid-reset, so we persist
+// each boot's esp_reset_reason() to NVS and can dump the history later — the
+// `bootlog` console/BLE command — without serial attached at crash time. Stored
+// in the "boot" namespace as a fixed circular buffer: a `log` blob of BOOTLOG_N
+// entries plus `lh`, the head (next slot to write). `cnt` stays the monotonic
+// boot counter. (Uptime/run-length is deliberately omitted: a panic can't write
+// it on the way down, so it would only ever cover clean reboots.)
+static const char* reset_reason_label(int x) {
+    static const char* rr[] = {"UNKNOWN","POWERON","EXT","SW","PANIC",
+                               "INT_WDT","TASK_WDT","WDT","DEEPSLEEP",
+                               "BROWNOUT","SDIO"};
+    return (x >= 0 && x < (int)(sizeof(rr) / sizeof(rr[0]))) ? rr[x] : "?";
+}
+
+static const int BOOTLOG_N = 16;
+struct BootLogEntry {
+    uint32_t boot;      // boot counter when written (0 = empty/unused slot)
+    uint8_t  reason;    // esp_reset_reason() at that boot
+};
+
+// Record this boot in the ring. Returns the new (monotonic) boot number and, via
+// prev_reason, the previous boot's reason for the banner.
+static uint32_t bootlog_record(int reason, int& prev_reason) {
+    Preferences bl; bl.begin("boot", false);
+    uint32_t bc = bl.getUInt("cnt", 0) + 1;
+    BootLogEntry log[BOOTLOG_N];
+    if (bl.getBytes("log", log, sizeof(log)) != sizeof(log))
+        memset(log, 0, sizeof(log));
+    uint8_t head = bl.getUChar("lh", 0);
+    if (head >= BOOTLOG_N) head = 0;
+
+    // Previous boot = newest existing entry, i.e. the slot just before head.
+    const BootLogEntry& newest = log[(head + BOOTLOG_N - 1) % BOOTLOG_N];
+    prev_reason = newest.boot ? newest.reason : 0;
+
+    log[head].boot   = bc;
+    log[head].reason = (uint8_t)reason;
+    head = (head + 1) % BOOTLOG_N;
+
+    bl.putUInt("cnt", bc);
+    bl.putBytes("log", log, sizeof(log));
+    bl.putUChar("lh", head);
+    bl.end();
+    return bc;
+}
+
+// Dump the ring oldest→newest to `out`. The slot at head is the oldest entry.
+static void bootlog_dump(Print& out) {
+    Preferences bl; bl.begin("boot", true);
+    BootLogEntry log[BOOTLOG_N];
+    size_t got  = bl.getBytes("log", log, sizeof(log));
+    uint8_t head = bl.getUChar("lh", 0);
+    bl.end();
+    if (got != sizeof(log)) { out.println("# bootlog empty"); return; }
+    if (head >= BOOTLOG_N) head = 0;
+    out.println("# bootlog (oldest first):");
+    for (int i = 0; i < BOOTLOG_N; i++) {
+        const BootLogEntry& e = log[(head + i) % BOOTLOG_N];
+        if (!e.boot) continue;           // skip unused slots
+        out.printf("  #%u reason=%d(%s)\n", e.boot, e.reason,
+                   reset_reason_label(e.reason));
+    }
+}
+
+// Clear the history ring (leaves the monotonic boot counter `cnt` intact).
+static void bootlog_clear() {
+    Preferences bl; bl.begin("boot", false);
+    bl.remove("log");
+    bl.remove("lh");
+    bl.end();
+}
+
 // Dispatch one provisioning command line, writing responses to `out`. Pure of
 // any transport: `out` is a Print& so the serial REPL (Serial) and a future
 // BLE-UART session can share this parser. Returns true when the session should
@@ -224,13 +297,20 @@ static bool handle_setup_command(const char* line, Print& out) {
                    config::wpm(), config::char_wpm(),
                    config::muted() ? "on" : "off", mn,
                    config::fox_message());
+    } else if (!strcmp(line, "bootlog")) {
+        // Dump the boot/crash reason ring — diagnoses crashes after the fact when
+        // no serial was attached at reset time (e.g. the native-USB panic loop).
+        bootlog_dump(out);
+    } else if (!strcmp(line, "bootlog clear")) {
+        bootlog_clear();
+        out.println("# bootlog cleared");
     } else if (!strcmp(line, "done") || !strcmp(line, "exit")) {
         out.println("# setup done");
         return true;
     } else {
         out.println("  ? call <SIGN> | msg <text> | id <n> | wpm <n> | "
                     "farns <n> | pwr <0..3> | mode <0..2> | mute [on|off] | "
-                    "show | reboot | done");
+                    "show | bootlog [clear] | reboot | done");
     }
     return false;
 }
@@ -347,22 +427,16 @@ void setup() {
     Serial.printf("\n# morse-station build %s\n", GIT_REV);
     {
         // Why did we (re)boot? An intermittent native-USB panic loses its
-        // backtrace mid-reset, so we persist each boot's reason to NVS and print
-        // the *previous* boot's reason too. After an organic crash-reboot, a
-        // controlled reset (easy to capture on serial) reports prev=<crash cause>.
-        static const char* rr[] = {"UNKNOWN","POWERON","EXT","SW","PANIC",
-                                   "INT_WDT","TASK_WDT","WDT","DEEPSLEEP",
-                                   "BROWNOUT","SDIO"};
-        auto lbl = [&](int x){ return (x >= 0 && x < 11) ? rr[x] : "?"; };
+        // backtrace mid-reset, so we persist each boot's reason to an NVS ring
+        // buffer (see bootlog_record) and print the *previous* boot's reason too.
+        // After an organic crash-reboot, a controlled reset (easy to capture on
+        // serial) reports prev=<crash cause>; the full history survives in NVS for
+        // the `bootlog` command even when several reboots land back to back.
         int r = (int)esp_reset_reason();
-        Preferences bl; bl.begin("boot", false);
-        int prev = bl.getUChar("rr", 0);
-        uint32_t bc = bl.getUInt("cnt", 0) + 1;
-        bl.putUChar("rr", (uint8_t)r);
-        bl.putUInt("cnt", bc);
-        bl.end();
+        int prev = 0;
+        uint32_t bc = bootlog_record(r, prev);
         Serial.printf("# boot #%u reason now=%d(%s) prev=%d(%s)\n",
-                      bc, r, lbl(r), prev, lbl(prev));
+                      bc, r, reset_reason_label(r), prev, reset_reason_label(prev));
     }
 
     config::begin();

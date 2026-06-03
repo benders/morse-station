@@ -154,6 +154,19 @@ identically). See `docs/protocol.md`.
             changes via `mode <n>` + `reboot`. Re-advertises on disconnect.
             Verified on HW swapping the fox role entirely over BLE.
 
+## Diagnostics
+
+- [x] **Boot/crash reason history in NVS.** `setup()` records each boot's
+      `esp_reset_reason()` into a 16-entry NVS ring buffer (`boot` namespace:
+      `log` blob + `lh` head; `cnt` stays the monotonic boot counter) instead of
+      keeping only the single previous reason — so the cause survives even when
+      several reboots land back to back. New `bootlog` console/BLE command dumps
+      the ring (oldest first) without serial attached at crash time; `bootlog
+      clear` empties it. Makes the intermittent Cardputer typing crash and the
+      native-USB panic-loses-backtrace problem diagnosable after the fact.
+      (`src/main.cpp` `bootlog_record`/`bootlog_dump`/`handle_setup_command`;
+      `docs/commands.md`.) Builds clean on both `heltec_v4` and `cardputer_adv`.
+
 ---
 
 ## Cardputer ADV port (experimental fox)

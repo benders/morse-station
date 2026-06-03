@@ -72,23 +72,6 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[?]` needs a decision
 - [ ] When receiving from one Fox (not timed out), packets from other stations
       must be ignored.
 
-## Diagnostics
-
-- [ ] **Boot/crash reason history in NVS for later inspection.** Today
-      `setup()` (`src/main.cpp` ~L348) already persists each boot's
-      `esp_reset_reason()` to the `boot` NVS namespace (`rr` + a `cnt` counter)
-      and prints `now=`/`prev=` on the serial banner — but it keeps only the
-      single previous reason, so the cause is lost the moment another reboot
-      lands before someone reads serial. Extend it to a small ring buffer (last
-      ~8–16 boots: reason code + boot number, optionally `millis()` uptime at the
-      *next* boot as a crude "how long did it run"), and add a way to dump the
-      history without needing serial attached at crash time — a console / BLE
-      command (e.g. `bootlog`) that prints the ring, plus an optional `bootlog
-      clear`. This makes the intermittent Cardputer typing crash (Stage C2) and
-      the native-USB panic-loses-backtrace problem diagnosable after the fact.
-      (`src/main.cpp`, `handle_setup_command`; consider moving the boot-reason
-      block into `config.{h,cpp}` alongside the other NVS state.)
-
 ## Stage 7 — Range & polish
 
 - [ ] Field-test low-power range across the camp area.
