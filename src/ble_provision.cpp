@@ -144,7 +144,12 @@ bool connected() { return g_connected; }
 
 void stop() {
     if (!g_started) return;
-    NimBLEDevice::deinit(true);
+    // deinit(false): release the BLE host + controller (frees the radio core)
+    // but do NOT walk and delete the server/service/characteristic objects.
+    // The clearAll=true path double-frees in NimBLE-Arduino 1.4.x
+    // (heap_caps_free assert -> panic). We only call stop() right before deep
+    // sleep, so the leaked C++ objects are reclaimed by the imminent reset.
+    NimBLEDevice::deinit(false);
     g_tx_char   = nullptr;
     g_handler   = nullptr;
     g_connected = false;

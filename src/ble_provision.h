@@ -33,8 +33,9 @@ void process();
 // True while a central is connected (advertising auto-restarts on disconnect).
 bool connected();
 
-// Tear down NimBLE (NimBLEDevice::deinit(true)). Not used in the always-on
-// path; kept for callers that want to free the radio core.
+// Tear down NimBLE (NimBLEDevice::deinit(false)). Not used in the always-on
+// path; kept for callers that want to free the radio core (e.g. before deep
+// sleep). deinit(false) avoids the clearAll double-free in NimBLE 1.4.x.
 void stop();
 
 }  // namespace ble_provision
