@@ -32,18 +32,39 @@ int volts_to_percent(float v) {
 #include "platform_cardputer.h"
 #include <M5Unified.h>
 
+namespace {
+
+float    smoothed_p = -1.0f;           // EWMA of level %, <0 until first read
+uint32_t last_ms    = 0;
+
+} // namespace
+
 namespace battery {
 
-void begin() { cardputer_m5_begin(); }   // M5.begin() owns the PMIC
+void begin() {
+    cardputer_m5_begin();              // M5.begin() owns the PMIC/ADC
+    int p = M5.Power.getBatteryLevel();
+    smoothed_p = (p < 0) ? -1.0f : (float)(p > 100 ? 100 : p);  // seed for a steady first frame
+    last_ms = millis();
+}
 
 int percent() {
-    int p = M5.Power.getBatteryLevel();   // 0..100, or -1 when unsupported
-    if (p < 0) return -1;
-    if (p > 100) p = 100;
-    static uint32_t last_log = 0;         // rate-limit the log; percent() runs per frame
+    // Mirror the Heltec path: re-read the gauge only every couple of seconds and
+    // smooth it (EWMA), so the bar/colour don't jitter on ADC noise even though
+    // callers poll us every display frame. M5.Power.getBatteryLevel() reads the
+    // GPIO10 divider each call, so rate-limiting it also keeps that off the loop.
     uint32_t now = millis();
-    if (now - last_log >= 2000) { last_log = now; Serial.printf("# batt %d%%\n", p); }
-    return p;
+    if (now - last_ms >= 2000) {
+        last_ms = now;
+        int p = M5.Power.getBatteryLevel();   // 0..100, or -1 when unsupported
+        if (p >= 0) {
+            if (p > 100) p = 100;
+            smoothed_p = smoothed_p >= 0.0f ? smoothed_p * 0.7f + p * 0.3f : (float)p;
+            Serial.printf("# batt %d%% -> %d%%\n", p, (int)(smoothed_p + 0.5f));
+        }
+    }
+    if (smoothed_p < 0.0f) return -1;
+    return (int)(smoothed_p + 0.5f);
 }
 
 bool charging() {

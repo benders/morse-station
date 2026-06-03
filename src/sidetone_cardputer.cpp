@@ -20,6 +20,12 @@ void sidetone_init(int /*gpio*/, uint32_t freq_hz) {
     cardputer_m5_begin();           // idempotent; M5.begin owns the codec
     s_freq = (float)freq_hz;
     M5.Speaker.setVolume(s_vol);
+    // Power up the ES8311 + NS4150B amp here, NOT back in cardputer_m5_begin().
+    // Its inrush was browning out the battery rail when stacked on the LCD/BLE
+    // init at the very start of setup(); sidetone_init runs after the 3 s splash,
+    // so the spike lands on a settled rail. Done once (begin() is idempotent via
+    // _task_running), so the first keyed element carries no codec-begin latency.
+    M5.Speaker.begin();
 }
 
 void sidetone_set_volume(uint8_t vol) {

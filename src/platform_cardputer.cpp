@@ -10,9 +10,18 @@ void cardputer_m5_begin() {
     done = true;
 
     auto cfg = M5.config();
-    M5.begin(cfg);                 // brings up LCD (M5.Display) + ES8311 (M5.Speaker)
-    M5.Speaker.begin();
-    M5.Speaker.setVolume(255);     // fox/live-key run full; hunter rides RSSI
+    M5.begin(cfg);                 // brings up the LCD (M5.Display) and *registers*
+                                   // the ES8311 speaker callback + config — but does
+                                   // NOT power the codec/amp analog stage yet.
+
+    // Deliberately NOT calling M5.Speaker.begin() here. That call is what fires
+    // the ES8311 analog power-up (regs 0x0D/0x12/0x13) and the NS4150B amp
+    // inrush (Speaker_Class::begin -> _cb_set_enabled(true)). Doing it here
+    // stacked that inrush on top of the LCD-backlight + BLE-init current at the
+    // very start of setup(), browning out the rail on battery (no USB to stiffen
+    // it). The amp is brought up later, in sidetone_init(), after the 3 s splash
+    // — past the early-boot current spike. Once begun it stays up for the
+    // session, so key-down latency is unchanged.
 
     // (Re)bring up the internal I2C bus (GPIO8/9) that the TCA8418 keyboard
     // (0x34) and ES8311 codec sit on. M5.begin() is supposed to do this, and it

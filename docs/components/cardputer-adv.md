@@ -15,7 +15,7 @@ behind that define or in `*_cardputer.cpp` files. The radio is covered in
 - **Display:** ST7789V2, 240×135 colour.
 - **Audio:** ES8311 codec + NS4150B amp over I2S — no PWM-to-pin shortcut.
 - **Keyboard:** TCA8418 I2C keypad controller.
-- **Power:** 1750 mAh pack, reported via M5Unified PMIC.
+- **Power:** 1750 mAh pack, reported via `M5.Power` (GPIO10 ADC, not a true PMIC).
 
 ## Pin map (`src/pins.h`)
 
@@ -35,7 +35,9 @@ behind that define or in `*_cardputer.cpp` files. The radio is covered in
 
 ### M5Unified owns the peripherals — go through it
 
-`M5.begin()` claims the LCD, ES8311 codec, and PMIC. So:
+`M5.begin()` claims the LCD, ES8311 codec, and battery ADC. (It *registers* the
+codec but does not power its analog/amp stage — that is deferred, see the
+brownout note below.) So:
 
 - **Display** uses `M5.Display` (M5GFX, same LovyanGFX family) rather than a
   standalone instance; standalone LovyanGFX was dropped from `lib_deps` (M5GFX
@@ -45,8 +47,12 @@ behind that define or in `*_cardputer.cpp` files. The radio is covered in
   same `sidetone_{on,off,set_volume,set_mute}` API as the Heltec LEDC path.
   M5.Speaker runs the I2S/codec on its own RTOS task, so key on/off carries no
   latency. **Software volume exists here** (`M5.Speaker.setVolume`,
-  0..255) — unlike the Heltec, which has only a hardware pot.
-- **Battery** is `M5.Power.getBatteryLevel()` / `isCharging()` (`battery.cpp`).
+  0..255) — unlike the Heltec, which has only a hardware pot. The amp is powered
+  in `sidetone_init()`, *not* in `cardputer_m5_begin()` — see the brownout note
+  below.
+- **Battery** is `M5.Power.getBatteryLevel()` / `isCharging()` (`battery.cpp`),
+  read from the GPIO10 ADC (ratio 2.0). Like the Heltec path it is rate-limited
+  (re-read every 2 s) and EWMA-smoothed so the gauge doesn't jitter on ADC noise.
 
 ### Internal I2C must be re-begun after `M5.begin()` (dead-keyboard fix)
 
@@ -56,6 +62,26 @@ dead) until `M5.In_I2C` is **re-begun** following `M5.begin()`. This is **not** 
 StampS3 misdetect, not a BLE issue, and not a battery problem — the board detects
 fine. (See the saved memory note.) The keyboard driver reads the TCA8418 over
 `M5.In_I2C` (no second I2C master) and polls the event FIFO.
+
+### Amp power-up is deferred (battery brownout fix)
+
+On battery (no USB to stiffen the rail) the board brown-out-looped at boot:
+reboots before the USB-CDC even enumerates. **Not** the battery meter — that's a
+passive GPIO10 ADC read. The culprit was the **ES8311 + NS4150B amp power-up
+inrush**. `M5.begin()` only registers the speaker callback + config; the analog
+power-up (ES8311 regs `0x0D/0x12/0x13`) fires inside `Speaker_Class::begin()`.
+The old code called `M5.Speaker.begin()` inside `cardputer_m5_begin()`, which
+runs at `display::begin()` — stacking the amp inrush on top of the LCD-backlight
+and BLE-init current at the very start of `setup()`, dipping VDD enough to trip
+the brownout detector.
+
+Fix: `M5.Speaker.begin()` was moved out of `cardputer_m5_begin()` into
+`sidetone_init()` (after the 3 s splash), so the amp spike lands on a settled
+rail. Once begun the amp stays up, so key-down latency is unchanged. Mode-gating
+to hunter-only wouldn't help (fox + live-key also sidetone); deferral fixes all
+modes. Verified over BLE `bootlog`: clean `POWERON` boots on battery, no
+`BROWNOUT`. (The boot reason ring is readable without USB over the always-on BLE
+NUS — `scripts/ble_cmd.py`.)
 
 ### Display flicker → full-frame canvas
 
