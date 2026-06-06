@@ -59,9 +59,27 @@ static constexpr int PIN_VBAT_ADC  = 1;
 static constexpr int PIN_VBAT_CTRL = 37;
 
 // Our wiring (confirm on hardware)
-static constexpr int PIN_SIDETONE = 4;     // -> PAM8403 audio input
-                                           // (was GPIO 7: that pin is FEM power
-                                           //  on the V4 — keep clear of radio)
+//
+// Sidetone is now an I2S stream into a MAX98357A class-D amp (replaces the old
+// PWM-on-GPIO4 + RC low-pass + PAM8403 analog chain). I2S is 3-wire. The
+// authoritative pin assignment lives in platformio.ini ([env:heltec_v4]
+// build_flags: -DPIN_I2S_BCLK / _LRCLK / _DIN); define pin maps THERE, not
+// here. The #ifndef fallbacks below only let this header compile if a flag is
+// missing — they mirror the platformio.ini values. The trio is GPIO4/47/48,
+// clear of the radio (8-14), FEM (2/5/7/46), OLED (17/18/21), VEXT (36),
+// battery (1/37), key (6), boot strap (0) and native USB (19/20).
+#ifndef PIN_I2S_BCLK
+#define PIN_I2S_BCLK 48                     // -> MAX98357A BCLK (bit clock)
+#endif
+#ifndef PIN_I2S_LRCLK
+#define PIN_I2S_LRCLK 4                     // -> MAX98357A LRC  (word/LR select)
+#endif
+#ifndef PIN_I2S_DIN
+#define PIN_I2S_DIN 47                      // -> MAX98357A DIN  (serial data)
+#endif
+static constexpr int PIN_SIDETONE = PIN_I2S_DIN;  // back-compat alias; the I2S
+                                           // path uses the PIN_I2S_* trio above
+                                           // and ignores the value passed in.
 static constexpr int PIN_KEY      = 6;     // telegraph key -> GND, INPUT_PULLUP
                                            // (was GPIO 5: that pin is FEM ctrl
                                            //  on V4.3 — pull-up wouldn't hold)

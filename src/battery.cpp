@@ -67,6 +67,11 @@ int percent() {
     return (int)(smoothed_p + 0.5f);
 }
 
+int millivolts() {
+    int mv = M5.Power.getBatteryVoltage();   // GPIO10 ADC * 2.0, in mV
+    return mv > 0 ? mv : -1;
+}
+
 bool charging() {
     return M5.Power.isCharging() == m5::Power_Class::is_charging;
 }
@@ -121,6 +126,11 @@ int percent() {
     }
     if (smoothed_v <= 0.5f) return -1; // implausibly low: no cell / bad read
     return volts_to_percent(smoothed_v);
+}
+
+int millivolts() {
+    float v = read_volts();             // fresh gated read, divider-corrected
+    return v > 0.5f ? (int)(v * 1000.0f + 0.5f) : -1;
 }
 
 bool charging() { return false; }      // no charge-sense line wired

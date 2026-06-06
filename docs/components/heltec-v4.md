@@ -18,7 +18,7 @@ target (`-DDEVICE_HELTEC_V4`). Two units on hand. The radio itself is covered in
 | OLED SDA / SCL / RST | 17 / 18 / 21 | I2C |
 | VEXT peripheral rail | 36 | **active-LOW** — drive LOW to power the OLED |
 | Battery ADC / gate | 1 / 37 | divider on G1, gate G37 **active-HIGH** |
-| Sidetone out (→ PAM8403) | 4 | was GPIO7 (that's FEM power) |
+| I2S sidetone → MAX98357A (BCLK / LRC / DIN) | 48 / 4 / 47 | set in `platformio.ini`; GPIO7 is FEM power |
 | Telegraph key (→ GND) | 6 | INPUT_PULLUP; was GPIO5 (FEM ctrl) |
 | Mode button (PRG/BOOT) | 0 | on-board |
 
@@ -64,9 +64,9 @@ assumption over reads 0. `battery.cpp` pulses it HIGH only for the sample.
 ### Avoid GPIO5 and GPIO7 for your own wiring
 
 Both are claimed by the radio front-end (GPIO7 = FEM power, GPIO5 = V4.3 FEM
-control). The sidetone moved off GPIO7 to **GPIO4**, and the telegraph key moved
-off GPIO5 to **GPIO6** (GPIO5's pull-up wouldn't hold — it read LOW even
-floating).
+control). The sidetone moved off GPIO7 to **GPIO4** (now the I2S DIN line), and
+the telegraph key moved off GPIO5 to **GPIO6** (GPIO5's pull-up wouldn't hold —
+it read LOW even floating).
 
 ### Flashing
 
@@ -77,8 +77,8 @@ preserves NVS. (See the saved memory notes.)
 
 ## Audio & display
 
-- **Sidetone** is a PWM tone on GPIO4 into a **PAM8403** class-D amp — see
-  `pam8403.md`.
+- **Sidetone** is a 16-bit PCM I2S stream into a **MAX98357A** class-D amp — see
+  `max98357a.md`.
 - **Display** is the SSD1306-class OLED via U8g2 (`display.cpp`).
 
 ## Debugging panics

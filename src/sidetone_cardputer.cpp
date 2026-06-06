@@ -33,6 +33,12 @@ void sidetone_set_volume(uint8_t vol) {
     M5.Speaker.setVolume(vol);
 }
 
+void sidetone_set_level(uint8_t units) {
+    if (units < 1)  units = 1;
+    if (units > 32) units = 32;     // mirror the Heltec 1..32 GAIN_Q15/1024 range
+    sidetone_set_volume((uint8_t)((units * 255 + 16) / 32));   // map onto 0..255
+}
+
 void sidetone_set_mute(bool m) {
     s_muted = m;
     if (m) M5.Speaker.stop();                       // silence a sounding tone now

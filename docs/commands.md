@@ -18,8 +18,10 @@ command line terminated by CR or LF and read the echoed result.
 | `farns <n>` | Farnsworth **character** speed, clamped **wpm..40**. Default 18. Equal to `wpm` ⇒ plain timing. | yes | fox only: re-arms the player at the next message loop |
 | `pwr <0..3>` | Fox TX power: `0`=LO(−9) `1`=MED(+2) `2`=HI(+14) `3`=MAX(+22 dBm chip). Out-of-range prints the legend. | yes | fox only: retunes the SX1262 immediately |
 | `mode <0..2>` | Set the **boot** mode: `0`=Hunter `1`=Fox `2`=Livekey. (Hibernate is not selectable here.) Takes effect on next boot — pair with `reboot`. | yes | no (boot-time) |
+| `vol <1..32>` | Sidetone volume in `GAIN_Q15/1024` units (`8`→gain 8192, `32`→full swing 32768), clamped **1..32**. Default 8. Bare `vol` reports the current level. On the Heltec this scales the I2S sample amplitude; on the Cardputer it maps onto M5.Speaker 0..255. | yes | yes — applied immediately |
 | `mute [on\|off]` | Sidetone mute. Bare `mute` toggles; `on`/`1` and `off`/`0` set explicitly. For a node running near people. | yes | yes — applied immediately |
-| `show` | Print the current config: `id`, `call`, `wpm`, `farns`, `mute`, boot `mode`, `msg`. | — | — |
+| `show` | Print the current config: `id`, `call`, `wpm`, `farns`, `vol`, `mute`, boot `mode`, `msg`. | — | — |
+| `batt` | Print the raw battery readout: terminal `mV`, smoothed `%`, and `charging`. Disambiguates a `0%` meter (no cell / flat pack vs a scaling problem). | — | — |
 | `bootlog` | Dump the boot/crash-reason ring (last 16 boots, oldest first): `#<boot> reason=<n>(<name>)`. Diagnoses crashes after the fact with no serial attached at reset time. `bootlog clear` empties the ring (the monotonic boot counter is kept). | — | reads NVS |
 | `reboot` / `restart` | Soft-reset the node. The boot menu auto-selects the stored boot mode after its idle timeout, so this applies a `mode <n>` change with **no physical interaction**. | — | — |
 | `done` / `exit` | End the (blocking boot) console session and continue to the run mode. No-op at runtime / over BLE. | — | — |

@@ -17,6 +17,11 @@ void begin();
 // 0..100 state-of-charge, or -1 if unknown.
 int percent();
 
+// Raw battery terminal voltage in millivolts, or -1 if unknown. Unsmoothed —
+// a fresh read for diagnostics (the `batt` command), so it can disambiguate
+// "no cell / flat" from a scaling problem in percent().
+int millivolts();
+
 // True while the pack is on external/USB charge (best-effort; may be false on
 // platforms that can't sense charge state).
 bool charging();

@@ -47,6 +47,12 @@ void    set_boot_mode(uint8_t mode);
 uint8_t fox_pwr_idx();
 void    set_fox_pwr_idx(uint8_t idx);
 
+// Sidetone volume, in units of GAIN_Q15/1024 (so 8 -> gain 8192, 32 -> full
+// swing 32768). Clamped to 1..32. Persisted and applied at boot via
+// sidetone_set_level(); the serial/BLE `vol` command sets it live. Default 8.
+uint8_t volume();
+void    set_volume(uint8_t units);
+
 // Sidetone mute. Persisted so a node provisioned silent comes back silent after
 // a power cycle. Applied at boot (main.cpp) via sidetone_set_mute() and toggled
 // live by the Cardputer 'm' key / the BLE `mute` command. Default false.

@@ -288,15 +288,33 @@ static bool handle_setup_command(const char* line, Print& out) {
         else                                               m = !config::muted();
         apply_mute(m);
         out.printf("  mute     = %s\n", m ? "on" : "off");
+    } else if (!strcmp(line, "vol") || !strncmp(line, "vol ", 4)) {
+        // Sidetone volume in GAIN_Q15/1024 units (1..32). Bare "vol" reports the
+        // current level; "vol <n>" sets it. Persisted and applied live.
+        const char* arg = line + 3;
+        while (*arg == ' ') arg++;
+        if (*arg) {
+            config::set_volume((uint8_t)atoi(arg));
+            sidetone_set_level(config::volume());
+        }
+        out.printf("  vol      = %u (gain %u)\n",
+                   config::volume(), (unsigned)config::volume() * 1024);
     } else if (!strcmp(line, "show")) {
         static const char* mnames[] = {"Hunter", "Fox", "Livekey", "Hibernate"};
         uint8_t bm = config::boot_mode();
         const char* mn = (bm < 4) ? mnames[bm] : "?";
-        out.printf("  id=%u call=%s wpm=%u farns=%u mute=%s mode=%s msg=\"%s\"\n",
+        out.printf("  id=%u call=%s wpm=%u farns=%u vol=%u mute=%s mode=%s msg=\"%s\"\n",
                    config::station_id(), config::callsign(),
-                   config::wpm(), config::char_wpm(),
+                   config::wpm(), config::char_wpm(), config::volume(),
                    config::muted() ? "on" : "off", mn,
                    config::fox_message());
+    } else if (!strcmp(line, "batt")) {
+        // Raw battery readout — disambiguates a 0% meter (no cell / flat vs a
+        // scaling problem). millivolts() is the unsmoothed terminal voltage.
+        int mv  = battery::millivolts();
+        int pct = battery::percent();
+        out.printf("  batt %d mV  %d%%  charging=%s\n",
+                   mv, pct, battery::charging() ? "yes" : "no");
     } else if (!strcmp(line, "bootlog")) {
         // Dump the boot/crash reason ring — diagnoses crashes after the fact when
         // no serial was attached at reset time (e.g. the native-USB panic loop).
@@ -304,13 +322,25 @@ static bool handle_setup_command(const char* line, Print& out) {
     } else if (!strcmp(line, "bootlog clear")) {
         bootlog_clear();
         out.println("# bootlog cleared");
+#ifdef DEBUG_PANIC_CMD
+    } else if (!strcmp(line, "panic")) {
+        // Debug-only: deliberately crash to exercise the panic/backtrace capture
+        // path (UART0 GPIO43 + the boot/crash-reason ring). A volatile null
+        // store forces a "Guru Meditation Error: StoreProhibited" with a real
+        // backtrace; next boot's bootlog records reason=4(PANIC). Opt in with
+        // -DDEBUG_PANIC_CMD in platformio.ini — never compiled into a release.
+        out.println("# forcing panic (StoreProhibited) ...");
+        delay(150);
+        volatile int *p = (volatile int *)0;
+        *p = 0xDEAD;
+#endif
     } else if (!strcmp(line, "done") || !strcmp(line, "exit")) {
         out.println("# setup done");
         return true;
     } else {
         out.println("  ? call <SIGN> | msg <text> | id <n> | wpm <n> | "
-                    "farns <n> | pwr <0..3> | mode <0..2> | mute [on|off] | "
-                    "show | bootlog [clear] | reboot | done");
+                    "farns <n> | pwr <0..3> | mode <0..2> | vol <1..32> | "
+                    "mute [on|off] | show | bootlog [clear] | reboot | done");
     }
     return false;
 }
@@ -471,6 +501,7 @@ void setup() {
     config_ui::run();
 #endif
     sidetone_init(PIN_SIDETONE, TONE_HZ);
+    sidetone_set_level(config::volume()); // restore the persisted sidetone level
     sidetone_set_mute(config::muted());   // restore a persisted silent node
 
     mode = run_menu();

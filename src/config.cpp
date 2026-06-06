@@ -13,9 +13,12 @@ uint8_t cached_char_wpm = 18;     // Farnsworth character speed
 uint8_t cached_boot_mode = 0;     // last-selected boot mode (Mode enum, 0=Hunter)
 uint8_t cached_fox_pwr_idx = 0;   // last-selected fox TX power level (PWR_LEVELS index, 0=LO)
 bool    cached_muted = false;     // sidetone mute (silent node), persisted
+uint8_t cached_volume = 8;        // sidetone level in GAIN_Q15/1024 units (8 -> 8192)
 
 constexpr uint8_t WPM_MIN = 5;
 constexpr uint8_t WPM_MAX = 40;
+constexpr uint8_t VOL_MIN = 1;
+constexpr uint8_t VOL_MAX = 32;   // 32 * 1024 = 32768 = full swing
 
 constexpr const char* NS        = "morse";
 constexpr const char* KEY_ID    = "station_id";
@@ -26,6 +29,7 @@ constexpr const char* KEY_CWPM  = "char_wpm";
 constexpr const char* KEY_BMODE = "boot_mode";
 constexpr const char* KEY_FPWR  = "fox_pwr_idx";
 constexpr const char* KEY_MUTE  = "muted";
+constexpr const char* KEY_VOL   = "volume";
 
 uint8_t clamp_u8(int v, uint8_t lo, uint8_t hi) {
     if (v < lo) return lo;
@@ -72,6 +76,9 @@ void begin() {
 
     if (prefs.isKey(KEY_MUTE))
         cached_muted = prefs.getBool(KEY_MUTE, cached_muted);
+
+    if (prefs.isKey(KEY_VOL))
+        cached_volume = clamp_u8(prefs.getUChar(KEY_VOL, cached_volume), VOL_MIN, VOL_MAX);
 
     prefs.end();
 }
@@ -142,6 +149,17 @@ void set_fox_pwr_idx(uint8_t idx) {
     cached_fox_pwr_idx = idx;
     prefs.begin(NS, false);
     prefs.putUChar(KEY_FPWR, idx);
+    prefs.end();
+}
+
+uint8_t volume() { return cached_volume; }
+
+void set_volume(uint8_t units) {
+    uint8_t v = clamp_u8(units, VOL_MIN, VOL_MAX);
+    if (v == cached_volume) return;   // avoid a needless flash write
+    cached_volume = v;
+    prefs.begin(NS, false);
+    prefs.putUChar(KEY_VOL, v);
     prefs.end();
 }
 
