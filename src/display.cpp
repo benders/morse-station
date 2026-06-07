@@ -258,7 +258,6 @@ void hunter(const char* text, float freq_mhz, int station_id, bool ditdah,
     const size_t SHOW = 21;
     size_t len = strlen(text);
     const char* tail = len > SHOW ? text + (len - SHOW) : text;
-    oled.drawStr(0, 25, ditdah ? "./-" : "TXT");
     oled.drawStr(0, 47, tail);
 
     // RSSI bar

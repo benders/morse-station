@@ -237,8 +237,6 @@ void hunter(const char* text, float freq_mhz, int station_id, bool ditdah,
     d.setTextColor(TFT_GREEN, TFT_BLACK);
     d.setCursor(W - (int)strlen(fbuf) * 6, 24);
     d.print(fbuf);
-    d.setCursor(0, 24);
-    d.print(ditdah ? "./-" : "TXT");
 
     // Last ~20 glyphs of recent copy.
     const size_t SHOW = 20;

@@ -165,7 +165,18 @@ static size_t text_len = 0;
 static char ditdah_buf[64];
 static size_t ditdah_len = 0;
 static int  rx_station_id = -1;      // station id from last packet, -1 = none
-static bool hunter_ditdah = true;    // false = letters, true = dit/dah (default)
+static bool g_showtext = false;       // false = dit/dah (default), true = decoded text
+
+// Hunter sidetone volume, cycled by the USER/PRG button: MUTE -> LOW -> MED ->
+// HIGH, persisted across power cycles. The three loudness steps map onto the
+// config volume scale (GAIN_Q15/1024 units, the same the `vol` command uses); the
+// muted state is config::muted(). On a PAM8403 board the analog amp has no usable
+// level control, so the button only toggles MUTE on/off (see hunter_cycle_volume).
+static const uint8_t HUNTER_VOL_UNITS[]  = {4, 11, 32};       // LOW, MED, HIGH
+static const char*   HUNTER_VOL_LABELS[] = {"MUTE", "LOW", "MED", "HIGH"};
+static const int     N_HUNTER_VOL = 4;
+
+static void log_line(const char* s) { Serial.print(s); }
 
 static void set_tone(bool on) {
     static bool cur = false;
@@ -198,6 +209,45 @@ static void apply_ble(bool on) {
         ble_provision::stop();
     }
     g_ble_on = on;
+}
+
+// Reconstruct the hunter volume cycle index (0=MUTE, 1..3=LOW/MED/HIGH) from the
+// persisted state, so the USER button resumes from where it left off after a
+// power cycle. Muted -> 0; otherwise pick the loudness step nearest the stored
+// volume (the `vol` command can set arbitrary units, so this is a best fit).
+static int hunter_vol_idx_from_config() {
+    if (config::muted()) return 0;
+    uint8_t v = config::volume();
+    int best = 1, bestd = 256;
+    for (int i = 0; i < 3; i++) {
+        int d = (int)v - (int)HUNTER_VOL_UNITS[i];
+        if (d < 0) d = -d;
+        if (d < bestd) { bestd = d; best = i + 1; }
+    }
+    return best;
+}
+
+// USER/PRG button action in hunter mode: cycle the sidetone volume and persist
+// it. MUTE -> LOW -> MED -> HIGH on a board with level control; MUTE on/off only
+// on a PAM8403 (analog amp, no usable level). apply_mute() persists the mute and
+// forces a redraw; the loudness steps persist via config::set_volume().
+static void hunter_cycle_volume() {
+    static int idx = -1;
+    if (idx < 0) idx = hunter_vol_idx_from_config();   // seed from persisted state
+#if defined(SIDETONE_PAM8403) || defined(SIDETONE_BUZZER)
+    idx = idx ? 0 : 3;                                  // mute <-> on (level unused)
+    apply_mute(idx == 0);
+#else
+    idx = (idx + 1) % N_HUNTER_VOL;
+    apply_mute(idx == 0);
+    if (idx != 0) {
+        config::set_volume(HUNTER_VOL_UNITS[idx - 1]);
+        sidetone_set_level(config::volume());
+    }
+#endif
+    char msg[24];
+    snprintf(msg, sizeof(msg), "  volume   = %s\n", HUNTER_VOL_LABELS[idx]);
+    log_line(msg);
 }
 
 // Append n bytes to a rolling, NUL-terminated buffer. When it would overflow,
@@ -656,6 +706,18 @@ static bool handle_setup_command(const char* line, Print& out) {
         }
         out.printf("  vol      = %u (gain %u)\n",
                    config::volume(), (unsigned)config::volume() * 1024);
+    } else if (!strcmp(line, "showtext") || !strncmp(line, "showtext ", 9)) {
+        // Hunter copy-view toggle: decoded text vs dit/dah elements. Runtime-only
+        // (not persisted) — it's a display preference, not station config. Default
+        // off (show dit/dah). Bare "showtext" toggles; "showtext on" shows text.
+        const char* arg = line + 8;
+        while (*arg == ' ') arg++;
+        if      (!strcmp(arg, "on") || !strcmp(arg, "1"))  g_showtext = true;
+        else if (!strcmp(arg, "off") || !strcmp(arg, "0")) g_showtext = false;
+        else if (*arg)                { out.println("  ? showtext [on|off]"); }
+        else                          g_showtext = !g_showtext;   // toggle
+        last_draw = 0;   // refresh the hunter copy line on the next draw
+        out.printf("  showtext = %s\n", g_showtext ? "on" : "off");
     } else if (!strcmp(line, "keymode") || !strcmp(line, "keymode show") ||
                !strncmp(line, "keymode ", 8)) {
         // Runtime toggle between the compat KeyState stream (default — no
@@ -829,7 +891,8 @@ static bool handle_setup_command(const char* line, Print& out) {
         out.println("  ? call <SIGN> | msg <text> | id <n> | wpm <n> | "
                     "farns <n> | pwr <0..3> | pa <on|off> | lna <on|off> | "
                     "rxbw <khz> | mode <0..2> | "
-                    "vol <1..32> | mute [on|off] | keymode <compat|edge> | "
+                    "vol <1..32> | mute [on|off] | showtext [on|off] | "
+                    "keymode <compat|edge> | "
                     "model | debug [on|off] | show | screen [on|off] | power | "
                     "bootlog [clear] | stall [secs] | reboot | hibernate | done");
     }
@@ -1220,7 +1283,7 @@ static bool prg_tapped(uint32_t now) {
         last = now;
         // A press while the panel is blanked is a "wake" press only: it lights
         // the screen and is swallowed so it doesn't also trigger this mode's
-        // button action (TX-power cycle / ditdah toggle). When the panel is
+        // button action (TX-power cycle / volume cycle). When the panel is
         // already on, wake (refresh the idle timer) and let the edge through.
         bool was_blanked = display::blanked();
         display::activity();
@@ -1409,9 +1472,10 @@ static void loop_hunter(uint32_t now) {
         ? (uint32_t)(2.5 * proto::HEARTBEAT_MS)
         : (1200u / rx_char_wpm) * 3u;
 
-    // PRG/BOOT tap toggles the copy display between decoded letters and raw
-    // dit/dah elements (same debounced detector the fox uses for power).
-    if (prg_tapped(now)) { hunter_ditdah = !hunter_ditdah; last_draw = 0; }
+    // USER/PRG tap cycles the sidetone volume (MUTE -> LOW -> MED -> HIGH,
+    // persisted; mute-only on a PAM8403). The decoded-vs-dit/dah copy view is now
+    // a console command (`showtext`) rather than a button toggle.
+    if (prg_tapped(now)) hunter_cycle_volume();
 
     uint8_t buf[128];   // large enough for a control packet (4 + up to 100 bytes)
     size_t n;
@@ -1597,8 +1661,8 @@ static void loop_hunter(uint32_t now) {
 
     if (now - last_draw >= 100) {
         last_draw = now;
-        const char* copy = hunter_ditdah ? ditdah_buf : text_buf;
-        display::hunter(copy, radio::frequency_mhz(), rx_station_id, hunter_ditdah,
+        const char* copy = g_showtext ? text_buf : ditdah_buf;
+        display::hunter(copy, radio::frequency_mhz(), rx_station_id, !g_showtext,
                         rssi, rssi_valid, rx_down);
     }
 }
