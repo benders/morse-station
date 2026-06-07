@@ -113,11 +113,27 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[?]` needs a decision
            present-flag that no-ops all draws so a stuck/absent panel degrades
            to headless instead of bricking the node. `PIN_BUSY=46` confirmed
            correct against the RAK4631 datasheet SX1262 table (P1.14).
-      **Still TODO on hardware:** VBAT divider calibration (`DIVIDER_RAK=2.0f`
-      currently reads ~5.0V on USB — wrong ratio; calibrate against a meter on
-      battery), `PIN_KEY`/`PIN_MODE_BTN` button confirmation (menu currently
-      reaches modes via the 5s idle auto-select), and Fox-mode TX verification
-      (RX path is proven; TX not yet keyed on-air).
+      Remaining on-hardware work is tracked in **RAK4631 — remaining hardware
+      TODOs** below.
+
+---
+
+## RAK4631 — remaining hardware TODOs
+
+The nRF52840 port is hardware-validated (implementation/build log: Phase 2
+P2.1–P2.13 above). These items still need a RAK4631 on the bench:
+
+- [ ] **VBAT divider calibration.** `DIVIDER_RAK=2.0f` in `src/battery.cpp` is a
+      placeholder that currently reads ~5.0 V on USB (wrong ratio). Measure the
+      real cell voltage with a meter on battery power and set the correct
+      RAK19007 divider ratio.
+- [ ] **Confirm `PIN_KEY` / `PIN_MODE_BTN` GPIOs.** Both are placeholders in
+      `src/pins.h` marked CONFIRM-ON-HARDWARE; the boot menu currently reaches
+      modes via the 5 s idle auto-select rather than a button press. Verify and
+      assign the real GPIOs (and confirm the menu short-press/long-press flow).
+- [ ] **Fox-mode TX verification.** RX + CW decode is proven on-air; TX has not
+      been keyed yet. Confirm a hunter copies the RAK fox and that
+      `setOutputPower` LO/MED/HI/MAX behaves (no FEM → +22 dBm is the ceiling).
 
 ---
 
