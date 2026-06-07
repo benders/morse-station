@@ -11,9 +11,8 @@
 #include "config_ui.h"
 #include "keyboard.h"     // Cardputer 'm' = mute (header self-guards to that board)
 #include "ble_provision.h"
-#include <esp_sleep.h>
-#include <esp_system.h>   // esp_reset_reason()
-#include <Preferences.h>  // persist boot/reset-reason log
+#include "platform.h"     // restart() / system_off() / reset_reason() / unique_id_byte()
+#include "kv.h"           // kv::Store — persist boot/reset-reason log
 
 // Stage 6 — integrated fox-hunt firmware.
 //
@@ -153,11 +152,12 @@ static bool serial_read_line(char* buf, size_t cap, uint32_t timeout_ms) {
 // entries plus `lh`, the head (next slot to write). `cnt` stays the monotonic
 // boot counter. (Uptime/run-length is deliberately omitted: a panic can't write
 // it on the way down, so it would only ever cover clean reboots.)
-static const char* reset_reason_label(int x) {
-    static const char* rr[] = {"UNKNOWN","POWERON","EXT","SW","PANIC",
-                               "INT_WDT","TASK_WDT","WDT","DEEPSLEEP",
-                               "BROWNOUT","SDIO"};
-    return (x >= 0 && x < (int)(sizeof(rr) / sizeof(rr[0]))) ? rr[x] : "?";
+// reset_reason_label() now lives behind platform:: (see platform.h) — each
+// MCU family has its own small reset-cause enum (ESP32 esp_reset_reason_t vs
+// nRF52 RESETREAS bits), so the label table moved into the per-platform .cpp
+// (platform_esp32.cpp / platform_nrf52.cpp). Call platform::reset_reason_label.
+static inline const char* reset_reason_label(int x) {
+    return platform::reset_reason_label(x);
 }
 
 static const int BOOTLOG_N = 16;
@@ -169,7 +169,7 @@ struct BootLogEntry {
 // Record this boot in the ring. Returns the new (monotonic) boot number and, via
 // prev_reason, the previous boot's reason for the banner.
 static uint32_t bootlog_record(int reason, int& prev_reason) {
-    Preferences bl; bl.begin("boot", false);
+    kv::Store bl; bl.begin("boot", false);
     uint32_t bc = bl.getUInt("cnt", 0) + 1;
     BootLogEntry log[BOOTLOG_N];
     if (bl.getBytes("log", log, sizeof(log)) != sizeof(log))
@@ -194,7 +194,7 @@ static uint32_t bootlog_record(int reason, int& prev_reason) {
 
 // Dump the ring oldest→newest to `out`. The slot at head is the oldest entry.
 static void bootlog_dump(Print& out) {
-    Preferences bl; bl.begin("boot", true);
+    kv::Store bl; bl.begin("boot", true);
     BootLogEntry log[BOOTLOG_N];
     size_t got  = bl.getBytes("log", log, sizeof(log));
     uint8_t head = bl.getUChar("lh", 0);
@@ -212,7 +212,7 @@ static void bootlog_dump(Print& out) {
 
 // Clear the history ring (leaves the monotonic boot counter `cnt` intact).
 static void bootlog_clear() {
-    Preferences bl; bl.begin("boot", false);
+    kv::Store bl; bl.begin("boot", false);
     bl.remove("log");
     bl.remove("lh");
     bl.end();
@@ -267,7 +267,7 @@ static bool handle_setup_command(const char* line, Print& out) {
         // interaction. Give the BLE notify a moment to flush before resetting.
         out.println("# rebooting");
         delay(150);
-        esp_restart();
+        platform::restart();
     } else if (!strncmp(line, "mode ", 5)) {
         int m = atoi(line + 5);
         if (m < 0 || m > 2) {            // 0=Hunter 1=Fox 2=Livekey (not Hibernate)
@@ -443,7 +443,7 @@ static void hibernate() {
     pinMode(PIN_FEM_VFEM, OUTPUT);  digitalWrite(PIN_FEM_VFEM, LOW);   // FEM off
     pinMode(PIN_VEXT_CTRL, OUTPUT); digitalWrite(PIN_VEXT_CTRL, HIGH); // peripheral rail off
 #endif
-    esp_deep_sleep_start();         // only RST wakes us -> full restart
+    platform::system_off();         // only RST wakes us -> full restart
 }
 
 void setup() {
@@ -462,7 +462,7 @@ void setup() {
         // After an organic crash-reboot, a controlled reset (easy to capture on
         // serial) reports prev=<crash cause>; the full history survives in NVS for
         // the `bootlog` command even when several reboots land back to back.
-        int r = (int)esp_reset_reason();
+        int r = platform::reset_reason();
         int prev = 0;
         uint32_t bc = bootlog_record(r, prev);
         Serial.printf("# boot #%u reason now=%d(%s) prev=%d(%s)\n",

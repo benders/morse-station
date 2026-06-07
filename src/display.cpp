@@ -1,7 +1,9 @@
 #include "display.h"
-#ifndef DEVICE_CARDPUTER_ADV
-// Heltec V4 path: 128x64 mono SSD1306 OLED via U8g2. The Cardputer ADV has a
-// 240x135 colour ST7789V2 driven by M5.Display; see display_cardputer.cpp.
+#if defined(DEVICE_HELTEC_V4) || defined(DEVICE_HELTEC_V3) || defined(DEVICE_RAK4631)
+// Heltec V4 / V3 / RAK4631 path: 128x64 mono SSD1306-class OLED via U8g2
+// (Heltec's on-board SSD1315 and the RAK1921 SSD1306 are both U8g2
+// "ssd1306_128x64_noname" panels). The Cardputer ADV has a 240x135 colour
+// ST7789V2 driven by M5.Display; see display_cardputer.cpp.
 #include "battery.h"
 #include "config.h"
 #include "pins.h"
@@ -11,8 +13,48 @@
 
 namespace {
 
+// Set false if the panel can't be initialized — every draw call then becomes a
+// no-op so a missing/stuck OLED can't lock up the whole node. Only the RAK path
+// clears it (see begin()); the Heltec panels are always present, so it stays
+// true there and the guards are free.
+bool g_oled_ok = true;
+
+#if defined(DEVICE_RAK4631)
+// RAK1921 OLED: no reset line (U8X8_PIN_NONE), default Wire / HW-I2C — the
+// WisCore variant fixes SDA=13/SCL=14 as the Wire defaults, so no explicit
+// pin args are needed (unlike the Heltec constructor, which passes its
+// VEXT-gated SDA/SCL/RST trio explicitly).
+U8G2_SSD1306_128X64_NONAME_F_HW_I2C oled(U8G2_R0, U8X8_PIN_NONE);
+
+// (The nRF52 TWIM endTransmission spin-waits on EVENTS_TXSTARTED with no
+// timeout, so a bus held low by a mid-transaction slave hangs forever — hence
+// the recovery + present-flag gating below.)
+
+// I2C bus recovery: if a slave (e.g. the OLED left mid-byte by the previous
+// firmware across our reset) is holding SDA low, the TWIM can't issue a START.
+// Bit-bang up to 9 SCL pulses to clock the slave out, then a STOP. Returns
+// true once both lines idle high. Pins are open-drain (release = INPUT_PULLUP,
+// using the nRF52 internal pull-ups; never drive a line high).
+bool i2c_bus_recover(uint8_t sda, uint8_t scl) {
+    pinMode(scl, INPUT_PULLUP);
+    pinMode(sda, INPUT_PULLUP);
+    delayMicroseconds(10);
+    for (int i = 0; i < 9 && digitalRead(sda) == LOW; i++) {
+        pinMode(scl, OUTPUT); digitalWrite(scl, LOW);   // SCL low
+        delayMicroseconds(5);
+        pinMode(scl, INPUT_PULLUP);                     // release SCL high
+        delayMicroseconds(5);
+    }
+    // Generate a STOP condition: SDA low->high while SCL is high.
+    pinMode(sda, OUTPUT); digitalWrite(sda, LOW); delayMicroseconds(5);
+    pinMode(scl, INPUT_PULLUP);                          delayMicroseconds(5);
+    pinMode(sda, INPUT_PULLUP);                          delayMicroseconds(5);
+    return digitalRead(sda) == HIGH && digitalRead(scl) == HIGH;
+}
+#else
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C oled(
     U8G2_R0, PIN_OLED_RST, PIN_OLED_SCL, PIN_OLED_SDA);
+#endif
 
 // Map RSSI to a 0..128 px bar width. -110 dBm (weak) .. -40 dBm (strong).
 int rssi_to_px(float dbm) {
@@ -45,14 +87,43 @@ int draw_battery() {
 namespace display {
 
 void begin() {
+#if defined(DEVICE_RAK4631)
+    // Recover a possibly-stuck I2C bus before letting U8g2 (and the no-timeout
+    // nRF52 TWIM) touch it; skip the OLED entirely if it can't be freed, so a
+    // bad bus degrades to "headless node" instead of a boot hang. (A stuck bus
+    // is seen in practice when the previous firmware left the OLED mid-byte
+    // across our reset, holding SDA low so the TWIM can never issue a START.)
+    bool idle = i2c_bus_recover(PIN_WIRE_SDA, PIN_WIRE_SCL);
+
+    // Probe the panel (0x3C, with 0x3D fallback) so the serial log says whether
+    // it actually ACKs — only safe now that the bus is known idle.
+    uint8_t addr = 0;
+    if (idle) {
+        Wire.begin();
+        for (uint8_t a = 0x3C; a <= 0x3D; a++) {
+            Wire.beginTransmission(a);
+            if (Wire.endTransmission() == 0) { addr = a; break; }
+        }
+    }
+    Serial.printf("# oled: bus=%s addr=%s0x%02X\n",
+                  idle ? "idle" : "STUCK", addr ? "" : "none/", addr ? addr : 0x3C);
+    g_oled_ok = (idle && addr != 0);
+    if (!g_oled_ok) return;             // headless: all draw calls no-op below
+    if (addr == 0x3D) oled.setI2CAddress(0x3D << 1);
+#else
+    // Heltec V4/V3 gate the OLED's 3.3V rail behind VEXT_CTRL. The RAK19007
+    // base board has no such switched peripheral rail — the RAK1921 OLED is
+    // always powered — so this step is skipped entirely for RAK4631.
     pinMode(PIN_VEXT_CTRL, OUTPUT);
     digitalWrite(PIN_VEXT_CTRL, LOW);   // power peripheral rail (OLED)
     delay(50);
+#endif
     oled.begin();
     oled.setFont(u8g2_font_6x12_tr);
 }
 
 void menu(const char* const* items, int n, int sel) {
+    if (!g_oled_ok) return;
     oled.clearBuffer();
     oled.setFont(u8g2_font_6x12_tr);
     oled.drawStr(0, 11, "Select mode:");
@@ -72,6 +143,7 @@ void menu(const char* const* items, int n, int sel) {
 }
 
 void fox(uint16_t seq, const char* msg, bool tone_on, const char* pwr) {
+    if (!g_oled_ok) return;
     oled.clearBuffer();
     oled.setFont(u8g2_font_6x12_tr);
     oled.drawStr(0, 11, tone_on ? "FOX TX  *" : "FOX TX");
@@ -95,6 +167,7 @@ void fox(uint16_t seq, const char* msg, bool tone_on, const char* pwr) {
 
 void hunter(const char* text, float freq_mhz, int station_id, bool ditdah,
             float rssi_dbm, bool rssi_valid, bool tone_on) {
+    if (!g_oled_ok) return;
     oled.clearBuffer();
     oled.setFont(u8g2_font_6x12_tr);
 
@@ -133,6 +206,7 @@ void hunter(const char* text, float freq_mhz, int station_id, bool ditdah,
 }
 
 void livekey(uint16_t seq, bool tone_on) {
+    if (!g_oled_ok) return;
     oled.clearBuffer();
     oled.setFont(u8g2_font_6x12_tr);
     oled.drawStr(0, 11, tone_on ? "LIVE KEY  *" : "LIVE KEY");
@@ -145,6 +219,7 @@ void livekey(uint16_t seq, bool tone_on) {
 }
 
 void status(const char* title, const char* line1, const char* line2) {
+    if (!g_oled_ok) return;
     oled.clearBuffer();
     oled.setFont(u8g2_font_6x12_tr);
     if (title) oled.drawStr(0, 14, title);
@@ -154,4 +229,4 @@ void status(const char* title, const char* line1, const char* line2) {
 }
 
 } // namespace display
-#endif // !DEVICE_CARDPUTER_ADV
+#endif // DEVICE_HELTEC_V4 || DEVICE_HELTEC_V3 || DEVICE_RAK4631

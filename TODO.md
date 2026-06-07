@@ -17,6 +17,157 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[?]` needs a decision
 
 ---
 
+## Multi-target port — Phase 2 (RAK4631 / nRF52840 cross-MCU port)
+
+- [x] **P2.1** Vendored `boards/wiscore_rak4631.json` (verbatim from the plan)
+      and the variant: cloned `RAKWireless/RAK-nRF52-Arduino` (the upstream
+      source for `WisCore_RAK4631_Board`) and copied
+      `variants/WisCore_RAK4631_Board/{variant.h,variant.cpp}` into
+      `variants/`, with `board_build.variants_dir = variants` in
+      `[nrf52_base]`. **Variant strategy: Option A (vendored), sourced from
+      Option B's fork** — see `reference/rak4631/README.md` for the full
+      provenance writeup and why we didn't pin `platform_packages` to the
+      whole fork. Confirmed Wire SDA=13/SCL=14 against the vendored variant.h;
+      BUSY 46-vs-39 and the VBAT divider ratio remain hardware TODOs (flagged
+      in the README and in `pins.h`/`battery.cpp` comments).
+- [x] **P2.2** `platformio.ini`: added `[nrf52_base]` anchor (platform
+      nordicnrf52, framework arduino, variants_dir) and `[env:rak4631]`
+      (board `wiscore_rak4631`, RadioLib + U8g2 lib_deps, `-DDEVICE_RAK4631`,
+      the `-DPIN_*` radio flags + `-DSX126X_POWER_EN=37`, `upload_protocol =
+      nrfutil`). Dropped the planned `RADIOLIB_EXCLUDE_*` flash-shrink flags —
+      RadioLib 7.7.x's inter-module type aliases break with a partial exclude
+      set, and the build fits comfortably without them (see P2.12 sizes).
+- [x] **P2.3** `src/pins.h`: added `#elif defined(DEVICE_RAK4631)` branch
+      consuming the radio `-DPIN_*` / `SX126X_POWER_EN` flags via `#ifndef`
+      fallbacks, no `HAS_FEM`/`PIN_FEM_*`, `PIN_OLED_RST` sentinel (display.cpp
+      uses `U8X8_PIN_NONE` directly), `PIN_VBAT_READ=5`, `PIN_SIDETONE=-1`, and
+      placeholder `PIN_KEY`/`PIN_MODE_BTN` marked CONFIRM-ON-HARDWARE.
+- [x] **P2.4** `src/platform_nrf52.cpp`: `restart()`→`NVIC_SystemReset()`,
+      `system_off()`→`sd_power_system_off()` (+ raw-register fallback),
+      `reset_reason()` reads/clears `NRF_POWER->RESETREAS` and folds the
+      bitfield to a small linear enum (priority-ordered), `unique_id_byte()`
+      XOR-folds `FICR->DEVICEID[0]^[1]`. Moved `reset_reason_label()` behind
+      `platform::` (added to `platform.h`, ESP table moved into
+      `platform_esp32.cpp`, nRF52 table added here); `main.cpp` now calls
+      `platform::reset_reason_label()`.
+- [x] **P2.5** `src/kv_nrf52.cpp`: `kv::Store` over `Adafruit_LittleFS` +
+      `InternalFileSystem` — one flat file per namespace (`/<ns>.kv`) holding a
+      small serialized key→value map (type-tagged entries), loaded on
+      `begin()`, rewritten atomically (temp file + rename) on every mutation.
+      Same get/put/isKey/remove semantics as the ESP wrapper.
+- [x] **P2.6** `src/radio.cpp`: nRF52 branch uses the global `SPI` (re-pinned
+      via `SPI.setPins`/`begin()`) instead of `HSPI`, neutralizes `IRAM_ATTR`
+      (empty macro on nRF52), drives `SX126X_POWER_EN` HIGH + 10 ms settle
+      before `beginFSK()`, and adds a `DEVICE_RAK4631` TCXO_V=1.8f case. No FEM
+      branch (HAS_FEM stays undefined, same as Heltec V3).
+- [x] **P2.7** `src/ble_provision_nrf52.cpp`: implements `ble_provision::` via
+      Adafruit Bluefruit `BLEUart` — `begin()` brings up Bluefruit + advertises
+      the NUS service, `process()` polls `bleuart.available()`/`read()` into
+      the same line-assembler/dispatch shape as the NimBLE path (no FreeRTOS
+      queue needed — single-threaded on the main loop), `BleOut` chunks writes
+      to 20 B like the ESP32 `BleOut`. Guarded `ble_provision.cpp` (NimBLE) to
+      `#if defined(DEVICE_HELTEC_V4) || defined(DEVICE_HELTEC_V3) ||
+      defined(DEVICE_CARDPUTER_ADV)`.
+- [x] **P2.8** `src/sidetone_nrf52.cpp`: silent stub — every `sidetone.h`
+      symbol is a no-op but stores mute/level/volume state so `show` stays
+      sane; `// TODO: tone()-based piezo path`. `sidetone.cpp` (I2S) was
+      already correctly guarded to `#if defined(DEVICE_HELTEC_V4) ||
+      defined(DEVICE_HELTEC_V3)` from Phase 1.
+- [x] **P2.9** `src/battery.cpp`: added `#elif defined(DEVICE_RAK4631)` branch
+      — `analogRead(PIN_VBAT_READ)` through the RAK19007 divider (placeholder
+      ratio `DIVIDER_RAK=2.0f`, internal ADC reference; **TODO CALIBRATE**
+      against the schematic / a meter on real hardware) → `volts_to_percent()`
+      (reused unchanged); `charging()` best-effort `false`.
+- [x] **P2.10** `src/display.cpp`: extended the U8g2 guard to `#if
+      defined(DEVICE_HELTEC_V4) || defined(DEVICE_HELTEC_V3) ||
+      defined(DEVICE_RAK4631)`; added a RAK-specific
+      `U8G2_SSD1306_128X64_NONAME_F_HW_I2C(U8G2_R0, U8X8_PIN_NONE)` constructor
+      (no reset line, default Wire) and made `begin()` skip the VEXT rail
+      gating for RAK (RAK19007 has no switched peripheral rail).
+- [x] **P2.11** `main.cpp`: confirmed it fits unchanged — the
+      `#ifdef DEVICE_CARDPUTER_ADV` blocks and `#ifdef HAS_FEM` hibernate path
+      compile out cleanly; `platform::system_off()`/`platform::restart()`
+      already cover the nRF52 sleep/reset paths from Phase 0. Only change
+      needed was routing `reset_reason_label()` through `platform::` (P2.4).
+- [x] **P2.12** `pio run -e rak4631` **links clean and fits comfortably**:
+      **185,528 B flash (22.8% of 815,104) / 27,636 B RAM (11.1% of 248,832)**.
+      Regression builds all still pass and match baselines:
+      `heltec_v4` 625,785 B / 34,684 B, `heltec_v3` 625,525 B / 34,748 B,
+      `cardputer_adv` 761,173 B / 34,920 B (the few-byte deltas vs. the stated
+      baselines are the new `platform::reset_reason_label()` indirection).
+      (Clean build now 186,048 B flash after the two boot fixes below.)
+- [x] **P2.13** **Hardware-validated on a real RAK4631 + RAK19007 + RAK1921.**
+      Flashed via `nrfutil` (1200bps DFU). Confirmed working: LittleFS
+      persistence (`show` config + `bootlog` ring round-trip across reboots),
+      Bluefruit NUS advertising (`MorseStn-26`), OLED (scrolling copy + live
+      RSSI bar), radio RX + CW decode, runtime serial console. Two boot-hang
+      bugs found and fixed during bring-up:
+        1. **LittleFS never mounted** — `kv_nrf52.cpp` called `InternalFS.open()`
+           without `InternalFS.begin()`; first kv access (bootlog) hit
+           `assert(block < lfs->cfg->block_count)` → `abort()` → silent hang.
+           Fixed with a one-time `ensure_fs()` in `kv::Store::begin()`.
+        2. **I2C OLED init hang** — nRF52 TWIM `endTransmission` spin-waits on
+           `EVENTS_TXSTARTED` with no timeout; the OLED left mid-byte by the
+           prior firmware held SDA low across reset, so START never issued.
+           Fixed with `i2c_bus_recover()` (9-clock + STOP) + a `g_oled_ok`
+           present-flag that no-ops all draws so a stuck/absent panel degrades
+           to headless instead of bricking the node. `PIN_BUSY=46` confirmed
+           correct against the RAK4631 datasheet SX1262 table (P1.14).
+      **Still TODO on hardware:** VBAT divider calibration (`DIVIDER_RAK=2.0f`
+      currently reads ~5.0V on USB — wrong ratio; calibrate against a meter on
+      battery), `PIN_KEY`/`PIN_MODE_BTN` button confirmation (menu currently
+      reaches modes via the 5s idle auto-select), and Fox-mode TX verification
+      (RX path is proven; TX not yet keyed on-air).
+
+---
+
+## Multi-target port — Phase 1 (Heltec V3 build target)
+
+- [x] **P1.1** `platformio.ini`: added `[env:heltec_v3]` extending `esp32_base`,
+      `board = heltec_wifi_lora_32_V3`, same lib_deps/I2S flags as `heltec_v4`,
+      `-DDEVICE_HELTEC_V3`.
+- [x] **P1.2** `src/pins.h`: added `#elif defined(DEVICE_HELTEC_V3)` branch with
+      identical radio/OLED/I2S/key pins to V4, no `HAS_FEM`, no `PIN_FEM_*`,
+      `PIN_VBAT_ADC=1 / PIN_VBAT_CTRL=37`, and `BATT_GATE_ACTIVE_HIGH=0`.
+- [x] **P1.3** `src/battery.cpp`: parameterised gate polarity via
+      `BATT_GATE_ACTIVE_HIGH` (1=V4 active-HIGH, 0=V3 active-LOW); V4 path is
+      byte-identical when macro=1.
+- [x] **P1.4** `display.cpp`, `sidetone.cpp`: guards changed from
+      `#ifndef DEVICE_CARDPUTER_ADV` to `#if defined(DEVICE_HELTEC_V4) || defined(DEVICE_HELTEC_V3)`.
+      `platform_esp32.cpp`, `kv_esp32.cpp`: added `|| defined(DEVICE_HELTEC_V3)`.
+      `radio.cpp`: added V3 to the `TCXO_V` guard (same 1.8 V TCXO as V4).
+      `HAS_FEM` blocks in radio.cpp compile out cleanly for V3 (no define).
+- [x] **P1.5** All three builds pass:
+      `heltec_v3` — 625,521 B flash / 34,748 B RAM (SUCCESS).
+      `heltec_v4` — 625,781 B flash / 34,684 B RAM (SUCCESS, matches baseline).
+      `cardputer_adv` — 761,173 B flash / 34,920 B RAM (SUCCESS, matches baseline).
+      **NOTE: V3 hardware validation is still pending (no V3 unit available).**
+      Flash with `scripts/devices.sh` when a unit is in-hand and confirm boot
+      banner, battery reading, sidetone, radio RX/TX.
+
+---
+
+## Multi-target port — Phase 0 (seams only, zero behavior change)
+
+- [x] **P0.1** `platformio.ini`: moved ESP32-only flags (`platform`, `framework`,
+      `-DARDUINO_USB_*`) out of `[env]` into a new `[esp32_base]` section;
+      both envs now `extends = esp32_base` and reference
+      `${esp32_base.build_flags}`. Effective flags for both envs are unchanged.
+- [x] **P0.2** `src/platform.h` + `src/platform_esp32.cpp`: introduced the
+      `platform::` seam (restart / system_off / reset_reason / unique_id_byte).
+      `main.cpp` no longer includes `<esp_sleep.h>` / `<esp_system.h>`.
+      `config.cpp` no longer calls `ESP.getEfuseMac()` directly.
+- [x] **P0.3** `src/kv.h` + `src/kv_esp32.cpp`: introduced the `kv::Store` seam.
+      `config.cpp` and the `main.cpp` bootlog ring use `kv::Store` instead of
+      `Preferences`; NVS namespace/keys are unchanged.
+- [x] **P0.4** Both envs (`heltec_v4`, `cardputer_adv`) build clean.
+      **USER GATE:** hardware-validate on Heltec V4.2, V4.3, Cardputer ADV
+      before starting Phase 1. Flash with `scripts/devices.sh` + `--no-stub`
+      fallback; check boot banner + reason line, `show`, `bootlog`, fox/hunter
+      operation, sidetone, mute, battery.
+
+---
+
 ## Stage 1 — Audio out (sidetone)
 
 - [~] Wire the amp: **PAM8403** class-D board (Amazon B0DPMNYR2B) driving a

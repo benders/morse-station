@@ -1,4 +1,8 @@
 #include "ble_provision.h"
+#if defined(DEVICE_HELTEC_V4) || defined(DEVICE_HELTEC_V3) || defined(DEVICE_CARDPUTER_ADV)
+// NimBLE/NUS transport — ESP32-only. The nRF52 (RAK4631) port supplies the
+// same ble_provision:: API via Adafruit Bluefruit BLEUart in
+// ble_provision_nrf52.cpp (Phase 2; see RAK-port-plan.md §P2.7).
 
 #include <Arduino.h>
 #include <NimBLEDevice.h>
@@ -157,3 +161,5 @@ void stop() {
 }
 
 }  // namespace ble_provision
+
+#endif // DEVICE_HELTEC_V4 || DEVICE_HELTEC_V3 || DEVICE_CARDPUTER_ADV

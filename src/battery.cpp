@@ -78,8 +78,23 @@ bool charging() {
 
 } // namespace battery
 
-#else
-// ---- Heltec V4: divider on PIN_VBAT_ADC, gated by PIN_VBAT_CTRL ------------
+#elif defined(DEVICE_HELTEC_V4) || defined(DEVICE_HELTEC_V3)
+// ---- Heltec V4 / V3: divider on PIN_VBAT_ADC, gated by PIN_VBAT_CTRL ------
+//
+// Both boards use a 390k/100k voltage divider on PIN_VBAT_ADC (GPIO1) gated by
+// a MOSFET on PIN_VBAT_CTRL (GPIO37).  The gate polarity differs:
+//
+//   Heltec V4 (BATT_GATE_ACTIVE_HIGH=1): drive GPIO37 HIGH to connect the
+//     divider, LOW to disconnect.  Verified on hardware: HIGH puts ~0.83 V on
+//     GPIO1 at a 4.05 V cell; LOW reads 0 on both V4.2 and V4.3.
+//
+//   Heltec V3 (BATT_GATE_ACTIVE_HIGH=0): drive GPIO37 LOW to connect the
+//     divider, HIGH to disconnect.  Active-LOW gate — opposite convention to V4.
+//     (Documented in Heltec V3 schematic and project memory.)
+//
+// The compile-time macro BATT_GATE_ACTIVE_HIGH (defined in pins.h per board)
+// selects the correct connect/park levels.  When the macro is 1 the generated
+// code is byte-identical to the original V4 path.
 #include "pins.h"
 #include <Arduino.h>
 
@@ -89,18 +104,27 @@ constexpr float DIVIDER = 4.9f;        // (390k + 100k) / 100k
 float  smoothed_v = 0.0f;              // EWMA of terminal voltage
 uint32_t last_ms  = 0;
 
+// Gate levels derived from the per-board polarity macro.
+// CONNECT  = the level that switches the MOSFET on (connects divider to ADC).
+// PARK     = the level that switches it off (stops idle drain).
+// When BATT_GATE_ACTIVE_HIGH=1: CONNECT=HIGH, PARK=LOW  (V4 behaviour, unchanged).
+// When BATT_GATE_ACTIVE_HIGH=0: CONNECT=LOW,  PARK=HIGH (V3 behaviour).
+#if BATT_GATE_ACTIVE_HIGH
+static constexpr int GATE_CONNECT = HIGH;
+static constexpr int GATE_PARK    = LOW;
+#else
+static constexpr int GATE_CONNECT = LOW;
+static constexpr int GATE_PARK    = HIGH;
+#endif
+
 float read_volts() {
-    // ADC-enable gate is active HIGH on Heltec V4 (both 4.2 and 4.3) — the
-    // opposite of the V3 "GPIO37 low" convention. Verified on hardware: driving
-    // GPIO37 HIGH puts the divided cell voltage on GPIO1 (~0.83 V at a 4.05 V
-    // cell, x4.9 -> 4.05 V); driving it LOW reads 0 on both revisions. Pulse it
-    // HIGH only for the sample, then park LOW so the divider doesn't draw.
-    digitalWrite(PIN_VBAT_CTRL, HIGH); // connect the divider
+    // Pulse the gate to its connect level for the ADC sample, then park it.
+    digitalWrite(PIN_VBAT_CTRL, GATE_CONNECT);
     delay(10);
     // Average a few samples; analogReadMilliVolts applies the eFuse ADC cal.
     uint32_t acc = 0;
     for (int i = 0; i < 8; i++) acc += analogReadMilliVolts(PIN_VBAT_ADC);
-    digitalWrite(PIN_VBAT_CTRL, LOW);  // disconnect to stop idle drain
+    digitalWrite(PIN_VBAT_CTRL, GATE_PARK);   // disconnect to stop idle drain
     return (acc / 8.0f) / 1000.0f * DIVIDER;
 }
 
@@ -110,7 +134,7 @@ namespace battery {
 
 void begin() {
     pinMode(PIN_VBAT_CTRL, OUTPUT);
-    digitalWrite(PIN_VBAT_CTRL, LOW);  // divider disconnected when idle (active-HIGH gate)
+    digitalWrite(PIN_VBAT_CTRL, GATE_PARK);   // divider disconnected when idle
     analogReadResolution(12);
     smoothed_v = read_volts();         // seed so the first frame is steady
     last_ms = millis();
@@ -134,6 +158,69 @@ int millivolts() {
 }
 
 bool charging() { return false; }      // no charge-sense line wired
+
+} // namespace battery
+
+#elif defined(DEVICE_RAK4631)
+// ---- RAK4631: analogRead through the RAK19007 base-board divider ----------
+//
+// PIN_VBAT_READ (AIN, GPIO5 / nRF52 analog input) sits on the RAK19007's
+// battery-sense divider. TODO CALIBRATE: the exact divider ratio needs the
+// RAK19007 schematic (we could not fetch it from this environment — see
+// reference/rak4631/README.md). RAK's published reference firmware commonly
+// uses a ratio in the ~2.0-2.06x range (a 100k/100k-class divider plus the
+// nRF52's internal ADC reference/gain chain); 2.0f is used here as a
+// documented placeholder pending a multimeter check against a real cell.
+// Reuses the same volts_to_percent() curve as the ESP32 boards — the LiPo
+// chemistry is identical, only the read path differs.
+#include "pins.h"
+#include <Arduino.h>
+
+namespace {
+
+constexpr float DIVIDER_RAK = 2.0f;     // TODO CONFIRM against RAK19007 schematic
+constexpr float ADC_REF_V   = 3.6f;     // nRF52 ADC default reference (internal 0.6V * gain 1/6)
+constexpr int   ADC_MAX     = 4095;     // 12-bit
+
+float  smoothed_v = 0.0f;
+uint32_t last_ms  = 0;
+
+float read_volts() {
+    uint32_t acc = 0;
+    for (int i = 0; i < 8; i++) acc += analogRead(PIN_VBAT_READ);
+    float raw = acc / 8.0f;
+    return (raw / ADC_MAX) * ADC_REF_V * DIVIDER_RAK;
+}
+
+} // namespace
+
+namespace battery {
+
+void begin() {
+    analogReadResolution(12);
+    analogReference(AR_INTERNAL);          // ~0.6V internal reference
+    smoothed_v = read_volts();             // seed so the first frame is steady
+    last_ms = millis();
+}
+
+int percent() {
+    uint32_t now = millis();
+    if (now - last_ms >= 2000) {
+        last_ms = now;
+        float v = read_volts();
+        smoothed_v = smoothed_v > 0.0f ? smoothed_v * 0.7f + v * 0.3f : v;
+        Serial.printf("# batt %.2fV -> %d%%\n", smoothed_v, volts_to_percent(smoothed_v));
+    }
+    if (smoothed_v <= 0.5f) return -1;
+    return volts_to_percent(smoothed_v);
+}
+
+int millivolts() {
+    float v = read_volts();
+    return v > 0.5f ? (int)(v * 1000.0f + 0.5f) : -1;
+}
+
+bool charging() { return false; }      // no charge-sense line wired in this port
 
 } // namespace battery
 

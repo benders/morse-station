@@ -2,10 +2,24 @@
 #include "pins.h"
 #include <RadioLib.h>
 
+// nRF52 has no IRAM and no IRAM_ATTR macro; the ESP32 one only matters for
+// placing ISR code in IRAM so it survives flash-cache-disabled sections (e.g.
+// during NVS writes). Neutralize it on nRF52 so on_rx() compiles unchanged.
+#if defined(DEVICE_RAK4631) && !defined(IRAM_ATTR)
+#define IRAM_ATTR
+#endif
+
 namespace {
 
+#if defined(DEVICE_RAK4631)
+// No second SPI peripheral the way the ESP32-S3 exposes HSPI/VSPI — the
+// RAK4631's SX1262 lives on the global `SPI`, re-pinned explicitly via
+// SPI.begin()/setPins() in init() below (see §2 / reference/rak4631/README.md).
+SX1262 chip = new Module(PIN_NSS, PIN_DIO1, PIN_NRST, PIN_BUSY, SPI);
+#else
 SPIClass radioSpi(HSPI);
 SX1262   chip = new Module(PIN_NSS, PIN_DIO1, PIN_NRST, PIN_BUSY, radioSpi);
+#endif
 
 // Link parameters (mirror docs/protocol.md). Single channel for now.
 constexpr float    FREQ_MHZ      = 905.0f;
@@ -14,11 +28,16 @@ constexpr float    FREQ_DEV_KHZ  = 5.0f;
 constexpr float    RX_BW_KHZ     = 39.0f;   // ~Carson BW for 4.8k/5k dev, w/ margin
 constexpr int      TX_POWER_DBM  = 2;       // low power, 15.249-ish
 constexpr int      PREAMBLE_BITS = 16;
-#if defined(DEVICE_HELTEC_V4)
-constexpr float    TCXO_V        = 1.8f;    // Heltec V4 SX1262 has a 1.8 V TCXO
+#if defined(DEVICE_HELTEC_V4) || defined(DEVICE_HELTEC_V3)
+// Heltec V4 and V3 both use a 1.8 V TCXO on the on-board SX1262.
+constexpr float    TCXO_V        = 1.8f;
 #elif defined(DEVICE_CARDPUTER_ADV)
 // VERIFY ON HW: Cap LoRa-1262. If beginFSK() fails (RADIOLIB_ERR_SPI_CMD_*),
 // the module likely uses a plain crystal — set this to 0.0f.
+constexpr float    TCXO_V        = 1.8f;
+#elif defined(DEVICE_RAK4631)
+// RAK4631 WisCore module: SX1262's DIO3 drives a 1.8 V TCXO (§2 of the port
+// plan / reference/rak4631).
 constexpr float    TCXO_V        = 1.8f;
 #endif
 
@@ -69,7 +88,19 @@ bool init(int& err) {
     fem_power_on();
 #endif
 
+#if defined(DEVICE_RAK4631)
+    // Power the SX1262's onboard LDO. Without this the radio simply does not
+    // respond on SPI (beginFSK() times out / SPI_CMD errors) — easy to miss,
+    // called out explicitly in §2 of the port plan.
+    pinMode(SX126X_POWER_EN, OUTPUT);
+    digitalWrite(SX126X_POWER_EN, HIGH);
+    delay(10);                      // let the LDO rail settle before SPI traffic
+
+    SPI.setPins(PIN_MISO, PIN_SCK, PIN_MOSI);
+    SPI.begin();
+#else
     radioSpi.begin(PIN_SCK, PIN_MISO, PIN_MOSI, PIN_NSS);
+#endif
     err = chip.beginFSK(FREQ_MHZ, BITRATE_KBPS, FREQ_DEV_KHZ, RX_BW_KHZ,
                         TX_POWER_DBM, PREAMBLE_BITS, TCXO_V, false);
     if (err != RADIOLIB_ERR_NONE) return false;

@@ -1,7 +1,7 @@
 #include "sidetone.h"
-#ifndef DEVICE_CARDPUTER_ADV
-// Heltec V4 path: an I2S stream into a MAX98357A class-D amp. The Cardputer ADV
-// instead routes sidetone through its on-board ES8311 codec; see
+#if defined(DEVICE_HELTEC_V4) || defined(DEVICE_HELTEC_V3)
+// Heltec V4 / V3 path: an I2S stream into a MAX98357A class-D amp. The
+// Cardputer ADV instead routes sidetone through its on-board ES8311 codec; see
 // sidetone_cardputer.cpp.
 #include <Arduino.h>
 #include <math.h>
@@ -142,4 +142,4 @@ void sidetone_set_mute(bool m) { s_muted = m; }     // feeder writes silence whi
 void sidetone_on()  { s_on = true; }   // the envelope ramp gives the clickless edge
 void sidetone_off() { s_on = false; }
 
-#endif // !DEVICE_CARDPUTER_ADV
+#endif // DEVICE_HELTEC_V4 || DEVICE_HELTEC_V3

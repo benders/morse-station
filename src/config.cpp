@@ -1,10 +1,11 @@
 #include "config.h"
+#include "kv.h"
+#include "platform.h"
 #include <Arduino.h>
-#include <Preferences.h>
 #include <string.h>
 
 namespace {
-Preferences prefs;
+kv::Store prefs;
 uint8_t cached_id = 1;
 char    cached_call[config::CALLSIGN_MAX + 1] = "N0CALL";
 char    cached_msg[config::FOX_MSG_MAX + 1]   = "DE N0CALL FOX NEAR THE BIG OAK BY THE LAKE";
@@ -37,15 +38,6 @@ uint8_t clamp_u8(int v, uint8_t lo, uint8_t hi) {
     return (uint8_t)v;
 }
 
-// Default station id derived from the factory eFuse MAC, folded into 1..254
-// (255 is broadcast). Stable per unit with no provisioning or stored value.
-// See espressif/arduino-esp32#932.
-uint8_t mac_station_id() {
-    uint64_t mac = ESP.getEfuseMac();
-    uint8_t x = 0;
-    for (int i = 0; i < 6; i++) x ^= (uint8_t)(mac >> (8 * i));
-    return (uint8_t)(x % 254) + 1;
-}
 }
 
 namespace config {
@@ -53,8 +45,11 @@ namespace config {
 void begin() {
     prefs.begin(NS, false);
 
+    // Default station id from the platform's stable device identifier (eFuse
+    // MAC on ESP32, FICR DEVICEID on nRF52) folded into 1..254.  If an id has
+    // been provisioned, use that instead.
     cached_id = prefs.isKey(KEY_ID) ? prefs.getUChar(KEY_ID, 1)
-                                    : mac_station_id();
+                                    : platform::unique_id_byte();
 
     if (prefs.isKey(KEY_CALL))
         prefs.getString(KEY_CALL, cached_call, sizeof(cached_call));
