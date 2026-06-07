@@ -254,19 +254,30 @@ static constexpr int PIN_OLED_RST = -1;   // sentinel; display.cpp uses
 #define PIN_VBAT_READ 5
 #endif
 
-// Sidetone: 16-bit PCM over the nRF52840 I2S peripheral into a MAX98357A
-// class-D amp — the same DDS/envelope design as the Heltec I2S path, but driven
-// via the nRF52 I2S registers (see sidetone_nrf52.cpp). The authoritative pin
-// map lives in platformio.ini ([env:rak4631] build_flags -DPIN_I2S_BCLK /
-// _LRCLK / _DIN); the #ifndef fallbacks below mirror it so this header still
-// compiles standalone. I2S master TX is push-only (no handshake/readback), so
-// an absent/unwired amp can NOT hang boot — the pins just clock into nothing.
+// Sidetone: two transports, chosen at BUILD TIME (see platformio.ini
+// [env:rak4631]). Default is 16-bit PCM over the nRF52840 I2S peripheral into a
+// MAX98357A class-D amp; -DSIDETONE_PAM8403 instead drives a single PWM pin
+// through an RC low-pass into a PAM8403 analog amp. Both are the same DDS/
+// envelope generator (see sidetone_nrf52.cpp); only the pins/transport differ.
+// The authoritative pin map lives in platformio.ini build_flags; the #ifndef
+// fallbacks below mirror it so this header still compiles standalone. Both
+// transports are output-only/push-only, so an absent/unwired amp can NOT hang
+// boot — the pins just clock into nothing.
 //
 // Pins land on the RAK19007 2.54mm solder headers (the board-to-board sensor
-// slots are not broken out there): BCLK=17 (IO1, J11-2), LRCK=31 (AIN1, J11-1),
-// DIN=16 (TX1, J10-3). Tie the MAX98357A GAIN pin to VIN (a floating GAIN
-// latches off stray voltage -> intermittent distortion; see the Heltec note in
-// docs/components/max98357a.md). Leave SD floating for the board's (L+R)/2 strap.
+// slots are not broken out there).
+#if defined(SIDETONE_PAM8403)
+// PWM analog out -> RC (~1k + 100nF) -> PAM8403 input. One pin: DIN=16 (TX1,
+// J10-3) by default (the I2S BCLK/LRCK pins are unused in this build).
+#ifndef PIN_SIDETONE_PWM
+#define PIN_SIDETONE_PWM 16
+#endif
+static constexpr int PIN_SIDETONE = PIN_SIDETONE_PWM;
+#else
+// I2S: BCLK=17 (IO1, J11-2), LRCK=31 (AIN1, J11-1), DIN=16 (TX1, J10-3). Tie the
+// MAX98357A GAIN pin to VIN (a floating GAIN latches off stray voltage ->
+// intermittent distortion; see the Heltec note in docs/components/max98357a.md).
+// Leave SD floating for the board's (L+R)/2 strap.
 #ifndef PIN_I2S_BCLK
 #define PIN_I2S_BCLK 17
 #endif
@@ -278,6 +289,7 @@ static constexpr int PIN_OLED_RST = -1;   // sentinel; display.cpp uses
 #endif
 static constexpr int PIN_SIDETONE = PIN_I2S_DIN;  // back-compat alias; the I2S
                                                   // path uses the PIN_I2S_* trio
+#endif
 
 // RAK19007 buttons: the base board exposes a USER button (commonly wired to
 // the WB_IO pins / nRF52 GPIO). CONFIRM ON HARDWARE which IO-slot pin the unit
