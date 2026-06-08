@@ -8,7 +8,7 @@ Status board (update as work proceeds — mirror into `TODO.md`):
 | W2 | `src/pins.h` — `DEVICE_WIO_TRACKER_L1` branch | `[x]` |
 | W3 | `src/radio.cpp` — share the nRF52/global-SPI SX1262 path; RF switch + TCXO | `[x]` |
 | W4 | `src/sidetone_nrf52.cpp` — new passive-buzzer backend (`-DSIDETONE_BUZZER`) | `[x]` |
-| W5 | `src/pins.h` + buttons — wire an on-board button as the Morse key + mode btn | `[ ]` |
+| W5 | `src/pins.h` + buttons — wire an on-board button as the Morse key + mode btn | `[x]` (no code — satisfied by W2; verified against variant.h) |
 | W6 | `src/battery.cpp` — gated nRF52 analog read | `[ ]` |
 | W7 | `src/display.cpp` — include Wio in the U8g2 OLED path | `[ ]` |
 | W8 | Extend `platform_nrf52`/`kv_nrf52`/`ble_provision_nrf52`/`sidetone` guards | `[ ]` |
@@ -389,7 +389,19 @@ from the internal buzzer; `mute` silences it; unmute mid-key resumes.
 
 ---
 
-## Phase W5 — Buttons: key + mode
+## Phase W5 — Buttons: key + mode  ✅ (verified — no code needed)
+
+**Resolved with no code change.** Verified against `variants/Seeed_Wio_Tracker_L1/
+variant.h`: `PIN_KEY = 13` (D13 = P0.08 = "User/Program Button", the variant's
+`CANCEL_BUTTON_PIN`, active-LOW) and `PIN_MODE_BTN = 29` (D29 = `TB_PRESS` = the
+5-way joystick centre press). `main.cpp`'s menu/key reads are device-agnostic
+(no `#ifdef DEVICE` gate) and use `INPUT_PULLUP` + `LOW == pressed`, which matches
+these active-LOW buttons. No pin collisions among the Wio's assigned logical pins
+(radio 1/2/3/4/8/9/10, RXEN 5, buzzer 12, key 13, Wire 14/15, vbat 16/30, mode 29).
+(Note: there is no `Rot_Key` on this board — only the user button + joystick — so
+the joystick press stands in for the mode button.)
+
+Original plan (kept for reference):
 
 Mostly done by the `PIN_KEY` / `PIN_MODE_BTN` defines from W2 — `main.cpp`
 already `pinMode(PIN_MODE_BTN, INPUT_PULLUP)` + reads `LOW == pressed`
@@ -464,11 +476,15 @@ Widen each to `#if defined(DEVICE_RAK4631) || defined(DEVICE_WIO_TRACKER_L1)`:
     `InternalFileSystem` (`flash_cache.c`) references it → build fails with
     `'LED_BUILTIN' undeclared` the moment kv_nrf52/InternalFS is pulled in. The
     RAK's WisCore variant defines it; this one doesn't. **Fix:** add
-    `#define LED_BUILTIN <pin>` to the vendored `variant.h` (use the board's
-    status/Mesh LED — e.g. alias `PIN_LED1`/the Mesh_LED pin; check the upstream
-    Meshtastic variant for the exact value). Record the edit in
-    `reference/wio-tracker-l1-pro/README.md` (it's a local change to a vendored
-    file). This blocks the W8 link until fixed.
+    `#define LED_BUILTIN PIN_LED1` to the vendored `variant.h`.
+    **TRAP (verified in W5):** the compiler hint says *"did you mean `LED_BLUE`?"*
+    — do **NOT** use `LED_BLUE`. In this variant `LED_BLUE = PIN_LED2 = D12 =
+    P1.00 = the BUZZER pin` (the variant aliases the buzzer pin as a phantom blue
+    LED). Aliasing `LED_BUILTIN` to it would make `flash_cache.c` toggle the
+    piezo on every LittleFS write → audible clicking on config saves. Use
+    `PIN_LED1` (= 11 = P1.15 = the real Mesh status LED) instead. Record the edit
+    in `reference/wio-tracker-l1-pro/README.md` (local change to a vendored file).
+    This blocks the W8 link until fixed.
 - `src/sidetone_nrf52.cpp` — whole-file guard widened (W4).
 - Double-check `platform_esp32.cpp` / `kv_esp32.cpp` guards do **not** accidentally
   include the Wio (they're ESP-only; leave them).

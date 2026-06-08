@@ -182,9 +182,12 @@ status board live in `wio-tracker-port.md`.
       identity (unlike RAK) — must translate `PIN_BUZZER` (logical D12) to
       absolute GPIO 32 before writing `PSEL.OUT[0]`; see the README's pin-map
       section.
-- [ ] **W5** Buttons — `PIN_KEY = Menu_Key` (logical D13/abs GPIO8); no
-      `Rot_Key` exists on this board, substitute `Joystick_Press`
-      (`TB_PRESS`, logical D29/abs GPIO37) for `PIN_MODE_BTN`.
+- [x] **W5** Buttons — `PIN_KEY = Menu_Key` (logical D13/abs GPIO8, the
+      variant's `CANCEL_BUTTON_PIN`/User Button); no `Rot_Key` exists on this
+      board, substitute `Joystick_Press` (`TB_PRESS`, logical D29/abs GPIO37)
+      for `PIN_MODE_BTN`. No code needed — satisfied by the W2 pin defines;
+      `main.cpp`/`MorseKey` handling is device-agnostic (INPUT_PULLUP, LOW=
+      pressed). Verified against variant.h; no pin collisions.
 - [ ] **W6** `src/battery.cpp` — gated read; gate (`BAT_CTL`, logical D30/abs
       GPIO4) is **active-HIGH** per upstream `initVariant()` (opposite the
       RAK's always-on divider); `ADC_MULTIPLIER = 2.0` upstream — confirm ratio
