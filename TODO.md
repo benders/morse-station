@@ -206,8 +206,11 @@ status board live in `wio-tracker-port.md`.
       reset-reason, LittleFS config, BLE advertising, OLED @ 0x3D, battery
       4.18V/99%. **Remaining HW checks:** on-air radio/RXEN, buttons; and two
       bugs found on hardware:
-        - [ ] OLED slightly distorted on the right edge (likely SH1106 column
-          offset vs the SSD1306 constructor — confirm controller).
+        - [x] OLED slightly distorted on the right edge — the panel is an
+          **SH1106** (132-col RAM, 2-col visible offset), not an SSD1306.
+          Fixed by using `U8G2_SH1106_128X64_NONAME_F_HW_I2C` for the Wio in
+          `display.cpp` (RAK keeps SSD1306). Confirmed clean on hardware.
+          (The variant's `USE_SSD1306` flag was not authoritative.)
         - [x] Constant buzzer "ticking" — Bluefruit auto conn-LED blinks
           LED_BLUE, which aliases the buzzer pin (D12/P1.00). Fixed:
           `Bluefruit.autoConnLed(false)` in `ble_provision_nrf52.cpp` (Wio-only

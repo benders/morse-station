@@ -25,7 +25,19 @@ bool g_oled_ok = true;
 // Tracker variant fixes SDA=D14/SCL=D15, as the Wire defaults, so no explicit
 // pin args are needed (unlike the Heltec constructor, which passes its
 // VEXT-gated SDA/SCL/RST trio explicitly).
-U8G2_SSD1306_128X64_NONAME_F_HW_I2C oled(U8G2_R0, U8X8_PIN_NONE);
+#if defined(DEVICE_WIO_TRACKER_L1)
+// The Wio Tracker L1 Pro's 128x64 panel is an SH1106 controller, NOT an
+// SSD1306. The SH1106 has 132 columns of RAM with only the middle 128 visible
+// (a 2-column offset), so driving it with the SSD1306 init leaves the image
+// shifted and a ~2px band of wrapped content on the RIGHT edge ("slight
+// right-side distortion"). The SH1106 constructor applies the column offset and
+// renders edge-to-edge. (The vendored Meshtastic variant's USE_SSD1306 flag is
+// not authoritative — Meshtastic's OLED library auto-probes the controller at
+// runtime; here we pin it explicitly.)
+U8G2_SH1106_128X64_NONAME_F_HW_I2C oled(U8G2_R0, U8X8_PIN_NONE);
+#else
+U8G2_SSD1306_128X64_NONAME_F_HW_I2C oled(U8G2_R0, U8X8_PIN_NONE);   // RAK1921
+#endif
 
 // (The nRF52 TWIM endTransmission spin-waits on EVENTS_TXSTARTED with no
 // timeout, so a bus held low by a mid-transaction slave hangs forever — hence
