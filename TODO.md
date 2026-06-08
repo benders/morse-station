@@ -155,7 +155,14 @@ status board live in `wio-tracker-port.md`.
       `radio.cpp`'s still-RAK4631-only branches (HSPI/IRAM_ATTR/TCXO_V/
       SPI.begin 4-arg) — exactly the expected W1 outcome; `rak4631` still
       builds clean.
-- [ ] **W2** `src/pins.h` — `DEVICE_WIO_TRACKER_L1` branch.
+- [x] **W2** `src/pins.h` — `DEVICE_WIO_TRACKER_L1` branch. Mirrors the
+      env's `-DPIN_*` (Arduino logical numbers); no `HAS_FEM`/`PIN_FEM_*`,
+      no `SX126X_POWER_EN` (always-on LoRa LDO); `PIN_OLED_RST=-1` sentinel;
+      `PIN_BUZZER`→`PIN_SIDETONE`; `PIN_KEY`=Menu_Key, `PIN_MODE_BTN`=
+      Joystick_Press (no Rot_Key on this board); `BATT_GATE_ACTIVE_HIGH 1`.
+      `pio run -e wio_tracker_l1` now fails in `radio.cpp` (HSPI/TCXO_V/
+      on_rx/SPI.begin 4-arg — W3 territory), not pins.h; `rak4631` still
+      links clean (12.3% RAM / 23.4% flash).
 - [ ] **W3** `src/radio.cpp` — widen RAK4631 guards to cover the Wio (global
       SPI / IRAM_ATTR shim / TCXO_V=1.8f); confirm whether `LoRa_SW`
       (`SX126X_RXEN`, logical D5) needs driving alongside `setDio2AsRfSwitch`.

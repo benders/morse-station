@@ -304,6 +304,100 @@ static constexpr int PIN_SIDETONE = PIN_I2S_DIN;  // back-compat alias; the I2S
 static constexpr int PIN_KEY      = 15;   // RX1 (J10-4), unused/parked — see above
 static constexpr int PIN_MODE_BTN = 34;   // RAK19007 USER button — CONFIRM ON HARDWARE
 
+#elif defined(DEVICE_WIO_TRACKER_L1)
+
+// Seeed Wio Tracker L1 Pro — nRF52840 + Wio-SX1262 (plain SX1262, no FEM),
+// SSD1306 128x64 OLED (I2C), built-in passive piezo buzzer for sidetone.
+// Sibling of the RAK4631 port (same nRF52 backend / global-SPI radio path).
+// See wio-tracker-port.md and reference/wio-tracker-l1-pro/README.md for the
+// resolved pin-map provenance (vendored variant.h; values are ARDUINO LOGICAL
+// pin numbers, NOT raw nRF GPIO numbers — unlike the RAK4631).
+//
+// SX1262 radio: the authoritative pin assignment lives in platformio.ini
+// ([env:wio_tracker_l1] build_flags: -DPIN_NSS / _DIO1 / _NRST / _BUSY / _SCK
+// / _MISO / _MOSI). The #ifndef fallbacks below mirror those values so this
+// header still compiles standalone. radio.cpp drives the global SPI (re-pinned
+// via SPI.begin(sck, miso, mosi, ss)), same as the RAK4631.
+#ifndef PIN_NSS
+#define PIN_NSS  4
+#endif
+#ifndef PIN_DIO1
+#define PIN_DIO1 1
+#endif
+#ifndef PIN_NRST
+#define PIN_NRST 2
+#endif
+#ifndef PIN_BUSY
+#define PIN_BUSY 3
+#endif
+#ifndef PIN_SCK
+#define PIN_SCK  8
+#endif
+#ifndef PIN_MISO
+#define PIN_MISO 9
+#endif
+#ifndef PIN_MOSI
+#define PIN_MOSI 10
+#endif
+
+// No external RF front-end on the Wio Tracker L1 Pro (bare SX1262, chip
+// ceiling +22 dBm): do NOT define HAS_FEM, do not declare PIN_FEM_* constants —
+// radio.cpp's HAS_FEM blocks compile out automatically, same as the RAK4631.
+//
+// IMPORTANT: do NOT define SX126X_POWER_EN here. Unlike the RAK4631, this
+// board's LoRa rail is an always-on LDO with no power-enable GPIO (confirmed
+// in W1) — defining it would wrongly pull radio.cpp's power-enable block into
+// this build.
+
+// SSD1306 128x64 OLED on the default Wire (I2C) bus (SDA=D14/SCL=D15 fixed by
+// the variant). No reset line on this module — U8X8_PIN_NONE.
+static constexpr int PIN_OLED_RST = -1;   // sentinel; display.cpp uses
+                                          // U8X8_PIN_NONE directly for the Wio
+                                          // (W7), this constant is unused there.
+
+// Sidetone: built-in passive piezo buzzer, driven as a square wave through an
+// NPN transistor (active-high). Selected by -DSIDETONE_BUZZER (see
+// sidetone_nrf52.cpp). The vendored variant.h authoritatively #defines
+// PIN_BUZZER (D12 == abs GPIO P1.00), so we do NOT redefine it here — we only
+// consume it. The #else literal (12) is purely so pins.h still compiles
+// standalone (no variant.h); a real build always has variant.h's value.
+#ifdef PIN_BUZZER
+static constexpr int PIN_SIDETONE = PIN_BUZZER;   // from variant.h
 #else
-#error "Define DEVICE_HELTEC_V4, DEVICE_HELTEC_V3, DEVICE_CARDPUTER_ADV, or DEVICE_RAK4631 in build_flags"
+static constexpr int PIN_SIDETONE = 12;           // standalone fallback (D12/P1.00)
+#endif
+
+// Buttons: Menu_Key -> PIN_KEY (telegraph key / menu nav), Joystick_Press
+// (TB_PRESS) -> PIN_MODE_BTN (mode select). NOTE: there is no separate
+// "Rot_Key" on this board (schematic only shows Menu_Key + a 5-way joystick) —
+// the joystick's press/center contact stands in for the RAK4631's Rot_Key role.
+// These are authoritative in platformio.ini ([env:wio_tracker_l1] -DPIN_KEY /
+// -DPIN_MODE_BTN); the #ifndef fallbacks below mirror them. (Unlike the RAK4631
+// branch, the Wio env passes these as -D flags, so they must be consumed as
+// macros here — a `static constexpr int PIN_KEY = ...` would collide with the
+// command-line macro and fail to compile.)
+#ifndef PIN_KEY
+#define PIN_KEY 13          // Menu_Key
+#endif
+#ifndef PIN_MODE_BTN
+#define PIN_MODE_BTN 29     // Joystick_Press (TB_PRESS)
+#endif
+
+// Battery: ADC on PIN_VBAT_ADC through a divider gated by PIN_VBAT_CTRL.
+// POLARITY: the gate is active-HIGH (drive HIGH to connect the divider /
+// enable the ADC read) — opposite the Heltec V3 convention, same sense as the
+// V4. Confirmed in W1 from the upstream initVariant(). ADC_MULTIPLIER = 2.0
+// (see battery.cpp for the W6 calibration work).
+#ifndef PIN_VBAT_ADC
+#define PIN_VBAT_ADC 16
+#endif
+#ifndef PIN_VBAT_CTRL
+#define PIN_VBAT_CTRL 30
+#endif
+
+// Battery gate polarity: Wio gate (PIN_VBAT_CTRL) is active-HIGH — see battery.cpp.
+#define BATT_GATE_ACTIVE_HIGH 1
+
+#else
+#error "Define DEVICE_HELTEC_V4, DEVICE_HELTEC_V3, DEVICE_CARDPUTER_ADV, DEVICE_RAK4631, or DEVICE_WIO_TRACKER_L1 in build_flags"
 #endif
