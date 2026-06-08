@@ -50,6 +50,27 @@ only ships the v6 script, so we vendor v7 and select it via
 from the framework linker dir (on `LIBPATH`). Required for the app to boot on
 this S140-7.3.0 unit — see the SoftDevice correction note above.
 
+## Gotcha: Bluefruit Connect "UART capable but no UART module" = stale phone cache
+
+Symptom: the **Adafruit Bluefruit Connect** app lists the device as UART-capable
+at scan but, once connected, does **not** offer the UART module (while the
+Heltec stations 42/43 work fine in the same app). **This is not a firmware bug.**
+
+The unit ships running **Meshtastic**, which exposes a completely different GATT
+table. iOS/macOS CoreBluetooth caches a device's GATT keyed by its (stable,
+FICR-derived) BLE address, so a phone that previously paired with the device
+under Meshtastic serves the **cached Meshtastic GATT** — which has no plain
+Nordic UART Service — even after our firmware is flashed. Generic NUS terminals
+(and `scripts/ble_cmd.py`) still work because they re-discover or weren't cached.
+
+Verified our GATT is correct and complete (NUS `6e400001` with TX `6e400003`
+notify + CCCD, RX `6e400002` write/write-no-response) and **identical** to the
+working Heltecs — the only difference is the phone's stale cache.
+
+**Fix (phone side):** iOS Settings → Bluetooth → the device → **Forget This
+Device** (or toggle Bluetooth off/on), then rescan in Bluefruit Connect. The
+Heltecs never hit this because they have only ever run this firmware.
+
 ## Local modifications to vendored variant.h (Phase W8)
 
 The vendored `variant.h` does not define `LED_BUILTIN`, but Adafruit's
