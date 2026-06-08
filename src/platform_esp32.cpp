@@ -69,6 +69,31 @@ uint8_t unique_id_byte() {
     return (uint8_t)(x % 254) + 1;
 }
 
+// Full eFuse MAC as the conventional colon-separated string. ESP.getEfuseMac()
+// packs the factory MAC with octet 0 in the LSB, so emitting bytes LSB-first
+// reproduces esptool's read_mac order (e.g. "8C:FD:49:B6:75:5C").
+const char* chip_id_str() {
+    static char buf[18];
+    uint64_t m = ESP.getEfuseMac();
+    snprintf(buf, sizeof(buf), "%02X:%02X:%02X:%02X:%02X:%02X",
+             (uint8_t)(m), (uint8_t)(m >> 8), (uint8_t)(m >> 16),
+             (uint8_t)(m >> 24), (uint8_t)(m >> 32), (uint8_t)(m >> 40));
+    return buf;
+}
+
+// SoC model + revision exactly as the Arduino core reports them. NB: on this
+// core ESP.getChipRevision() returns only the wafer MAJOR (0 on our S3s) — it
+// does NOT expose the minor that esptool prints as "v0.2" (esptool reads the
+// WAFER_VERSION_MINOR eFuse directly). We print the raw int rather than
+// fabricate a minor. SoC only: every ESP32-S3 board here (Heltec V4.2/V4.3, V3,
+// Cardputer) reports the SAME string, so this cannot identify the board model.
+const char* soc_str() {
+    static char buf[28];
+    snprintf(buf, sizeof(buf), "%s rev %d", ESP.getChipModel(),
+             ESP.getChipRevision());
+    return buf;
+}
+
 } // namespace platform
 
 #endif // DEVICE_HELTEC_V4 || DEVICE_CARDPUTER_ADV

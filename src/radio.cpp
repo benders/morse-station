@@ -152,6 +152,25 @@ bool set_tx_power(int dbm) {
     return chip.setOutputPower(dbm) == RADIOLIB_ERR_NONE;
 }
 
+bool has_fem() {
+#ifdef HAS_FEM
+    return true;
+#else
+    return false;
+#endif
+}
+
+void set_pa(bool on) {
+#ifdef HAS_FEM
+    // CPS HIGH -> GC1109 (V4.2) PA path engaged (+~6 dB); LOW -> bypass. On the
+    // V4.3 (KCT8103L) this pin is freed and the part has no bypass, so this is a
+    // no-op there. CTX (TX/RX) still tracks via DIO2 / fem_set_tx() during send.
+    digitalWrite(PIN_FEM_CPS, on ? HIGH : LOW);
+#else
+    (void)on;
+#endif
+}
+
 void start_receive() {
     fem_set_rx();                  // KCT8103L (V4.3): LNA in the RX path
     rx_flag = false;

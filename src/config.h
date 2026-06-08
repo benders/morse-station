@@ -13,6 +13,7 @@ namespace config {
 // Buffer sizes (callsign matches proto::CALLSIGN_MAX; message is generous).
 constexpr size_t CALLSIGN_MAX = 10;
 constexpr size_t FOX_MSG_MAX  = 96;
+constexpr size_t MODEL_MAX    = 24;
 
 void begin();
 
@@ -66,5 +67,17 @@ void    set_volume(uint8_t units);
 // live by the Cardputer 'm' key / the BLE `mute` command. Default false.
 bool muted();
 void set_muted(bool muted);
+
+// Board model identifier. Defaults to default_board_model() — the compile-time
+// platform name (heltec-v4 / wio-tracker-l1 / ...), which is ALWAYS correct for
+// the firmware variant. One binary serves board revisions that are not
+// electrically distinguishable at runtime (e.g. Heltec V4.2 GC1109 vs V4.3
+// KCT8103L — no version strap, FEM control pins are high-Z), so the exact model
+// can be pinned per physical unit with set_board_model() and is kept in NVS
+// (survives reflashes). `show` prints it next to platform::chip_id_str() so the
+// model is always tied to a verifiable hardware id, never to anyone's memory.
+const char* board_model();                       // NVS value, or the default
+void        set_board_model(const char* model);  // "" / nullptr -> revert to default
+const char* default_board_model();               // compile-time platform name
 
 } // namespace config

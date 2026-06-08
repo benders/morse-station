@@ -17,6 +17,24 @@ uint8_t cached_fox_pwr_idx = 0;   // last-selected fox TX power level (PWR_LEVEL
 bool    cached_muted = false;     // sidetone mute (silent node), persisted
 uint8_t cached_volume = 8;        // sidetone level in GAIN_Q15/1024 units (8 -> 8192)
 
+// Compile-time platform name — always correct for the firmware variant. This is
+// the default board model; a more specific model (e.g. a Heltec V4 sub-rev that
+// is NOT electrically distinguishable at runtime) can be pinned per unit in NVS.
+#if defined(DEVICE_HELTEC_V4)
+constexpr const char* DEF_MODEL = "heltec-v4";
+#elif defined(DEVICE_HELTEC_V3)
+constexpr const char* DEF_MODEL = "heltec-v3";
+#elif defined(DEVICE_CARDPUTER_ADV)
+constexpr const char* DEF_MODEL = "cardputer-adv";
+#elif defined(DEVICE_RAK4631)
+constexpr const char* DEF_MODEL = "rak4631";
+#elif defined(DEVICE_WIO_TRACKER_L1)
+constexpr const char* DEF_MODEL = "wio-tracker-l1";
+#else
+constexpr const char* DEF_MODEL = "unknown";
+#endif
+char cached_model[config::MODEL_MAX + 1] = "";   // empty => fall back to DEF_MODEL
+
 constexpr uint8_t WPM_MIN = 5;
 constexpr uint8_t WPM_MAX = 40;
 constexpr uint8_t VOL_MIN = 1;
@@ -33,6 +51,7 @@ constexpr const char* KEY_BMODE = "boot_mode";
 constexpr const char* KEY_FPWR  = "fox_pwr_idx";
 constexpr const char* KEY_MUTE  = "muted";
 constexpr const char* KEY_VOL   = "volume";
+constexpr const char* KEY_MODEL = "board_model";
 
 uint8_t clamp_u8(int v, uint8_t lo, uint8_t hi) {
     if (v < lo) return lo;
@@ -79,6 +98,9 @@ void begin() {
 
     if (prefs.isKey(KEY_VOL))
         cached_volume = clamp_u8(prefs.getUChar(KEY_VOL, cached_volume), VOL_MIN, VOL_MAX);
+
+    if (prefs.isKey(KEY_MODEL))
+        prefs.getString(KEY_MODEL, cached_model, sizeof(cached_model));
 
     prefs.end();
 }
@@ -171,6 +193,23 @@ void set_volume(uint8_t units) {
     cached_volume = v;
     prefs.begin(NS, false);
     prefs.putUChar(KEY_VOL, v);
+    prefs.end();
+}
+
+const char* default_board_model() { return DEF_MODEL; }
+
+const char* board_model() { return cached_model[0] ? cached_model : DEF_MODEL; }
+
+void set_board_model(const char* model) {
+    // Empty / null reverts to the compile-time default (stored as "" so the
+    // read path falls through to DEF_MODEL). kv has no remove(), so an empty
+    // string is the sentinel.
+    char next[config::MODEL_MAX + 1] = "";
+    if (model) strlcpy(next, model, sizeof(next));
+    if (!strcmp(next, cached_model)) return;        // no change -> no flash write
+    strlcpy(cached_model, next, sizeof(cached_model));
+    prefs.begin(NS, false);
+    prefs.putString(KEY_MODEL, cached_model);
     prefs.end();
 }
 

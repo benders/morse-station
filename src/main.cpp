@@ -274,6 +274,52 @@ static bool handle_setup_command(const char* line, Print& out) {
             out.printf("  tx pwr   = %d (%s, %d dBm)\n", pwr_idx,
                        PWR_LEVELS[pwr_idx].label, PWR_LEVELS[pwr_idx].dbm);
         }
+    } else if (!strcmp(line, "pa") || !strncmp(line, "pa ", 3)) {
+        // TESTING AID: toggle the V4 FEM power amplifier (CPS) at runtime so a
+        // bench can A/B +22 dBm (bypass) vs ~+28 dBm (PA engaged) without a
+        // reflash. Runtime-only — NOT persisted; every boot comes up bypassed
+        // (radio::set_pa via fem_power_on). No-op on non-FEM boards and on the
+        // V4.3 (KCT8103L, no CPS bypass pin). Mind FCC §15.249 when engaged.
+        static bool pa_on = false;
+        const char* arg = line + 2;
+        while (*arg == ' ') arg++;
+        if (!radio::has_fem()) {
+            out.println("  pa: no FEM on this board (n/a)");
+        } else {
+            if (!*arg || !strcmp(arg, "show")) {
+                // report only
+            } else if (!strcmp(arg, "on") || !strcmp(arg, "1")) {
+                pa_on = true;  radio::set_pa(true);
+            } else if (!strcmp(arg, "off") || !strcmp(arg, "0")) {
+                pa_on = false; radio::set_pa(false);
+            } else {
+                out.println("  ? pa <on|off>");
+                return false;
+            }
+            out.printf("  pa       = %s (FEM CPS; +~6 dB on V4.2, testing only)\n",
+                       pa_on ? "on" : "off");
+        }
+    } else if (!strcmp(line, "model") || !strncmp(line, "model ", 6)) {
+        // Board model identifier (admin). Persisted in NVS per physical unit, so
+        // the same firmware can be flashed to every board and each retains its
+        // identity across reflashes. `model` / `model show` reports; `model
+        // <name>` pins a specific model (e.g. heltec-v4.2 vs heltec-v4.3, which
+        // are NOT runtime-detectable — no version strap); `model default`
+        // reverts to the compile-time platform name. Always printed with the
+        // hardware chip id so the model can't be wrong relative to the unit.
+        const char* arg = line + 5;
+        while (*arg == ' ') arg++;
+        if (!*arg || !strcmp(arg, "show")) {
+            // report only
+        } else if (!strcmp(arg, "default") || !strcmp(arg, "clear")) {
+            config::set_board_model("");
+        } else {
+            config::set_board_model(arg);
+        }
+        bool dflt = !strcmp(config::board_model(), config::default_board_model());
+        out.printf("  model    = %s%s  chip=%s  soc=%s\n",
+                   config::board_model(), dflt ? " (default)" : "",
+                   platform::chip_id_str(), platform::soc_str());
     } else if (!strcmp(line, "reboot") || !strcmp(line, "restart")) {
         // Remote reboot: the boot menu auto-selects the stored boot_mode after
         // its idle timeout, so this applies a "mode <n>" change with no physical
@@ -363,6 +409,10 @@ static bool handle_setup_command(const char* line, Print& out) {
                    config::muted() ? "on" : "off", mn,
                    g_keymode == KEYMODE_EDGE ? "edge" : "compat",
                    config::fox_message());
+        bool dflt = !strcmp(config::board_model(), config::default_board_model());
+        out.printf("  model    = %s%s  chip=%s  soc=%s\n",
+                   config::board_model(), dflt ? " (default)" : "",
+                   platform::chip_id_str(), platform::soc_str());
         out.printf("  debug    = %s\n", g_debug ? "on" : "off");
     } else if (!strcmp(line, "batt")) {
         // Raw battery readout — disambiguates a 0% meter (no cell / flat vs a
@@ -395,9 +445,10 @@ static bool handle_setup_command(const char* line, Print& out) {
         return true;
     } else {
         out.println("  ? call <SIGN> | msg <text> | id <n> | wpm <n> | "
-                    "farns <n> | pwr <0..3> | mode <0..2> | vol <1..32> | "
-                    "mute [on|off] | keymode <compat|edge> | debug [on|off] | "
-                    "show | bootlog [clear] | reboot | done");
+                    "farns <n> | pwr <0..3> | pa <on|off> | mode <0..2> | "
+                    "vol <1..32> | mute [on|off] | keymode <compat|edge> | "
+                    "model [<name>|default] | debug [on|off] | show | "
+                    "bootlog [clear] | reboot | done");
     }
     return false;
 }

@@ -23,6 +23,17 @@ bool send(const uint8_t* data, size_t len);
 // by the fox to switch high/medium/low for the space at hand.
 bool set_tx_power(int dbm);
 
+// True if this board has an external FEM (PA/LNA) — i.e. the Heltec V4.
+bool has_fem();
+
+// TESTING AID: engage (true) or bypass (false) the V4 FEM power amplifier via
+// its CPS line. PA bypass ≈ chip power (+22 dBm ceiling); PA engaged ≈ +28 dBm
+// on the V4.2 (GC1109, +~6 dB). Lets a bench A/B +22 vs +28 with no reflash.
+// No-op on boards without a FEM, and on the V4.3 (KCT8103L) whose part has no
+// CPS bypass pin. NOT persisted — fem_power_on() forces bypass on every boot,
+// so a unit never comes up hot. Weigh FCC §15.249 before transmitting engaged.
+void set_pa(bool on);
+
 // Put the radio into continuous receive. Call once after init() on RX nodes.
 void start_receive();
 

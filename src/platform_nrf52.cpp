@@ -117,6 +117,20 @@ uint8_t unique_id_byte() {
     return (uint8_t)(x % 254) + 1;
 }
 
+// Full 64-bit factory FICR DEVICEID as a hex string (the nRF52 unique chip id).
+const char* chip_id_str() {
+    static char buf[20];
+    uint32_t hi = NRF_FICR->DEVICEID[1];
+    uint32_t lo = NRF_FICR->DEVICEID[0];
+    snprintf(buf, sizeof(buf), "%08lX%08lX",
+             (unsigned long)hi, (unsigned long)lo);
+    return buf;
+}
+
+// SoC family. No silicon-revision read wired up here (FICR has it, but it isn't
+// needed for board identity); the nRF52840 is the only nRF part in this project.
+const char* soc_str() { return "nRF52840"; }
+
 } // namespace platform
 
 #endif // DEVICE_RAK4631 || DEVICE_WIO_TRACKER_L1
