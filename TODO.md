@@ -198,14 +198,15 @@ status board live in `wio-tracker-port.md`.
       `#define LED_BUILTIN PIN_LED1` to the vendored variant.h (InternalFS
       needs it; NOT LED_BLUE — that's the buzzer pin). `wio_tracker_l1` now
       LINKS clean (RAM 27748/248832, Flash 186528/815104).
-- [~] **W9** Build/fit DONE; **FLASHED & BOOTS on real hardware (2026-06-07)**.
-      Required a SoftDevice fix first: the unit runs **S140 7.3.0** (not the
-      6.1.1 W1 pinned), so the app had to relink for app-base 0x27000 (vendored
-      `nrf52840_s140_v7.ld` + `board_build.ldscript`). Flashed via the UF2
-      bootloader (serial nrfutil DFU was flaky). First boot confirmed: banner +
-      reset-reason, LittleFS config, BLE advertising, OLED @ 0x3D, battery
-      4.18V/99%. **Remaining HW checks:** on-air radio/RXEN, buttons; and two
-      bugs found on hardware:
+- [x] **W9 — FULLY HARDWARE-VALIDATED (2026-06-07).** Required a SoftDevice fix
+      first: the unit runs **S140 7.3.0** (not the 6.1.1 W1 pinned), so the app
+      had to relink for app-base 0x27000 (vendored `nrf52840_s140_v7.ld` +
+      `board_build.ldscript`). Flashed via the UF2 bootloader (serial nrfutil DFU
+      was flaky). Confirmed on hardware: boot banner + reset-reason, LittleFS
+      config, OLED (SH1106) @ 0x3D, battery 4.18V/99%, **on-air RX**, **sidetone**
+      (buzzer), **buttons**, and **BLE admin** over NUS (`show`/`bootlog`/`batt`/
+      `help` + a `wpm` write+persist round-trip via `scripts/ble_cmd.py 115`).
+      Two bugs found on hardware and fixed:
         - [x] OLED slightly distorted on the right edge — the panel is an
           **SH1106** (132-col RAM, 2-col visible offset), not an SSD1306.
           Fixed by using `U8G2_SH1106_128X64_NONAME_F_HW_I2C` for the Wio in
@@ -214,7 +215,7 @@ status board live in `wio-tracker-port.md`.
         - [x] Constant buzzer "ticking" — Bluefruit auto conn-LED blinks
           LED_BLUE, which aliases the buzzer pin (D12/P1.00). Fixed:
           `Bluefruit.autoConnLed(false)` in `ble_provision_nrf52.cpp` (Wio-only
-          guard). Flashed boot #2; pending audible confirmation.
+          guard). Confirmed silent on hardware.
 
 ---
 

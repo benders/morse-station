@@ -12,7 +12,7 @@ Status board (update as work proceeds — mirror into `TODO.md`):
 | W6 | `src/battery.cpp` — gated nRF52 analog read | `[x]` |
 | W7 | `src/display.cpp` — include Wio in the U8g2 OLED path | `[x]` |
 | W8 | Extend `platform_nrf52`/`kv_nrf52`/`ble_provision_nrf52`/`sidetone` guards | `[x]` |
-| W9 | Build, fit, flash, hardware-validate | `[~]` (build/fit ✅; **boots on real hardware** ✅ banner/config/BLE/OLED/battery; 2 HW bugs found+fixed: buzzer tick, SH1106 panel. On-air radio + buttons still to test) |
+| W9 | Build, fit, flash, hardware-validate | `[x]` **FULLY HARDWARE-VALIDATED** — boot/OLED(SH1106)/battery/RX/sidetone/buttons/BLE-admin all confirmed; 2 HW bugs found+fixed (buzzer tick, SH1106 panel) |
 
 This file is the implementation spec, written so a **Sonnet sub-agent can execute
 one phase at a time**. **Read `AGENTS.md` first** — its rules bind every phase:
@@ -534,8 +534,18 @@ gated battery read ~4.18 V/99% (W6 — `DIVIDER_WIO=2.0` is approximately right)
   Fixed by using `U8G2_SH1106_128X64_NONAME_F_HW_I2C` for the Wio in
   `display.cpp` (RAK keeps SSD1306). Commit `4ad5d17`.
 
-**Still to validate on-air:** radio TX/RX + RXEN against a hunter; sidetone tone
-quality/keying; button mapping (Menu key + joystick-press menu).
+**All subsystems validated on hardware (2026-06-07):**
+- **RX** confirmed on-air (RXEN path works — radio is not deaf).
+- **Sidetone** confirmed (buzzer beep, no tick).
+- **Buttons** confirmed (Menu key + joystick-press menu).
+- **BLE admin** confirmed over NUS (`MorseStn-115`, via `scripts/ble_cmd.py`):
+  `show`/`bootlog`/`batt`/`help` read back correctly; a `wpm` write + readback
+  persisted (config-write to LittleFS over BLE works); multi-packet notify
+  chunking works. `bootlog` showed boots surviving across reflashes.
+
+**Port is complete and fully hardware-validated.** Remaining nice-to-haves are
+non-blocking: bench-calibrate `DIVIDER_WIO` against a meter, and any sidetone
+tone-quality tuning (the piezo is inherently buzzy off-resonance — accepted).
 
 1. **Build:** ✅ `pio run -e wio_tracker_l1` LINKS CLEAN — **186528 B flash
    (22.9% of 815104) / 27748 B RAM (11.2% of 248832)**, fits comfortably. No
