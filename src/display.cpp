@@ -1,6 +1,6 @@
 #include "display.h"
-#if defined(DEVICE_HELTEC_V4) || defined(DEVICE_HELTEC_V3) || defined(DEVICE_RAK4631)
-// Heltec V4 / V3 / RAK4631 path: 128x64 mono SSD1306-class OLED via U8g2
+#if defined(DEVICE_HELTEC_V4) || defined(DEVICE_HELTEC_V3) || defined(DEVICE_RAK4631) || defined(DEVICE_WIO_TRACKER_L1)
+// Heltec V4 / V3 / RAK4631 / Wio Tracker L1 Pro path: 128x64 mono SSD1306-class OLED via U8g2
 // (Heltec's on-board SSD1315 and the RAK1921 SSD1306 are both U8g2
 // "ssd1306_128x64_noname" panels). The Cardputer ADV has a 240x135 colour
 // ST7789V2 driven by M5.Display; see display_cardputer.cpp.
@@ -14,14 +14,15 @@
 namespace {
 
 // Set false if the panel can't be initialized — every draw call then becomes a
-// no-op so a missing/stuck OLED can't lock up the whole node. Only the RAK path
-// clears it (see begin()); the Heltec panels are always present, so it stays
-// true there and the guards are free.
+// no-op so a missing/stuck OLED can't lock up the whole node. Only the RAK /
+// Wio Tracker path clears it (see begin()); the Heltec panels are always
+// present, so it stays true there and the guards are free.
 bool g_oled_ok = true;
 
-#if defined(DEVICE_RAK4631)
-// RAK1921 OLED: no reset line (U8X8_PIN_NONE), default Wire / HW-I2C — the
-// WisCore variant fixes SDA=13/SCL=14 as the Wire defaults, so no explicit
+#if defined(DEVICE_RAK4631) || defined(DEVICE_WIO_TRACKER_L1)
+// RAK1921 / Wio Tracker L1 Pro OLED: no reset line (U8X8_PIN_NONE), default
+// Wire / HW-I2C — the WisCore variant fixes SDA=13/SCL=14, and the Wio
+// Tracker variant fixes SDA=D14/SCL=D15, as the Wire defaults, so no explicit
 // pin args are needed (unlike the Heltec constructor, which passes its
 // VEXT-gated SDA/SCL/RST trio explicitly).
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C oled(U8G2_R0, U8X8_PIN_NONE);
@@ -87,7 +88,7 @@ int draw_battery() {
 namespace display {
 
 void begin() {
-#if defined(DEVICE_RAK4631)
+#if defined(DEVICE_RAK4631) || defined(DEVICE_WIO_TRACKER_L1)
     // Recover a possibly-stuck I2C bus before letting U8g2 (and the no-timeout
     // nRF52 TWIM) touch it; skip the OLED entirely if it can't be freed, so a
     // bad bus degrades to "headless node" instead of a boot hang. (A stuck bus
@@ -112,8 +113,9 @@ void begin() {
     if (addr == 0x3D) oled.setI2CAddress(0x3D << 1);
 #else
     // Heltec V4/V3 gate the OLED's 3.3V rail behind VEXT_CTRL. The RAK19007
-    // base board has no such switched peripheral rail — the RAK1921 OLED is
-    // always powered — so this step is skipped entirely for RAK4631.
+    // base board (and the Wio Tracker L1 Pro) has no such switched peripheral
+    // rail — the OLED is always powered — so this step is skipped entirely
+    // for RAK4631 / DEVICE_WIO_TRACKER_L1.
     pinMode(PIN_VEXT_CTRL, OUTPUT);
     digitalWrite(PIN_VEXT_CTRL, LOW);   // power peripheral rail (OLED)
     delay(50);
@@ -229,4 +231,4 @@ void status(const char* title, const char* line1, const char* line2) {
 }
 
 } // namespace display
-#endif // DEVICE_HELTEC_V4 || DEVICE_HELTEC_V3 || DEVICE_RAK4631
+#endif // DEVICE_HELTEC_V4 || DEVICE_HELTEC_V3 || DEVICE_RAK4631 || DEVICE_WIO_TRACKER_L1

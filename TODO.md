@@ -192,7 +192,7 @@ status board live in `wio-tracker-port.md`.
       GPIO4) is **active-HIGH** per upstream `initVariant()` (opposite the
       RAK's always-on divider); `ADC_MULTIPLIER = 2.0` upstream — confirm ratio
       on the bench.
-- [ ] **W7** `src/display.cpp` — include Wio in the U8g2 SSD1306 I2C path.
+- [x] **W7** `src/display.cpp` — include Wio in the U8g2 SSD1306 I2C path.
 - [ ] **W8** Extend `platform_nrf52`/`kv_nrf52`/`ble_provision_nrf52`/
       `sidetone` device guards to cover `DEVICE_WIO_TRACKER_L1`.
 - [ ] **W9** Build, fit, flash, hardware-validate.
