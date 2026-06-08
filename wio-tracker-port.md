@@ -12,7 +12,7 @@ Status board (update as work proceeds — mirror into `TODO.md`):
 | W6 | `src/battery.cpp` — gated nRF52 analog read | `[x]` |
 | W7 | `src/display.cpp` — include Wio in the U8g2 OLED path | `[x]` |
 | W8 | Extend `platform_nrf52`/`kv_nrf52`/`ble_provision_nrf52`/`sidetone` guards | `[x]` |
-| W9 | Build, fit, flash, hardware-validate | `[~]` (build/fit ✅ 186528/27748, fits; flash + HW-validate pending — no unit) |
+| W9 | Build, fit, flash, hardware-validate | `[~]` (build/fit ✅; **flashed + boots on real hardware** ✅ banner/config/BLE/OLED/battery; radio+sidetone+buttons still to test) |
 
 This file is the implementation spec, written so a **Sonnet sub-agent can execute
 one phase at a time**. **Read `AGENTS.md` first** — its rules bind every phase:
@@ -497,8 +497,32 @@ Widen each to `#if defined(DEVICE_RAK4631) || defined(DEVICE_WIO_TRACKER_L1)`:
 
 ## Phase W9 — Build, fit, flash, verify
 
-**Status: build/fit DONE & verified; flash + hardware-validate PENDING (no unit
-in-hand).** Same posture the RAK4631 port shipped in.
+**Status: build/fit DONE; FLASHED & BOOTS on real hardware (2026-06-07).**
+Remaining: on-air radio, sidetone/buzzer audio, and button checks.
+
+**Flashing gotcha (resolved): SoftDevice version.** The unit ships with **S140
+7.3.0** (per `INFO_UF2.TXT`), not the 6.1.1 the board JSON was first pinned to.
+Serial `nrfutil` DFU was flaky (timed out / dropped mid-transfer); the reliable
+path was the **UF2 mass-storage bootloader** (double-tap reset → `TRACKER L1`
+volume → copy `firmware.uf2`). But first the app had to be relinked for the
+7.3.0 app base `0x27000` (vendored `nrf52840_s140_v7.ld` + `board_build.ldscript`)
+— see `reference/wio-tracker-l1-pro/README.md`. To reproduce:
+`pio run -e wio_tracker_l1`, then
+`python <fw>/tools/uf2conv/uf2conv.py .pio/build/wio_tracker_l1/firmware.hex -c
+-f 0xADA52840 -o firmware.uf2`, then copy to `/Volumes/TRACKER L1/`.
+
+**First boot (confirmed):**
+```
+# boot #1 reason now=0(POWERON) prev=0(POWERON)
+# config: id=115 call=N0CALL wpm=15 ...
+# BLE provisioning advertising as "MorseStn-115"
+# oled: bus=idle addr=0x3D
+# mode=0 station_id=115
+# batt 4.18V -> 99%
+```
+Validated by that one boot: banner + nRF52 reset-reason label, LittleFS config
+read (W8), Bluefruit BLE advertising (W8), OLED present on I²C @ 0x3D (W7 probe),
+gated battery read ~4.18 V/99% (W6 — `DIVIDER_WIO=2.0` is approximately right).
 
 1. **Build:** ✅ `pio run -e wio_tracker_l1` LINKS CLEAN — **186528 B flash
    (22.9% of 815104) / 27748 B RAM (11.2% of 248832)**, fits comfortably. No

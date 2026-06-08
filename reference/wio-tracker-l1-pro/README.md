@@ -24,15 +24,31 @@ Source: `github.com/meshtastic/firmware`, commit
   and [`variant.cpp`](https://github.com/meshtastic/firmware/blob/8c4900a52fca19f506f1a19834bb5371c1668d93/variants/nrf52840/seeed_wio_tracker_L1/variant.cpp)
 
 Vendored into this repo as:
-- `boards/seeed_wio_tracker_l1.json` — adapted from the upstream board JSON, but
-  cross-checked against `boards/wiscore_rak4631.json` per the plan: MCU
-  `nrf52840`, SoftDevice **S140 6.1.1** (not upstream's 7.3.0 — matches what
-  this project's `nrf52_base`/toolchain expects, mirroring the RAK board JSON),
-  ldscript `nrf52840_s140_v6.ld`, `0xFF000` bootloader settings addr, nrfutil
-  upload @ 1200 bps touch, flash/RAM = 815104 / 248832.
+- `boards/seeed_wio_tracker_l1.json` — adapted from the upstream board JSON, MCU
+  `nrf52840`, SoftDevice **S140 7.3.0** (`sd_fwid 0x0123`), ldscript
+  `nrf52840_s140_v7.ld`, `0xFF000` bootloader settings addr, nrfutil upload @
+  1200 bps touch, flash/RAM = 815104 / 248832.
+  - **SoftDevice correction (W9, on hardware):** W1 initially pinned this to
+    **S140 6.1.1 / `nrf52840_s140_v6.ld`** to mirror the RAK board JSON. That was
+    WRONG for this board — the unit's bootloader (`INFO_UF2.TXT`) reports
+    **SoftDevice S140 7.3.0**, whose application base is `0x27000` (S140 7.x is
+    0x1000 larger than 6.1.1's `0x26000`). An app linked for the v6 base overlaps
+    the 7.3.0 SoftDevice and will not boot. Upstream Meshtastic correctly used
+    7.3.0. Fixed by reverting to 7.3.0 / v7 (see the vendored ldscript note below).
+    The device booted on the first UF2 flash after this fix.
 - `variants/Seeed_Wio_Tracker_L1/variant.h` + `variant.cpp` — copied verbatim
   from upstream (only the dir name changed, to match this project's
   `WisCore_RAK4631_Board`-style naming convention).
+
+## Vendored ldscript: nrf52840_s140_v7.ld (Phase W9)
+
+`variants/Seeed_Wio_Tracker_L1/nrf52840_s140_v7.ld` is a local copy of the
+framework's `nrf52840_s140_v6.ld` with the single change `FLASH ORIGIN
+0x26000 -> 0x27000` (app base for S140 7.x; RAM unchanged). The stock framework
+only ships the v6 script, so we vendor v7 and select it via
+`[env:wio_tracker_l1] board_build.ldscript`. `nrf52_common.ld` still resolves
+from the framework linker dir (on `LIBPATH`). Required for the app to boot on
+this S140-7.3.0 unit — see the SoftDevice correction note above.
 
 ## Local modifications to vendored variant.h (Phase W8)
 

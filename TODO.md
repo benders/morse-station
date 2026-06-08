@@ -198,13 +198,19 @@ status board live in `wio-tracker-port.md`.
       `#define LED_BUILTIN PIN_LED1` to the vendored variant.h (InternalFS
       needs it; NOT LED_BLUE — that's the buzzer pin). `wio_tracker_l1` now
       LINKS clean (RAM 27748/248832, Flash 186528/815104).
-- [~] **W9** Build/fit DONE & verified: `wio_tracker_l1` links clean at
-      **186528 B flash (22.9%) / 27748 B RAM (11.2%)**, fits comfortably; all
-      four regressions (rak4631/heltec_v4/heltec_v3/cardputer_adv) still link.
-      **Flash + hardware-validate PENDING — no Wio unit in-hand.** Top
-      unvalidated risks (see wio-tracker-port.md W9): buzzer on→off→on re-key
-      gating, RXEN RX (deaf?), battery DIVIDER_WIO=2.0 calibration + gate
-      polarity, TCXO 1.8 V, button mapping.
+- [~] **W9** Build/fit DONE; **FLASHED & BOOTS on real hardware (2026-06-07)**.
+      Required a SoftDevice fix first: the unit runs **S140 7.3.0** (not the
+      6.1.1 W1 pinned), so the app had to relink for app-base 0x27000 (vendored
+      `nrf52840_s140_v7.ld` + `board_build.ldscript`). Flashed via the UF2
+      bootloader (serial nrfutil DFU was flaky). First boot confirmed: banner +
+      reset-reason, LittleFS config, BLE advertising, OLED @ 0x3D, battery
+      4.18V/99%. **Remaining HW checks:** on-air radio/RXEN, buttons; and two
+      bugs found on hardware:
+        - [ ] OLED slightly distorted on the right edge (likely SH1106 column
+          offset vs the SSD1306 constructor — confirm controller).
+        - [ ] Constant buzzer "ticking" — Bluefruit auto conn-LED blinks
+          LED_BLUE, which aliases the buzzer pin (D12/P1.00); disable
+          `autoConnLed`.
 
 ---
 
