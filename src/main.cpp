@@ -67,6 +67,13 @@ static bool g_live_apply = false;
 
 static uint16_t seq = 0;
 static uint32_t last_tx = 0;
+
+// Runtime keying-protocol toggle (E3): "compat" streams KeyState every
+// TX_INTERVAL_MS (current behavior, the default — no change unless flipped);
+// "edge" emits EdgeEvents only on key transitions plus an idle heartbeat. Not
+// yet NVS-persisted (E5) — a fresh boot always starts in compat.
+enum KeyMode { KEYMODE_COMPAT = 0, KEYMODE_EDGE = 1 };
+static uint8_t g_keymode = KEYMODE_COMPAT;
 static uint32_t last_ident = 0;
 static uint32_t pause_until = 0;
 static uint32_t last_draw = 0;
@@ -299,14 +306,34 @@ static bool handle_setup_command(const char* line, Print& out) {
         }
         out.printf("  vol      = %u (gain %u)\n",
                    config::volume(), (unsigned)config::volume() * 1024);
+    } else if (!strcmp(line, "keymode") || !strcmp(line, "keymode show") ||
+               !strncmp(line, "keymode ", 8)) {
+        // Runtime toggle between the compat KeyState stream (default — no
+        // behavior change) and EdgeEvent emission (E3). Not yet NVS-persisted
+        // (E5): a reboot always comes back up in compat. See docs/edge-events.md.
+        const char* arg = line + 7;
+        while (*arg == ' ') arg++;
+        if (!*arg || !strcmp(arg, "show")) {
+            // report only
+        } else if (!strcmp(arg, "compat")) {
+            g_keymode = KEYMODE_COMPAT;
+        } else if (!strcmp(arg, "edge")) {
+            g_keymode = KEYMODE_EDGE;
+        } else {
+            out.println("  ? keymode <compat|edge>");
+            return false;
+        }
+        out.printf("  keymode  = %s\n", g_keymode == KEYMODE_EDGE ? "edge" : "compat");
     } else if (!strcmp(line, "show")) {
         static const char* mnames[] = {"Hunter", "Fox", "Livekey", "Hibernate"};
         uint8_t bm = config::boot_mode();
         const char* mn = (bm < 4) ? mnames[bm] : "?";
-        out.printf("  id=%u call=%s wpm=%u farns=%u vol=%u mute=%s mode=%s msg=\"%s\"\n",
+        out.printf("  id=%u call=%s wpm=%u farns=%u vol=%u mute=%s mode=%s "
+                   "keymode=%s msg=\"%s\"\n",
                    config::station_id(), config::callsign(),
                    config::wpm(), config::char_wpm(), config::volume(),
                    config::muted() ? "on" : "off", mn,
+                   g_keymode == KEYMODE_EDGE ? "edge" : "compat",
                    config::fox_message());
     } else if (!strcmp(line, "batt")) {
         // Raw battery readout — disambiguates a 0% meter (no cell / flat vs a
@@ -340,7 +367,8 @@ static bool handle_setup_command(const char* line, Print& out) {
     } else {
         out.println("  ? call <SIGN> | msg <text> | id <n> | wpm <n> | "
                     "farns <n> | pwr <0..3> | mode <0..2> | vol <1..32> | "
-                    "mute [on|off] | show | bootlog [clear] | reboot | done");
+                    "mute [on|off] | keymode <compat|edge> | show | "
+                    "bootlog [clear] | reboot | done");
     }
     return false;
 }
@@ -554,6 +582,75 @@ static void tx_keystate(uint32_t now, bool down) {
     radio::send(buf, proto::PACKET_LEN);
 }
 
+// Edge-event TX (E3, docs/edge-events.md): send a packet only when the key
+// changes level, carrying the *measured* duration of the segment that just
+// ended plus the one before it (self-heals a single lost packet), and an idle
+// heartbeat re-asserting the current level so a receiver has presence/re-anchor
+// even when the key sits still for a long gap. Mirrors tx_keystate's role in
+// the compat path but is timed by the key, not a fixed cadence.
+static void tx_edge(uint32_t now, bool down) {
+    static bool     inited      = false;
+    static bool     last_level  = false;  // level of the currently-open segment
+    static uint32_t seg_start_ms = 0;     // when the open segment began
+    static uint16_t prev_dur_ms  = 0;     // duration of the segment before that
+    static uint32_t last_tx_ms   = 0;     // last time we transmitted anything
+    static uint8_t  edge_seq     = 0;     // EdgeEvent's own seq space (not `seq`)
+
+    proto::EdgeEvent ev{};
+    bool send = false;
+
+    if (!inited) {
+        // First call: nothing has "ended" yet. Open a segment at the current
+        // level and immediately announce it as a heartbeat so a receiver learns
+        // our presence and absolute level without waiting a full HEARTBEAT_MS.
+        inited       = true;
+        last_level   = down;
+        seg_start_ms = now;
+        prev_dur_ms  = 0;
+        last_tx_ms   = now;
+        ev.flags     = (uint8_t)((last_level ? proto::EDGE_FLAG_DOWN : 0) |
+                                 proto::EDGE_FLAG_HEARTBEAT);
+        ev.dur_now_ms = 0;
+        ev.dur_prev_ms = prev_dur_ms;
+        send = true;
+    } else if (down != last_level) {
+        // Real edge: the segment at `last_level` just ended after `dur` ms.
+        // flags carries the level being ENTERED (= `down`).
+        uint16_t dur = (uint16_t)(now - seg_start_ms);
+        ev.flags       = (uint8_t)(down ? proto::EDGE_FLAG_DOWN : 0);
+        ev.dur_now_ms  = dur;
+        ev.dur_prev_ms = prev_dur_ms;
+        send = true;
+
+        prev_dur_ms  = dur;
+        last_level   = down;
+        seg_start_ms = now;
+        last_tx_ms   = now;
+    } else if (now - last_tx_ms >= proto::HEARTBEAT_MS) {
+        // No edge, but the key has been steady long enough to need a presence
+        // re-assert. Reports elapsed-so-far of the still-open segment; does NOT
+        // touch seg_start_ms/last_level — the segment keeps accumulating.
+        uint32_t elapsed = now - seg_start_ms;
+        ev.flags       = (uint8_t)((last_level ? proto::EDGE_FLAG_DOWN : 0) |
+                                   proto::EDGE_FLAG_HEARTBEAT);
+        ev.dur_now_ms  = (uint16_t)(elapsed > 65535 ? 65535 : elapsed);
+        ev.dur_prev_ms = prev_dur_ms;
+        send = true;
+
+        last_tx_ms = now;
+    }
+
+    if (!send) return;
+
+    ev.magic      = proto::MAGIC_EDGE;
+    ev.station_id = config::station_id();
+    ev.seq        = edge_seq++;
+
+    uint8_t buf[proto::EDGE_LEN];
+    proto::encode_edge(ev, buf);
+    radio::send(buf, proto::EDGE_LEN);
+}
+
 // Send a station-ID packet now (callsign + keying speeds). A rare, ~ms
 // transmission, so it doesn't perturb the 30 ms keystate stream.
 static void send_ident(uint32_t now) {
@@ -605,8 +702,11 @@ static void loop_fox(uint32_t now) {
     // defeats the hunt. The fox only keys the radio; hunters hear the Morse from
     // the received keystate. (The display still shows "*" as a keying indicator.)
     set_tone(false);
-    tx_keystate(now, down);
-    tx_ident(now);   // periodic station-ID packet (Part 97 callsign ID)
+    // keymode gate (E3): "edge" emits EdgeEvents on transitions + heartbeat;
+    // "compat" (default) keeps the existing 30 ms KeyState stream untouched.
+    if (g_keymode == KEYMODE_EDGE) tx_edge(now, down);
+    else                           tx_keystate(now, down);
+    tx_ident(now);   // periodic station-ID packet (Part 97 callsign ID) — both modes
 
     if (now - last_draw >= 100) {
         last_draw = now;
@@ -618,7 +718,8 @@ static void loop_livekey(uint32_t now) {
     key.update();
     bool down = key.down();
     set_tone(down);
-    tx_keystate(now, down);
+    if (g_keymode == KEYMODE_EDGE) tx_edge(now, down);
+    else                           tx_keystate(now, down);
 
     if (now - last_draw >= 100) { last_draw = now; display::livekey(seq, down); }
 }
