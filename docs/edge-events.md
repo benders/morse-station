@@ -218,8 +218,11 @@ mid-loop join). Exit non-zero on mismatch. Runs the matrix unattended:
   wrapper) per above; run the full matrix on stations 115/43/42 at 5/13/20 WPM,
   both keymodes, each board as fox. Capture results. Commit.
 - **E7 — field tune.** Only after E6 passes on the bench: physical-distance
-  loss/decode, then classifier polish ("approach 1") if anything remains.
-  Update `docs/protocol.md` with the edge model. Commit.
+  loss/decode, then classifier polish ("approach 1") if anything remains. Also
+  resolve the nRF52 (Wio) **Fox TX power** weakness found in E6 (~80 % loss as a
+  fox; fine as a hunter). Commit. *(`docs/protocol.md` was updated with the edge
+  model during E6 — the `compat`/`edge` models, the `EdgeEvent` format, the
+  `lvl`/`dn` semantics gotcha, and the heartbeat/watchdog timings.)*
 
 ## E6 bench validation results (2026-06-08)
 

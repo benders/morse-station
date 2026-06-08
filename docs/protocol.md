@@ -5,20 +5,59 @@ parameters, packet formats, timing, addressing, and the regulatory basis. The
 authoritative source is the firmware (`src/radio.cpp`, `src/protocol.h`,
 `src/main.cpp`); this document mirrors it.
 
-## Model — keystate broadcast
+The link supports **two keying transports**, selected per transmitter by the
+`keymode` command (default `compat`). Hunters are **bilingual** — they decode
+either and auto-follow whatever a fox is sending, so the two coexist on one net.
 
-The transmitter sends its **current key-down/up state** on a fixed cadence;
+- **`compat` — keystate broadcast** (legacy, "approach A"). Below.
+- **`edge` — edge keying.** On-edge packets carrying TX-measured durations. See
+  *Model — edge keying* and the `EdgeEvent` format. Bench-validated to decode
+  far more reliably than keystate; see `edge-events.md`.
+
+## Model — keystate broadcast (`keymode compat`)
+
+The transmitter sends its **current key-down/up state** on a fixed 30 ms cadence;
 receivers reconstruct element timing from the stream and drive their own
-sidetone and decoder. This is "approach A" from the original design.
+sidetone and decoder.
 
-- **Self-healing.** No ACKs, no retries. A dropped packet is corrected by the
-  next one ~30 ms later. At 15–30 WPM a single lost packet never elides an
-  element.
+- **Loss behavior.** No ACKs, no retries; a dropped packet is nominally
+  corrected by the next one ~30 ms later. **But** the stream is high-rate
+  (~25–33 pkt/s): on a real bench it sheds ~19 % of packets *even at point-blank
+  range* (airtime saturation), and because the receiver **samples** key level,
+  every drop perturbs timing. At point-blank this measurably garbles the decode
+  — the error floor that motivated edge keying. See the comparison in
+  `edge-events.md`.
 - **One format, two sources.** The canned fox loop feeds the same keystate
   stream the live telegraph key produces, so a single protocol carries both the
   pre-programmed fox and live keying to any hunter.
 - **Stateless receivers.** A hunter needs no association, pairing, or prior
   knowledge — it locks onto the first valid packet it hears.
+
+## Model — edge keying (`keymode edge`)
+
+Instead of sampling key level on a clock, the transmitter sends a packet only on
+each key **edge**, carrying the **TX-measured duration** of the segment that just
+ended. This decouples decode timing from lossy, jittered radio arrival times: the
+receiver feeds those exact durations to its element classifier, so on-air jitter
+and the inter-packet rate no longer corrupt timing.
+
+- **8× fewer packets.** Only edges (plus an idle heartbeat) transmit, not a 30 ms
+  clock — ~3 pkt/s vs ~25. On the bench that alone dropped loss from ~19 % to
+  ~2 %.
+- **Single-loss self-heal.** Each `EdgeEvent` carries the duration of the segment
+  before the current one too (`dur_prev_ms`), so one lost packet is fully
+  reconstructed from the next (detected via a `seq` gap of 1). A gap ≥ 2 flushes
+  the half-built character rather than emit wrong timing — graceful degradation.
+- **Idle heartbeat (`HEARTBEAT_MS` = 700 ms).** When the key holds steady longer
+  than this, the current state is re-sent as a *heartbeat* `EdgeEvent` (flag set,
+  **same `seq`, not incremented**). Provides presence, late-joiner re-anchor, and
+  double-loss recovery without the 30 ms stream. Heartbeats keep the prior edge's
+  `seq` because at slow speeds (5 WPM: dah = 720 ms, word gaps > 700 ms) they fire
+  mid-segment; consuming a `seq` would be indistinguishable from a lost edge and
+  break the self-heal.
+- **Bilingual / migration.** A `compat` hunter decodes an `edge` fox and vice
+  versa; a fox flips per-unit with `keymode edge` (persisted). Default `compat`
+  keeps fresh/legacy units byte-for-byte unchanged.
 
 ## Physical layer (SX1262 GFSK)
 
@@ -43,9 +82,11 @@ margin.
 
 ## Packet formats
 
-Two packet types share the link and are disambiguated by their first byte (the
-"magic"). A receiver parsing only `KeyState` simply ignores `Ident` (wrong
-magic), and vice-versa. Both are little-endian (native ESP32-S3 layout).
+Three packet types share the link and are disambiguated by their first byte (the
+"magic"): `KeyState` (`'M'`), `Ident` (`'I'`), and `EdgeEvent` (`'E'`). A
+receiver ignores any packet whose magic it doesn't parse, so the keystate and
+edge transports coexist and legacy nodes ignore edge traffic. All are
+little-endian (native ESP32-S3 layout).
 
 ### KeyState — 5 bytes (`proto::KeyState`)
 
@@ -79,14 +120,40 @@ Farnsworth sending.
 `CALLSIGN_MAX` is 10. `decode_ident()` validates length ≥ 14 and `buf[0] ==
 0x49`.
 
+### EdgeEvent — 8 bytes (`proto::EdgeEvent`)
+
+Sent only on a key edge (or an idle heartbeat) when the transmitter is in
+`keymode edge`. Disambiguated from `KeyState` by its magic, so legacy
+keystate-only receivers ignore it.
+
+| Offset | Field | Type | Value |
+|---|---|---|---|
+| 0 | `magic` | u8 | **`0x45`** (`'E'`) |
+| 1 | `station_id` | u8 | transmitter's ID |
+| 2 | `seq` | u8 | per-**edge**, wraps mod 256; loss/dup/reorder detect. Heartbeats reuse the last edge's `seq` (not incremented). |
+| 3 | `flags` | u8 | bit 0 `EDGE_FLAG_DOWN` = key level **entered** (1 = down, 0 = up); bit 1 `EDGE_FLAG_HEARTBEAT` = re-assert, not a real edge |
+| 4–5 | `dur_now_ms` | u16 LE | duration of the segment that **just ended** |
+| 6–7 | `dur_prev_ms` | u16 LE | duration of the segment **before that** (single-loss heal) |
+
+`decode_edge()` validates length ≥ 8 and `buf[0] == 0x45`.
+
+> **Semantics gotcha (cost real debugging time):** `flags` carries the level
+> being *entered*, while `dur_now_ms` is the segment that just *ended* — i.e. the
+> **opposite** level. So in the `debug` dump `RX E <id> seq=N lvl=L hb=H dn=D
+> dp=P`: when `lvl=1` (entering key-down), `dn` is the duration of the key-**up**
+> gap that just ended; when `lvl=0`, `dn` is the key-**down** element that just
+> ended. Reading `dn` as belonging to `lvl` inverts every element↔gap and makes a
+> perfectly-timed stream look broken.
+
 ## Timing
 
 | Constant | Value | Meaning |
 |---|---|---|
-| `TX_INTERVAL_MS` | **30 ms** | keystate send period |
+| `TX_INTERVAL_MS` | **30 ms** | keystate (`compat`) send period |
+| `HEARTBEAT_MS` | **700 ms** | edge (`edge`) idle re-assert period (presence / re-anchor / double-loss recovery) |
 | `IDENT_INTERVAL_MS` | **8 min** | periodic Ident cadence (well under the 10-min Part-97 limit) |
 | `REPEAT_PAUSE` | **12 s** | gap after a full fox message before it repeats |
-| RX key watchdog | ~3 units at the current WPM | no keystate for this long forces key-up → sidetone off → idle, so a mid-key signal loss can't latch the key on |
+| RX key watchdog | `compat`: ~3 units at the current WPM; `edge`: ~2.5 × `HEARTBEAT_MS` (~1.75 s) | no packet for this long forces key-up → sidetone off → idle, so a mid-key signal loss can't latch the key on. The edge timeout is mode-aware so a slow keyer's normal heartbeat gaps don't trip it. |
 | Hunter copy blanking | 10 s | the decoded line clears this long after the last packet (shorter than `REPEAT_PAUSE`, so each message clears before the next repeat) |
 
 ## Addressing
