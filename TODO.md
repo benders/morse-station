@@ -208,9 +208,10 @@ status board live in `wio-tracker-port.md`.
       bugs found on hardware:
         - [ ] OLED slightly distorted on the right edge (likely SH1106 column
           offset vs the SSD1306 constructor — confirm controller).
-        - [ ] Constant buzzer "ticking" — Bluefruit auto conn-LED blinks
-          LED_BLUE, which aliases the buzzer pin (D12/P1.00); disable
-          `autoConnLed`.
+        - [x] Constant buzzer "ticking" — Bluefruit auto conn-LED blinks
+          LED_BLUE, which aliases the buzzer pin (D12/P1.00). Fixed:
+          `Bluefruit.autoConnLed(false)` in `ble_provision_nrf52.cpp` (Wio-only
+          guard). Flashed boot #2; pending audible confirmation.
 
 ---
 

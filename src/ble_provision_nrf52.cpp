@@ -89,6 +89,15 @@ void begin(const char* adv_name, Handler handler) {
     g_asm_len = 0;
 
     Bluefruit.begin();
+#if defined(DEVICE_WIO_TRACKER_L1)
+    // On the Wio Tracker L1 Pro, the vendored variant aliases LED_BLUE
+    // (= PIN_LED2 = D12 = P1.00) to the BUZZER pin. Bluefruit's auto
+    // connection LED blinks LED_BLUE while advertising, which would toggle the
+    // piezo at the blink rate -> a constant "tick". Disable it so the buzzer is
+    // only driven by the sidetone path. (The RAK4631, where LED_BLUE is a real
+    // LED, keeps the default.)
+    Bluefruit.autoConnLed(false);
+#endif
     Bluefruit.setName(adv_name);
     Bluefruit.Periph.setConnectCallback(connect_cb);
     Bluefruit.Periph.setDisconnectCallback(disconnect_cb);
