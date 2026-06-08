@@ -157,4 +157,49 @@ char Decoder::update(bool key_down, uint32_t now_ms) {
     return 0;
 }
 
+// ---- Decoder: edge-mode (duration-fed) ------------------------------------
+
+void Decoder::push_char(char c) {
+    uint8_t nt = (uint8_t)((oq_tail_ + 1) % sizeof(outq_));
+    if (nt == oq_head_) return;          // full: drop (caller should drain often)
+    outq_[oq_tail_] = c;
+    oq_tail_ = nt;
+    last_out_ = c;
+}
+
+char Decoder::take_char() {
+    if (oq_head_ == oq_tail_) return 0;
+    char c = outq_[oq_head_];
+    oq_head_ = (uint8_t)((oq_head_ + 1) % sizeof(outq_));
+    return c;
+}
+
+void Decoder::flush() {
+    n_elems_ = 0;
+    oq_head_ = oq_tail_ = 0;
+    last_out_ = 0;
+    new_elem_ = 0;
+}
+
+void Decoder::feed_segment(bool on, uint16_t dur_ms) {
+    if (on) {                                    // a keyed element: dit or dah
+        if (n_elems_ < 7) {
+            char e = (dur_ms >= dah_ms_) ? '-' : '.';
+            elems_[n_elems_++] = e;
+            new_elem_ = e;                       // live dit/dah scroll
+        }
+        return;
+    }
+    // a gap. A char-gap (or longer) closes the current character; a word-gap
+    // also yields a space. Thresholds are the same midpoints begin() computed.
+    if (dur_ms >= chargap_ms_ && n_elems_ > 0) {
+        elems_[n_elems_] = 0;
+        push_char(classify());
+        n_elems_ = 0;
+    }
+    if (dur_ms >= wordgap_ms_ && last_out_ != ' ') {
+        push_char(' ');
+    }
+}
+
 } // namespace morse

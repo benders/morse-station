@@ -58,6 +58,17 @@ public:
     // decoded character when one completes, else 0. May return ' ' for words.
     char update(bool key_down, uint32_t now_ms);
 
+    // Edge-mode entry (docs/edge-events.md): feed one *completed* segment with
+    // its true TX-measured duration — on=true is a key-down element (dit/dah),
+    // on=false is a key-up gap. Decoded characters (and word spaces) queue up;
+    // drain them with take_char() in a loop. Elements for the dit/dah view
+    // still surface via take_element(). Reuses the begin() thresholds, so the
+    // decode tracks the fox's announced wpm/char_wpm exactly. Independent of the
+    // update() time-based state machine — a node uses one path or the other.
+    void feed_segment(bool on, uint16_t dur_ms);
+    char take_char();                 // next decoded char/space, 0 if none
+    void flush();                     // drop a half-built character (loss/resync)
+
     // Per-element side-channel for live dit/dah display: returns the single
     // element ('.' or '-') classified on the most recent key-up edge, then
     // clears it, so the hunter can scroll one element at a time as it arrives
@@ -77,6 +88,14 @@ private:
     char     new_elem_   = 0;         // freshest element for live dit/dah display
     uint8_t  n_elems_    = 0;
     bool     pending_    = false;     // have undecoded elements waiting on a gap
+
+    // Edge-mode output queue (feed_segment -> take_char). A single segment can
+    // emit up to two chars (letter + word space), so results are buffered.
+    char     outq_[8]    = {0};
+    uint8_t  oq_head_    = 0;
+    uint8_t  oq_tail_    = 0;
+    char     last_out_   = 0;         // suppress consecutive word spaces
+    void     push_char(char c);
 };
 
 } // namespace morse
