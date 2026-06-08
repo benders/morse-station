@@ -48,6 +48,57 @@ struct __attribute__((packed)) Ident {
 
 constexpr size_t IDENT_LEN = sizeof(Ident);   // 14 bytes
 
+// Edge-event keying (docs/edge-events.md): instead of sampling key state every
+// TX_INTERVAL_MS, the transmitter sends a packet only when the key *changes*,
+// carrying the TX-measured duration of the segment that just ended. The
+// receiver reconstructs exact element timing from those durations rather than
+// from jittered local arrival times. Distinguished by MAGIC_EDGE so legacy
+// nodes (which only match MAGIC) ignore it.
+constexpr uint8_t MAGIC_EDGE = 0x45;   // 'E'
+
+// Idle heartbeat: when the key has been steady this long, re-send the current
+// state as a (heartbeat) EdgeEvent. Gives presence, late-joiner re-anchor, and
+// double-loss recovery without the 30 ms stream. See docs/edge-events.md.
+constexpr uint32_t HEARTBEAT_MS = 700;
+
+// flags bits in EdgeEvent.
+constexpr uint8_t EDGE_FLAG_DOWN      = 0x01;  // key level entered: 1=down,0=up
+constexpr uint8_t EDGE_FLAG_HEARTBEAT = 0x02;  // re-assert, not a real edge
+
+struct __attribute__((packed)) EdgeEvent {
+    uint8_t  magic;        // MAGIC_EDGE
+    uint8_t  station_id;
+    uint8_t  seq;          // per-edge, wraps mod 256 (loss/dup/reorder detect)
+    uint8_t  flags;        // EDGE_FLAG_*
+    uint16_t dur_now_ms;   // duration of the segment that JUST ENDED
+    uint16_t dur_prev_ms;  // duration of the segment before that (single-loss heal)
+};
+
+constexpr size_t EDGE_LEN = sizeof(EdgeEvent);   // 8 bytes
+
+inline size_t encode_edge(const EdgeEvent& e, uint8_t* buf) {
+    buf[0] = e.magic;
+    buf[1] = e.station_id;
+    buf[2] = e.seq;
+    buf[3] = e.flags;
+    buf[4] = (uint8_t)(e.dur_now_ms & 0xFF);
+    buf[5] = (uint8_t)(e.dur_now_ms >> 8);
+    buf[6] = (uint8_t)(e.dur_prev_ms & 0xFF);
+    buf[7] = (uint8_t)(e.dur_prev_ms >> 8);
+    return EDGE_LEN;
+}
+
+inline bool decode_edge(const uint8_t* buf, size_t len, EdgeEvent& e) {
+    if (len < EDGE_LEN || buf[0] != MAGIC_EDGE) return false;
+    e.magic       = buf[0];
+    e.station_id  = buf[1];
+    e.seq         = buf[2];
+    e.flags       = buf[3];
+    e.dur_now_ms  = (uint16_t)buf[4] | ((uint16_t)buf[5] << 8);
+    e.dur_prev_ms = (uint16_t)buf[6] | ((uint16_t)buf[7] << 8);
+    return true;
+}
+
 // Serialize/parse. encode writes PACKET_LEN bytes. decode validates MAGIC and
 // length. Both little-endian (native ESP32-S3 layout).
 inline size_t encode(const KeyState& ks, uint8_t* buf) {
