@@ -137,6 +137,47 @@ P2.1–P2.13 above). These items still need a RAK4631 on the bench:
 
 ---
 
+## Wio Tracker L1 Pro port (Phase W — see wio-tracker-port.md)
+
+Sibling nRF52840+SX1262 port, direct precedent = the RAK4631 above. Plan +
+status board live in `wio-tracker-port.md`.
+
+- [x] **W1** Vendored `boards/seeed_wio_tracker_l1.json` +
+      `variants/Seeed_Wio_Tracker_L1/{variant.h,variant.cpp}` (from upstream
+      Meshtastic `meshtastic/firmware` commit `8c4900a5`, board
+      `seeed_wio_tracker_L1` — no L1-Pro-specific variant exists upstream; the
+      plain L1's OLED variant is the right base, see
+      `reference/wio-tracker-l1-pro/README.md` for full provenance + the
+      resolved pin-map table). Added `[env:wio_tracker_l1]` to `platformio.ini`
+      (extends `nrf52_base`, `-DDEVICE_WIO_TRACKER_L1 -DSIDETONE_BUZZER`,
+      RadioLib + U8g2, `upload_protocol = nrfutil`). `pio run -e
+      wio_tracker_l1` resolves the board+variant and fails only in
+      `radio.cpp`'s still-RAK4631-only branches (HSPI/IRAM_ATTR/TCXO_V/
+      SPI.begin 4-arg) — exactly the expected W1 outcome; `rak4631` still
+      builds clean.
+- [ ] **W2** `src/pins.h` — `DEVICE_WIO_TRACKER_L1` branch.
+- [ ] **W3** `src/radio.cpp` — widen RAK4631 guards to cover the Wio (global
+      SPI / IRAM_ATTR shim / TCXO_V=1.8f); confirm whether `LoRa_SW`
+      (`SX126X_RXEN`, logical D5) needs driving alongside `setDio2AsRfSwitch`.
+- [ ] **W4** `src/sidetone_nrf52.cpp` — new `-DSIDETONE_BUZZER` backend
+      (NRF_PWM0 square wave). NOTE: this variant's `g_ADigitalPinMap` is **not**
+      identity (unlike RAK) — must translate `PIN_BUZZER` (logical D12) to
+      absolute GPIO 32 before writing `PSEL.OUT[0]`; see the README's pin-map
+      section.
+- [ ] **W5** Buttons — `PIN_KEY = Menu_Key` (logical D13/abs GPIO8); no
+      `Rot_Key` exists on this board, substitute `Joystick_Press`
+      (`TB_PRESS`, logical D29/abs GPIO37) for `PIN_MODE_BTN`.
+- [ ] **W6** `src/battery.cpp` — gated read; gate (`BAT_CTL`, logical D30/abs
+      GPIO4) is **active-HIGH** per upstream `initVariant()` (opposite the
+      RAK's always-on divider); `ADC_MULTIPLIER = 2.0` upstream — confirm ratio
+      on the bench.
+- [ ] **W7** `src/display.cpp` — include Wio in the U8g2 SSD1306 I2C path.
+- [ ] **W8** Extend `platform_nrf52`/`kv_nrf52`/`ble_provision_nrf52`/
+      `sidetone` device guards to cover `DEVICE_WIO_TRACKER_L1`.
+- [ ] **W9** Build, fit, flash, hardware-validate.
+
+---
+
 ## Multi-target port — Phase 1 (Heltec V3 build target)
 
 - [x] **P1.1** `platformio.ini`: added `[env:heltec_v3]` extending `esp32_base`,
