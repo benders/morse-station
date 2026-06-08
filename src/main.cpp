@@ -42,17 +42,24 @@ static Mode mode = MODE_HUNTER;
 // output only). Default LO — bump up for open ground. LO keeps the hunter
 // volume gradient working in a small space (RSSI saturates at MED/HI).
 struct PwrLevel { const char* label; int dbm; };
-// dbm is the SX1262 *chip* output. On the Cardputer (no FEM) that is the
-// antenna power directly; +22 dBm is the SX1262 ceiling (setOutputPower
-// clamps/rejects above this). On the Heltec V4 the FEM sits after the chip but
-// its PA mode is NOT switched per level — CPS is set once to bypass at init
-// (see radio::fem_power_on) and set_tx_power never re-touches it, so the antenna
-// power is the chip output through the FEM bypass path (less a small insertion
-// loss). NOTE: the V4.2 (GC1109) PA appears to engage anyway in practice, so its
-// real EIRP runs hotter and mismatched vs the V4.3 — see the FEM-PA TODO.
+// dbm is the SX1262 *chip* output, and the LO/MED/HI/MAX labels are deliberately
+// VERBALLY APPROXIMATE — a coarse operator gradient, not a calibrated EIRP. On
+// the Cardputer / Wio / RAK (no FEM) the chip figure IS the antenna power; +22
+// dBm is the SX1262 ceiling (setOutputPower clamps/rejects above this), so MAX
+// means +22 dBm there. On the Heltec V4 the external FEM sits after the chip and
+// in a transmit mode (Fox / Live Key) we engage its PA (see setup(): radio::
+// set_pa(true)), adding ~+6 dB — so the SAME MAX label radiates ~+28 dBm on the
+// V4 vs +22 on the Wio. That disparity is accepted for now (the labels are
+// approximate); a proper per-board EIRP calculation is the FEM-PA TODO below and
+// in docs/protocol.md. The chip figure below is NOT adjusted for FEM gain.
 static const PwrLevel PWR_LEVELS[] = {{"LO", -9}, {"MED", 2}, {"HI", 14}, {"MAX", 22}};
 static const int N_PWR  = 4;
 static int       pwr_idx = 0;   // LO (-9 dBm)
+
+// V4 FEM power-amplifier (CPS) state. Engaged automatically in the transmit run
+// modes (Fox / Live Key) by setup(); left bypassed in Hunter (RX) and on non-FEM
+// boards. The `pa` console command is a runtime override on top of this default.
+static bool g_pa_on = false;
 
 static morse::Player  player;
 static morse::Decoder decoder;
@@ -275,12 +282,12 @@ static bool handle_setup_command(const char* line, Print& out) {
                        PWR_LEVELS[pwr_idx].label, PWR_LEVELS[pwr_idx].dbm);
         }
     } else if (!strcmp(line, "pa") || !strncmp(line, "pa ", 3)) {
-        // TESTING AID: toggle the V4 FEM power amplifier (CPS) at runtime so a
-        // bench can A/B +22 dBm (bypass) vs ~+28 dBm (PA engaged) without a
-        // reflash. Runtime-only — NOT persisted; every boot comes up bypassed
-        // (radio::set_pa via fem_power_on). No-op on non-FEM boards and on the
-        // V4.3 (KCT8103L, no CPS bypass pin). Mind FCC §15.249 when engaged.
-        static bool pa_on = false;
+        // Runtime override of the V4 FEM power amplifier (CPS). The PA is engaged
+        // automatically in the transmit run modes (Fox / Live Key) at boot; this
+        // command lets a bench force it off to A/B +22 dBm (bypass) vs ~+28 dBm
+        // (PA), or back on, without a reflash. NOT persisted — the run-mode default
+        // re-applies on every boot. No-op on non-FEM boards and on the V4.3
+        // (KCT8103L, no CPS bypass pin). Mind FCC §15.249 when engaged.
         const char* arg = line + 2;
         while (*arg == ' ') arg++;
         if (!radio::has_fem()) {
@@ -289,15 +296,15 @@ static bool handle_setup_command(const char* line, Print& out) {
             if (!*arg || !strcmp(arg, "show")) {
                 // report only
             } else if (!strcmp(arg, "on") || !strcmp(arg, "1")) {
-                pa_on = true;  radio::set_pa(true);
+                g_pa_on = true;  radio::set_pa(true);
             } else if (!strcmp(arg, "off") || !strcmp(arg, "0")) {
-                pa_on = false; radio::set_pa(false);
+                g_pa_on = false; radio::set_pa(false);
             } else {
                 out.println("  ? pa <on|off>");
                 return false;
             }
-            out.printf("  pa       = %s (FEM CPS; +~6 dB on V4.2, testing only)\n",
-                       pa_on ? "on" : "off");
+            out.printf("  pa       = %s (FEM CPS; +~6 dB on V4.2; auto-on in Fox/Livekey)\n",
+                       g_pa_on ? "on" : "off");
         }
     } else if (!strcmp(line, "model") || !strncmp(line, "model ", 6)) {
         // Board model identifier (admin). Persisted in NVS per physical unit, so
@@ -637,9 +644,11 @@ void setup() {
             player.begin(config::wpm(), config::char_wpm());
             player.start(config::fox_message());
             radio::set_tx_power(PWR_LEVELS[pwr_idx].dbm);
+            radio::set_pa(true); g_pa_on = true;   // V4 FEM PA on for TX (no-op w/o FEM)
             break;
         case MODE_LIVEKEY:
             key.begin(PIN_KEY);
+            radio::set_pa(true); g_pa_on = true;   // V4 FEM PA on for TX (no-op w/o FEM)
             break;
         case MODE_HUNTER:
             // Seed from our own config; the fox's Ident packet retunes this to

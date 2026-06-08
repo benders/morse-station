@@ -181,16 +181,25 @@ chip output**. The selected index persists in NVS and is restored on boot
 | 2 | HI | +14 |
 | 3 | MAX | +22 |
 
-+22 dBm is the SX1262 ceiling (`setOutputPower` clamps above it).
+The labels are **verbally approximate** — a coarse operator gradient, not a
+calibrated EIRP. `dbm` is the SX1262 chip output and is **not** adjusted for any
+FEM gain; +22 dBm is the SX1262 ceiling (`setOutputPower` clamps above it).
 
-- **Cardputer ADV** (no FEM): chip output *is* the antenna power. +22 dBm is the
-  real ceiling.
-- **Heltec V4** (has a FEM PA+LNA): the FEM PA mode is **not** switched per
-  level — `CPS` is set to bypass once at init and `set_tx_power()` only changes
-  the SX1262 chip output. So the antenna power tracks the chip through the FEM
-  bypass path (less a small insertion loss). In practice the V4.2 (GC1109) PA
-  appears to engage anyway, so its real EIRP runs hotter and mismatched vs. the
-  V4.3 — see the FEM-PA item in `TODO.md` and `components/heltec-v4.md`.
+- **No-FEM boards** (Cardputer ADV, Wio Tracker L1, RAK4631): chip output *is*
+  the antenna power, so MAX = **+22 dBm** at the antenna.
+- **Heltec V4** (external FEM PA+LNA): in a transmit run mode (**Fox** / **Live
+  Key**) the firmware engages the FEM PA at boot (`radio::set_pa(true)` in
+  `setup()`), adding **~+6 dB**. The PA is *not* re-switched per level —
+  `set_tx_power()` only moves the chip output — so the whole curve shifts up by
+  the PA gain and MAX radiates **~+28 dBm** (22 + 6). Hunter (RX) leaves the PA
+  bypassed. The `pa` console command can override the PA at runtime for bench A/B.
+
+**Cross-board disparity (accepted):** because the labels are approximate, the
+same MAX means **~+28 dBm on the Heltec V4** but **+22 dBm on the Wio / no-FEM
+boards**. This is intentional for now. A proper per-board EIRP calculation
+(reading the actual FEM gain per V4 revision, since the V4.3 KCT8103L PA gain
+differs from the V4.2 GC1109) is the **FEM-PA item in `TODO.md`** and
+`components/heltec-v4.md`.
 
 Run the fox at **LO** in a small space: at MED/HI the link saturates RSSI across
 the whole search area and the hunter's "tune for max volume" gradient stops

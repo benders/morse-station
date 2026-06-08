@@ -285,19 +285,23 @@ status board live in `wio-tracker-port.md`.
       matched power and decide the legal basis — §15.249 low-power unlicensed vs
       operating under an amateur license in the 902–928 MHz (33 cm) band (see
       `docs/protocol.md`). Not blocking the hunt.
-- [ ] **Long-term: deliberately enable + control the Heltec V4 FEM PA.** Today
-      `fem_power_on()` writes `PIN_FEM_CPS` LOW once at init (intended PA bypass)
-      and never touches it again; `set_tx_power()` only calls the SX1262
-      `setOutputPower()`, so the FEM PA mode does **not** track the LO/MED/HI/MAX
-      level. Net antenna power is ill-defined and mismatched between revs (V4.3
-      KCT8103L runs bypassed; the V4.2 GC1109 PA empirically engages anyway). To
-      use the V4 as a real higher-power fox: (1) understand each rev's CPS/mode
-      truth table (GC1109 vs KCT8103L differ), (2) drive the PA mode pin
-      deliberately — ideally per power level, engaging the PA only at HI/MAX,
-      (3) equalise the two revisions to a known EIRP, and (4) settle the legal
-      basis before any boosted outdoor deploy. Not needed while the **Cardputer
-      ADV is the fox** (no FEM, +22 dBm ceiling). See
-      `docs/components/heltec-v4.md`.
+- [~] **Heltec V4 FEM PA — engaged in TX modes; per-board EIRP calc still open.**
+      **Done:** `setup()` now engages the FEM PA (`radio::set_pa(true)`) in the
+      transmit run modes (Fox / Live Key) and leaves it bypassed in Hunter (RX);
+      the `pa` console command is a runtime override on top of that default. This
+      makes the V4 a deliberate higher-power fox rather than relying on the V4.2
+      GC1109 PA engaging by accident. The LO/MED/HI/MAX labels remain **verbally
+      approximate**, so the accepted consequence is that the same MAX radiates
+      **~+28 dBm on the V4** (chip +22 + ~6 dB FEM PA) vs **+22 dBm on the Wio /
+      no-FEM boards**. Documented in `docs/protocol.md`.
+      **Still open (long-term):** correct per-board EIRP calculation. (1) The PA
+      gain differs per rev (GC1109 vs KCT8103L) and is currently assumed ~+6 dB,
+      not measured; read/track the real gain per revision. (2) Consider switching
+      the PA per power level (e.g. bypass at LO/MED, engage at HI/MAX) instead of
+      always-on in TX. (3) Reflect the chip-dBm → antenna-EIRP mapping in the
+      `pwr` command / `show` output so the operator sees true EIRP, not just the
+      chip figure. (4) Settle the legal basis (§15.249 vs Part 97) before any
+      boosted outdoor deploy. See `docs/components/heltec-v4.md`.
 
 ## Stage 6 — Fox-hunt integration
 
