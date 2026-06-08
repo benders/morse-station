@@ -27,7 +27,16 @@ SX1262   chip = new Module(PIN_NSS, PIN_DIO1, PIN_NRST, PIN_BUSY, radioSpi);
 constexpr float    FREQ_MHZ      = 905.0f;
 constexpr float    BITRATE_KBPS  = 4.8f;
 constexpr float    FREQ_DEV_KHZ  = 5.0f;
-constexpr float    RX_BW_KHZ     = 39.0f;   // ~Carson BW for 4.8k/5k dev, w/ margin
+// 78.2 kHz, not the ~Carson minimum (~15 kHz for 4.8k/5k dev). The extra width
+// is deliberate frequency-offset headroom: these SX1262 modules' TCXO trims
+// differ enough board-to-board that a relative carrier offset of ~12-31 kHz was
+// measured between the RAK4631 and Wio nRF52 units (~13-34 ppm @ 905 MHz). At
+// the old 39 kHz that offset fell OUTSIDE the RX filter and the RAK->Wio link
+// was 100% deaf at every power level; 78.2 kHz catches it (39 dead / 78 & 156
+// work — bracketed on the bench). Cost is ~3 dB sensitivity vs 39 kHz. Mesh
+// firmwares sidestep this entirely by running wide LoRa (Meshtastic LongFast =
+// 250 kHz), which also tolerates ~25% of BW in offset; narrow FSK does not.
+constexpr float    RX_BW_KHZ     = 78.2f;
 constexpr int      TX_POWER_DBM  = 2;       // low power, 15.249-ish
 constexpr int      PREAMBLE_BITS = 16;
 #if defined(DEVICE_HELTEC_V4) || defined(DEVICE_HELTEC_V3)

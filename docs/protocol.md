@@ -70,7 +70,7 @@ SX1262 either way — see `components/sx1262.md`).
 | Centre frequency | **905.0 MHz** | single fixed channel, no hopping |
 | Bit rate | **4.8 kbps** | sweet spot: sensitivity vs. 30 ms airtime |
 | Frequency deviation | **5.0 kHz** | |
-| RX bandwidth | **39.0 kHz** | ≈ Carson BW for 4.8k/5k with margin |
+| RX bandwidth | **78.2 kHz** | widened from 39.0 for board-to-board TCXO offset headroom (see note) |
 | Preamble | **16 bits** | |
 | Sync word | **`{0x2D, 0xD4}`** | identifies our net; foreign traffic rejected in HW |
 | TCXO voltage | **1.8 V** | confirmed on Heltec V4 and the Cap LoRa-1262 |
@@ -79,6 +79,20 @@ SX1262 either way — see `components/sx1262.md`).
 
 Per-packet airtime at these settings is ~12 ms; the 30 ms send interval leaves
 margin.
+
+**RX bandwidth note (frequency-offset headroom).** The Carson minimum for 4.8k/5k
+GFSK is only ~15 kHz, and we originally ran 39 kHz. Bench testing (2026-06-08)
+found the RAK4631→Wio link **100% deaf at every power level** — a −13 dBm signal
+was invisible — because these SX1262 modules' TCXO trims differ enough to put a
+**~12–31 kHz relative carrier offset** (≈13–34 ppm at 905 MHz) between nRF52
+units. A 39 kHz filter tolerates only ~±12 kHz of offset, so the link fell
+outside it; widening the RX filter to **78.2 kHz** (≈±31 kHz tolerance) restored
+it (verified: 39 kHz dead, 78.2 & 156.2 kHz work). Cost is ~3 dB sensitivity vs
+39 kHz. Mesh firmwares avoid this class of bug by running wide LoRa (Meshtastic
+LongFast = 250 kHz), which also tolerates ~25 % of BW in offset; narrow FSK does
+not. A tighter long-term alternative is per-board frequency calibration (measure
+each unit's carrier with an SDR and trim `FREQ_MHZ`), trading robustness for the
+3 dB.
 
 ## Packet formats
 
