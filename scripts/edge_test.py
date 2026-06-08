@@ -47,9 +47,14 @@ SETUP_HINT = "for setup console"   # banner line that opens the ~2s setup window
 SETUP_PROMPT = "setup>"            # REPL prompt once 's' is accepted
 BOOT_SETTLE_S = 12.0               # setup window + splash + 5s menu auto-select
 
-CH_RE = re.compile(r"^CH (\d+) (.)$")          # decoded-character line (space preserved)
-CH_RE_EMPTY = re.compile(r"^CH (\d+) ?$")      # `CH <sid> ` with no trailing char captured
-RX_RE = re.compile(r"^RX [EK] \d+ ")           # raw packet dump lines, for the human report
+# Decoded-character debug line. The hunter ALSO mirrors each decoded char to the
+# console inline (no trailing newline) immediately before the `CH <sid> <c>`
+# dump, so the captured line is prefixed, e.g. "PCH 43 P" or "  CH 43  " for a
+# space. Hence we .search() rather than anchor with ^, and take the char from
+# the CH field itself (group 2), which equals the mirrored prefix char.
+CH_RE = re.compile(r"CH (\d+) (.)$")           # decoded-character line (space preserved)
+CH_RE_EMPTY = re.compile(r"CH (\d+) $")        # `CH <sid> ` with the char swallowed -> space
+RX_RE = re.compile(r"RX [EK] \d+ ")            # raw packet dump lines, for the human report
 
 
 # ---------------------------------------------------------------------------
@@ -261,11 +266,11 @@ def decode_from_lines(lines: list[str]) -> str:
     """
     out = []
     for text in lines:
-        m = CH_RE.match(text)
+        m = CH_RE.search(text)
         if m:
             out.append(m.group(2))
             continue
-        m = CH_RE_EMPTY.match(text)
+        m = CH_RE_EMPTY.search(text)
         if m:
             out.append(" ")
     return "".join(out)
@@ -367,11 +372,35 @@ def main() -> int:
         return 2
 
     # --- 3. provision each hunter over its setup console --------------------
+    from devices import read_station_live
     hunter_ok: dict[int, bool] = {}
     for sid in hunter_ids:
         print(f"\n# provisioning hunter (station {sid}) @ {ports[sid]}")
-        hunter_ok[sid] = provision_over_setup(ports[sid], f"hunter {sid}",
-                                               ["mode 0"])   # mode 0 = Hunter
+        # Check the current mode first, over the runtime console, while the port
+        # is still clean (resolve_ports just read it). If the board is already a
+        # Hunter there's nothing to change, so skip the disruptive DTR/RTS
+        # reset+setup dance entirely. That's also the only path that works for
+        # nRF52 boards (e.g. the Wio Tracker L1 Pro), which have no auto-reset
+        # and so can never reach the boot setup console from here.
+        info = read_station_live(ports[sid], timeout=5.0)
+        if info.get("mode") == "Hunter":
+            print(f"  [hunter {sid}] already in Hunter mode -- skipping "
+                  f"re-provision (no reset needed)")
+            hunter_ok[sid] = True
+            continue
+        # Not a Hunter (or couldn't read): try the setup-console reset to flip it.
+        ok = provision_over_setup(ports[sid], f"hunter {sid}",
+                                  ["mode 0"])   # mode 0 = Hunter
+        if not ok:
+            info = read_station_live(ports[sid], timeout=5.0)
+            if info.get("mode") == "Hunter":
+                print(f"  [hunter {sid}] setup-reset unavailable but board is a "
+                      f"Hunter -- proceeding")
+                ok = True
+            else:
+                print(f"  [hunter {sid}] could not put board in Hunter mode "
+                      f"(mode={info.get('mode')!r}) -- marking FAIL")
+        hunter_ok[sid] = ok
 
     # --- 4. wait for the boot sequence to settle into the run loop ---------
     print(f"\n# waiting {BOOT_SETTLE_S:.0f}s for setup window + splash + "

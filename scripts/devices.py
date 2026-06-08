@@ -54,18 +54,24 @@ MAC_RE = re.compile(r"^[0-9A-F]{2}(:[0-9A-F]{2}){5}$")
 
 
 def parse_show(text: str) -> dict:
-    """Parse a firmware `show` line: id/call/wpm/farns/mute/mode (mute & mode are
-    only present on firmware that supports them — older units omit them)."""
-    m = re.search(r"id=(\d+) call=(\S+) wpm=(\d+) farns=(\d+)"
-                  r"(?: mute=(\w+))?(?: mode=(\w+))?", text)
+    """Parse a firmware `show` line: id/call/wpm/farns plus the optional mute/mode
+    fields (only present on firmware that supports them — older units omit them).
+
+    mute= and mode= are matched independently rather than positionally: newer
+    firmware interleaves other fields (e.g. `vol=8`) between farns and mute/mode,
+    so a single fixed-order regex would silently drop mode. Search each field on
+    its own so column order can keep evolving without breaking detection."""
+    m = re.search(r"id=(\d+) call=(\S+) wpm=(\d+) farns=(\d+)", text)
     if not m:
         return {}
     out = {"id": int(m.group(1)), "call": m.group(2),
            "wpm": int(m.group(3)), "farns": int(m.group(4))}
-    if m.group(5):
-        out["mute"] = m.group(5)
-    if m.group(6):
-        out["mode"] = m.group(6)
+    mute = re.search(r"\bmute=(\w+)", text)
+    if mute:
+        out["mute"] = mute.group(1)
+    mode = re.search(r"\bmode=(\w+)", text)
+    if mode:
+        out["mode"] = mode.group(1)
     return out
 
 
