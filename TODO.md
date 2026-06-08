@@ -198,7 +198,13 @@ status board live in `wio-tracker-port.md`.
       `#define LED_BUILTIN PIN_LED1` to the vendored variant.h (InternalFS
       needs it; NOT LED_BLUE — that's the buzzer pin). `wio_tracker_l1` now
       LINKS clean (RAM 27748/248832, Flash 186528/815104).
-- [ ] **W9** Build, fit, flash, hardware-validate.
+- [~] **W9** Build/fit DONE & verified: `wio_tracker_l1` links clean at
+      **186528 B flash (22.9%) / 27748 B RAM (11.2%)**, fits comfortably; all
+      four regressions (rak4631/heltec_v4/heltec_v3/cardputer_adv) still link.
+      **Flash + hardware-validate PENDING — no Wio unit in-hand.** Top
+      unvalidated risks (see wio-tracker-port.md W9): buzzer on→off→on re-key
+      gating, RXEN RX (deaf?), battery DIVIDER_WIO=2.0 calibration + gate
+      polarity, TCXO 1.8 V, button mapping.
 
 ---
 

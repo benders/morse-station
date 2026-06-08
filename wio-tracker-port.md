@@ -12,7 +12,7 @@ Status board (update as work proceeds — mirror into `TODO.md`):
 | W6 | `src/battery.cpp` — gated nRF52 analog read | `[x]` |
 | W7 | `src/display.cpp` — include Wio in the U8g2 OLED path | `[x]` |
 | W8 | Extend `platform_nrf52`/`kv_nrf52`/`ble_provision_nrf52`/`sidetone` guards | `[x]` |
-| W9 | Build, fit, flash, hardware-validate | `[ ]` |
+| W9 | Build, fit, flash, hardware-validate | `[~]` (build/fit ✅ 186528/27748, fits; flash + HW-validate pending — no unit) |
 
 This file is the implementation spec, written so a **Sonnet sub-agent can execute
 one phase at a time**. **Read `AGENTS.md` first** — its rules bind every phase:
@@ -497,12 +497,16 @@ Widen each to `#if defined(DEVICE_RAK4631) || defined(DEVICE_WIO_TRACKER_L1)`:
 
 ## Phase W9 — Build, fit, flash, verify
 
-1. **Build:** `~/.platformio/penv/bin/pio run -e wio_tracker_l1`. Confirm it fits
-   under the board JSON's flash/RAM (815104 / 248832-class). If over, revisit the
-   RadioLib-exclude note in `[env:rak4631]` (full dependent set only).
-2. **Regression:** rebuild `heltec_v4`, `heltec_v3`, `cardputer_adv`, `rak4631` —
-   **no size change** attributable to the guard widenings (they're all behind the
-   new define).
+**Status: build/fit DONE & verified; flash + hardware-validate PENDING (no unit
+in-hand).** Same posture the RAK4631 port shipped in.
+
+1. **Build:** ✅ `pio run -e wio_tracker_l1` LINKS CLEAN — **186528 B flash
+   (22.9% of 815104) / 27748 B RAM (11.2% of 248832)**, fits comfortably. No
+   RadioLib-exclude trimming needed.
+2. **Regression:** ✅ `heltec_v4`, `heltec_v3`, `cardputer_adv`, `rak4631` all
+   still link clean (rak4631 byte-identical at 191100/30492; the others
+   unchanged — all Wio changes are behind `DEVICE_WIO_TRACKER_L1` / new #elif
+   branches).
 3. **Flash:** UF2 / `adafruit-nrfutil` over USB (1200 bps touch), same as RAK.
    The device enumerates as a `usbmodem*` port (covered by `[env]` globs). Use
    `scripts/devices.sh` to map the port.
@@ -519,6 +523,22 @@ Widen each to `#if defined(DEVICE_RAK4631) || defined(DEVICE_WIO_TRACKER_L1)`:
    - **Battery:** `batt` plausible on USB and on battery.
 5. Update `TODO.md` + this file's status board; record the **final** resolved pin
    map in `reference/wio-tracker-l1-pro/README.md`.
+
+**Top unvalidated risks to scrutinize first when a unit is on the bench** (all
+built correct-by-construction from the variant/Meshtastic, but untested):
+- **Buzzer on→off→on gating (W4):** confirm a re-keyed character re-sounds
+  cleanly — `TASKS_STOP` + PSEL-disconnect + GPIO-park, then re-arm via
+  PSEL-reconnect + `SEQSTART` on the next `on()`. Watch for a stuck-high pin or
+  a click/glitch on re-key. (Also: tone is on `BUZ_PWM`/P1.00 via the correct
+  `g_ADigitalPinMap[]` translation — verify the *right* pin sounds.)
+- **RXEN RF-switch (W3):** RX must actually hear a hunter. If deaf, the
+  `setRfSwitchPins(SX126X_RXEN, SX126X_TXEN)` + `setDio2AsRfSwitch(true)`
+  combination may need RXEN driven HIGH manually (comment in radio.cpp notes the
+  fallback).
+- **Battery divider (W6):** `DIVIDER_WIO = 2.0f` is an upstream placeholder —
+  calibrate against a meter; confirm `BAT_CTL` gate polarity (active-HIGH assumed).
+- **TCXO voltage (W3):** assumed 1.8 V; if the radio won't `beginFSK()`, check.
+- **Buttons (W5):** Menu/User button keys; joystick-press selects the boot menu.
 
 ---
 
