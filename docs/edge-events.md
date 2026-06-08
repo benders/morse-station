@@ -66,8 +66,14 @@ re-sends the current state as an EdgeEvent with `flags.bit1=1` and
   within one heartbeat.
 - **Double-loss recovery** — bounds worst-case decode resync to ~1 beat.
 
-A heartbeat is idempotent (absolute level + seq dedup) so it never injects a
-spurious element.
+A heartbeat carries the **current** `seq` *without incrementing it* — only real
+edges own/increment a seq number; a heartbeat just repeats the last edge's and
+is identified by `EDGE_FLAG_HEARTBEAT`. This matters at slow speeds (5 WPM:
+dah = 720 ms, word gaps > 700 ms) where heartbeats fire mid-segment: if they
+consumed seq numbers, the receiver couldn't tell a lost edge from an
+intervening heartbeat, breaking single-loss self-heal. With the fix, real
+edges have strictly incrementing seq and a heartbeat is idempotent (absolute
+level + repeated seq) so it never injects a spurious element.
 
 ## Loss handling (the explicit requirement)
 

@@ -75,6 +75,12 @@ static uint32_t last_tx = 0;
 enum KeyMode { KEYMODE_COMPAT = 0, KEYMODE_EDGE = 1 };
 static uint8_t g_keymode = KEYMODE_COMPAT;
 static uint32_t last_ident = 0;
+
+// Unattended-test instrumentation (E4, docs/edge-events.md "Unattended test
+// instrumentation"): when on, dumps one parseable line per RX/TX/decode event
+// to Serial so a harness can assert on decoded text without sidetone/display.
+// Off by default — keeps normal operation quiet. Runtime-only (not persisted).
+static bool g_debug = false;
 static uint32_t pause_until = 0;
 static uint32_t last_draw = 0;
 
@@ -324,6 +330,25 @@ static bool handle_setup_command(const char* line, Print& out) {
             return false;
         }
         out.printf("  keymode  = %s\n", g_keymode == KEYMODE_EDGE ? "edge" : "compat");
+    } else if (!strcmp(line, "debug") || !strcmp(line, "debug show") ||
+               !strncmp(line, "debug ", 6)) {
+        // Unattended-test dump (E4): "debug on|off" toggles a per-event Serial
+        // trace (RX/TX/EL/CH lines, see docs/edge-events.md); bare "debug" or
+        // "debug show" reports the current state. Reply goes to `out` (the
+        // command channel); the dump itself always goes to Serial — see g_debug.
+        const char* arg = line + 5;
+        while (*arg == ' ') arg++;
+        if (!*arg || !strcmp(arg, "show")) {
+            // report only
+        } else if (!strcmp(arg, "on") || !strcmp(arg, "1")) {
+            g_debug = true;
+        } else if (!strcmp(arg, "off") || !strcmp(arg, "0")) {
+            g_debug = false;
+        } else {
+            out.println("  ? debug <on|off>");
+            return false;
+        }
+        out.printf("  debug    = %s\n", g_debug ? "on" : "off");
     } else if (!strcmp(line, "show")) {
         static const char* mnames[] = {"Hunter", "Fox", "Livekey", "Hibernate"};
         uint8_t bm = config::boot_mode();
@@ -335,6 +360,7 @@ static bool handle_setup_command(const char* line, Print& out) {
                    config::muted() ? "on" : "off", mn,
                    g_keymode == KEYMODE_EDGE ? "edge" : "compat",
                    config::fox_message());
+        out.printf("  debug    = %s\n", g_debug ? "on" : "off");
     } else if (!strcmp(line, "batt")) {
         // Raw battery readout — disambiguates a 0% meter (no cell / flat vs a
         // scaling problem). millivolts() is the unsmoothed terminal voltage.
@@ -367,8 +393,8 @@ static bool handle_setup_command(const char* line, Print& out) {
     } else {
         out.println("  ? call <SIGN> | msg <text> | id <n> | wpm <n> | "
                     "farns <n> | pwr <0..3> | mode <0..2> | vol <1..32> | "
-                    "mute [on|off] | keymode <compat|edge> | show | "
-                    "bootlog [clear] | reboot | done");
+                    "mute [on|off] | keymode <compat|edge> | debug [on|off] | "
+                    "show | bootlog [clear] | reboot | done");
     }
     return false;
 }
@@ -644,11 +670,24 @@ static void tx_edge(uint32_t now, bool down) {
 
     ev.magic      = proto::MAGIC_EDGE;
     ev.station_id = config::station_id();
-    ev.seq        = edge_seq++;
+    // Real edges own and increment seq; heartbeats repeat the CURRENT seq
+    // unconsumed (identified by EDGE_FLAG_HEARTBEAT) so the receiver can
+    // distinguish "lost edge" from "intervening heartbeat" — see docs/edge-events.md.
+    if (!(ev.flags & proto::EDGE_FLAG_HEARTBEAT)) {
+        ev.seq = edge_seq++;
+    } else {
+        ev.seq = edge_seq;
+    }
 
     uint8_t buf[proto::EDGE_LEN];
     proto::encode_edge(ev, buf);
     radio::send(buf, proto::EDGE_LEN);
+    if (g_debug) {
+        Serial.printf("TX E seq=%u lvl=%u hb=%u dn=%u dp=%u\n",
+                      ev.seq, (ev.flags & proto::EDGE_FLAG_DOWN) ? 1 : 0,
+                      (ev.flags & proto::EDGE_FLAG_HEARTBEAT) ? 1 : 0,
+                      ev.dur_now_ms, ev.dur_prev_ms);
+    }
 }
 
 // Send a station-ID packet now (callsign + keying speeds). A rare, ~ms
@@ -732,6 +771,15 @@ static void loop_hunter(uint32_t now) {
     static uint32_t last_signal = 0;   // any decoded packet (keystate or ident)
     static uint32_t last_code = 0;     // last newly decoded char/dit-dah element
 
+    // Bilingual RX (E4, docs/edge-events.md): a hunter follows whatever the fox
+    // currently sends, flipping mode packet-by-packet. `rx_is_edge` selects the
+    // decode path below (feed_segment vs update); `last_edge_seq`/`reanchor`
+    // drive the EdgeEvent self-heal (-1 = no anchor yet -> first edge anchors
+    // with no healing attempted).
+    static bool rx_is_edge     = false;
+    static int  last_edge_seq  = -1;
+    static bool reanchor       = false;
+
     // Copy-blanking timeout: after this long with no fresh decoded code, wipe the
     // text and dit/dah copy lines so a stale message doesn't linger. The fox's
     // inter-message gap (REPEAT_PAUSE) is deliberately longer than this, so the
@@ -748,11 +796,21 @@ static void loop_hunter(uint32_t now) {
     static uint8_t  rx_wpm      = config::wpm();
     static uint8_t  rx_char_wpm = config::char_wpm();
 
-    // Signal-loss watchdog: TX streams keystate every 30 ms. If we hear nothing
-    // for ~one dah (3 units at the fast character speed), the link dropped
-    // mid-key — force key-up so the sidetone doesn't latch and the decoder
-    // doesn't hang. A real dah is never mistaken for signal loss.
-    uint32_t rx_timeout_ms = (1200u / rx_char_wpm) * 3u;
+    // Signal-loss watchdog (T_silence) — mode-aware (E4, docs/edge-events.md
+    // "Loss handling"):
+    //  - compat: TX streams keystate every 30 ms. If we hear nothing for ~one
+    //    dah (3 units at the fast character speed), the link dropped mid-key —
+    //    force key-up so the sidetone doesn't latch and the decoder doesn't
+    //    hang. A real dah is never mistaken for signal loss.
+    //  - edge: the 3-dah-unit rule is too short — at 13 WPM it's ~414 ms, well
+    //    under the 700 ms heartbeat, so it would false-trip mid-dah on a
+    //    perfectly healthy link. Heartbeats arrive every HEARTBEAT_MS even
+    //    while the key sits steady, so 2.5x that bounds T_silence above any
+    //    legit gap between heartbeats while staying under the 3 s presence
+    //    timeout below.
+    uint32_t rx_timeout_ms = rx_is_edge
+        ? (uint32_t)(2.5 * proto::HEARTBEAT_MS)
+        : (1200u / rx_char_wpm) * 3u;
 
     // PRG/BOOT tap toggles the copy display between decoded letters and raw
     // dit/dah elements (same debounced detector the fox uses for power).
@@ -762,9 +820,14 @@ static void loop_hunter(uint32_t now) {
     size_t n;
     float r;
     if (radio::poll(buf, sizeof(buf), n, r)) {
-        proto::KeyState ks;
-        proto::Ident    id;
+        proto::KeyState  ks;
+        proto::Ident     id;
+        proto::EdgeEvent ev;
         if (proto::decode(buf, n, ks)) {
+            // KeyState (compat): a fox sending this is NOT in edge mode, so a
+            // bilingual hunter follows it back to the polling decode path —
+            // byte-identical to pre-E4 behavior once rx_is_edge is false.
+            rx_is_edge = false;
             rx_down = ks.key_down != 0;
             rx_station_id = ks.station_id;
             last_rx = now;
@@ -773,6 +836,10 @@ static void loop_hunter(uint32_t now) {
             rssi_valid = true;
             // RSSI no longer modulates loudness — always play the pure tone at
             // full volume. (The RSSI bar on the display still tracks signal.)
+            if (g_debug) {
+                Serial.printf("RX K %u seq=%u lvl=%u rssi=%d\n",
+                              ks.station_id, ks.seq, rx_down ? 1 : 0, (int)r);
+            }
         } else if (proto::decode_ident(buf, n, id) && id.wpm && id.char_wpm) {
             // Retune the decoder to the fox's announced timing (only on change).
             if (id.wpm != rx_wpm || id.char_wpm != rx_char_wpm) {
@@ -782,12 +849,74 @@ static void loop_hunter(uint32_t now) {
             }
             rx_station_id = id.station_id;
             last_signal = now;
+            if (g_debug) {
+                Serial.printf("RX I %u wpm=%u cwpm=%u call=%s\n",
+                              id.station_id, id.wpm, id.char_wpm, id.call);
+            }
+        } else if (proto::decode_edge(buf, n, ev)) {
+            // EdgeEvent (E4, docs/edge-events.md "Bilingual RX"): the packet's
+            // flags level is the level being ENTERED, so the segment that JUST
+            // ENDED (dur_now_ms) had the OPPOSITE level, and the one before
+            // that (dur_prev_ms, the self-heal copy) had `level_down`'s level.
+            rx_is_edge = true;
+            bool level_down = (ev.flags & proto::EDGE_FLAG_DOWN) != 0;
+            bool hb         = (ev.flags & proto::EDGE_FLAG_HEARTBEAT) != 0;
+
+            // Presence/level/sidetone update on EVERY edge packet, heartbeat or
+            // not — that's the whole point of the heartbeat (presence + level
+            // re-anchor without waiting on a real edge).
+            rx_down = level_down;
+            last_rx = now;
+            last_signal = now;
+            rssi = r;
+            rssi_valid = true;
+            rx_station_id = ev.station_id;
+
+            if (g_debug) {
+                Serial.printf("RX E %u seq=%u lvl=%u hb=%u dn=%u dp=%u rssi=%d\n",
+                              ev.station_id, ev.seq, level_down ? 1 : 0,
+                              hb ? 1 : 0, ev.dur_now_ms, ev.dur_prev_ms, (int)r);
+            }
+
+            if (!hb) {
+                // Self-heal via seq (docs/edge-events.md "Loss handling"): a
+                // gap of 1 is the normal case (strictly incrementing real-edge
+                // seq); 0 is a duplicate; 2 means exactly one edge was lost and
+                // dur_prev_ms restates it; >=2 is an unrecoverable boundary.
+                if (reanchor || last_edge_seq < 0) {
+                    decoder.feed_segment(!level_down, ev.dur_now_ms);  // anchor, no heal
+                    reanchor = false;
+                } else {
+                    uint8_t gap = (uint8_t)((uint8_t)ev.seq - (uint8_t)last_edge_seq);
+                    if (gap == 0) {
+                        // duplicate edge: skip feeding
+                    } else if (gap == 1) {
+                        decoder.feed_segment(!level_down, ev.dur_now_ms);
+                    } else if (gap == 2) {              // exactly one edge lost -> recover it
+                        decoder.feed_segment(level_down, ev.dur_prev_ms);   // the missing segment
+                        decoder.feed_segment(!level_down, ev.dur_now_ms);   // this segment
+                    } else {                            // >=2 lost: unrecoverable boundary
+                        decoder.flush();
+                        decoder.feed_segment(!level_down, ev.dur_now_ms);
+                    }
+                }
+                last_edge_seq = ev.seq;
+            }
+            // Heartbeat: presence/level already updated above; do NOT decode,
+            // do NOT touch last_edge_seq (it doesn't own a seq — see tx_edge §0).
         }
     }
 
-    // No fresh keystate for too long → drop to key-up (silent/idle).
+    // No fresh packet for too long → drop to key-up (silent/idle). In edge
+    // mode also flush the decoder and request a re-anchor: otherwise the next
+    // edge after the gap would be diffed against a stale last_edge_seq and
+    // could trigger a phantom self-heal (docs/edge-events.md "Loss handling").
     if (rx_down && (now - last_rx) > rx_timeout_ms) {
         rx_down = false;
+        if (rx_is_edge) {
+            decoder.flush();
+            reanchor = true;
+        }
     }
 
     // Prolonged silence → the station is gone. Clear the RECV id and RSSI bar so
@@ -807,25 +936,59 @@ static void loop_hunter(uint32_t now) {
 
     set_tone(rx_down);
 
-    char c = decoder.update(rx_down, now);
+    // Decoder step — branches on mode (E4, docs/edge-events.md "Decode path"):
+    //  - compat: the only timing source is local arrival, so the decoder must
+    //    be polled every loop with the live key state (unchanged from pre-E4 —
+    //    byte-identical when receiving KeyState).
+    //  - edge: the decode already happened on packet arrival via feed_segment
+    //    (TX-measured durations, not jittered local timestamps), so update()
+    //    would double-decode from noisy local timing. Just drain the queue the
+    //    feed_segment calls filled.
+    // take_element() drains the dit/dah view in BOTH modes — it surfaces the
+    // same per-element classification however it was produced.
+    if (rx_is_edge) {
+        char e;
+        while ((e = decoder.take_element())) {
+            rolling_append(ditdah_buf, ditdah_len, sizeof(ditdah_buf), &e, 1);
+            last_code = now;
+            if (g_debug) Serial.printf("EL %d %c\n", rx_station_id, e);
+        }
+        char c;
+        while ((c = decoder.take_char())) {
+            last_code = now;
+            text_push(c);
+            Serial.print(c);
+            if (g_debug) Serial.printf("CH %d %c\n", rx_station_id, c);
+            // Separate the dit/dah stream: a single space between letters,
+            // " / " between words (the word-gap char ' ' arrives after the
+            // letter's space).
+            if (c == ' ') ditdah_push("/ ");
+            else          ditdah_push(" ");
+        }
+    } else {
+        char c = decoder.update(rx_down, now);
 
-    // Live dit/dah scroll: push each element ('.'/'-') the instant the decoder
-    // classifies it, so the dit/dah view advances one element at a time rather
-    // than a whole character at once.
-    char e = decoder.take_element();
-    if (e) {
-        rolling_append(ditdah_buf, ditdah_len, sizeof(ditdah_buf), &e, 1);
-        last_code = now;
-    }
+        // Live dit/dah scroll: push each element ('.'/'-') the instant the
+        // decoder classifies it, so the dit/dah view advances one element at a
+        // time rather than a whole character at once.
+        char e = decoder.take_element();
+        if (e) {
+            rolling_append(ditdah_buf, ditdah_len, sizeof(ditdah_buf), &e, 1);
+            last_code = now;
+            if (g_debug) Serial.printf("EL %d %c\n", rx_station_id, e);
+        }
 
-    if (c) {
-        last_code = now;
-        text_push(c);
-        Serial.print(c);
-        // Separate the dit/dah stream: a single space between letters, " / "
-        // between words (the word-gap char ' ' arrives after the letter's space).
-        if (c == ' ') ditdah_push("/ ");
-        else          ditdah_push(" ");
+        if (c) {
+            last_code = now;
+            text_push(c);
+            Serial.print(c);
+            if (g_debug) Serial.printf("CH %d %c\n", rx_station_id, c);
+            // Separate the dit/dah stream: a single space between letters,
+            // " / " between words (the word-gap char ' ' arrives after the
+            // letter's space).
+            if (c == ' ') ditdah_push("/ ");
+            else          ditdah_push(" ");
+        }
     }
 
     if (now - last_draw >= 100) {
