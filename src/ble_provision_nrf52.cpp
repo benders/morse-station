@@ -10,7 +10,7 @@
 // Guarded to compile only for the RAK4631 target. The NimBLE/NUS sibling
 // (ble_provision.cpp) is guarded to ESP32-only — see its header comment.
 
-#if defined(DEVICE_RAK4631)
+#if defined(DEVICE_RAK4631) || defined(DEVICE_WIO_TRACKER_L1)
 
 #include "ble_provision.h"
 #include <Arduino.h>
@@ -152,4 +152,4 @@ void stop() {
 
 }  // namespace ble_provision
 
-#endif // DEVICE_RAK4631
+#endif // DEVICE_RAK4631 || DEVICE_WIO_TRACKER_L1

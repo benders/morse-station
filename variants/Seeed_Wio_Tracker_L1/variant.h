@@ -26,6 +26,14 @@
 #define LED_GREEN PIN_LED1
 #define LED_BLUE PIN_LED2
 #define LED_STATE_ON 1 // State when LED is lit
+
+// Adafruit's InternalFileSystem (flash_cache.c) references LED_BUILTIN
+// unconditionally; this variant didn't define it (unlike RAK's WisCore).
+// Use the real Mesh status LED (PIN_LED1 = P1.15), NOT LED_BLUE: on this
+// board LED_BLUE = PIN_LED2 = D12 = P1.00 = the BUZZER pin, and aliasing
+// LED_BUILTIN to it would make flash_cache.c click the piezo on every
+// LittleFS write. See reference/wio-tracker-l1-pro/README.md.
+#define LED_BUILTIN PIN_LED1
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 //  Button Configuration
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

@@ -11,7 +11,7 @@ Status board (update as work proceeds — mirror into `TODO.md`):
 | W5 | `src/pins.h` + buttons — wire an on-board button as the Morse key + mode btn | `[x]` (no code — satisfied by W2; verified against variant.h) |
 | W6 | `src/battery.cpp` — gated nRF52 analog read | `[x]` |
 | W7 | `src/display.cpp` — include Wio in the U8g2 OLED path | `[x]` |
-| W8 | Extend `platform_nrf52`/`kv_nrf52`/`ble_provision_nrf52`/`sidetone` guards | `[ ]` |
+| W8 | Extend `platform_nrf52`/`kv_nrf52`/`ble_provision_nrf52`/`sidetone` guards | `[x]` |
 | W9 | Build, fit, flash, hardware-validate | `[ ]` |
 
 This file is the implementation spec, written so a **Sonnet sub-agent can execute

@@ -34,6 +34,25 @@ Vendored into this repo as:
   from upstream (only the dir name changed, to match this project's
   `WisCore_RAK4631_Board`-style naming convention).
 
+## Local modifications to vendored variant.h (Phase W8)
+
+The vendored `variant.h` does not define `LED_BUILTIN`, but Adafruit's
+`InternalFileSystem` (`flash_cache.c`, pulled in by `kv_nrf52.cpp`) references
+it unconditionally — the build fails with `'LED_BUILTIN' undeclared`. Added:
+
+```c
+#define LED_BUILTIN PIN_LED1
+```
+
+right after the existing `LED_GREEN`/`LED_BLUE`/`LED_STATE_ON` defines.
+`PIN_LED1` (= 11 = `P1.15`) is the real Mesh status LED — safe to toggle.
+
+**Do NOT use `LED_BLUE`** despite the compiler's "did you mean LED_BLUE?"
+hint: on this board `LED_BLUE` is `PIN_LED2` (= 12 = `D12` = `P1.00`), which
+is the **buzzer** pin (`BUZ_PWM`, see pin map below). Aliasing `LED_BUILTIN`
+to it would make `flash_cache.c` toggle the piezo buzzer on every LittleFS
+write — audible clicking on every config save.
+
 ## IMPORTANT — pin numbering convention differs from the RAK4631 variant
 
 The RAK4631 variant uses an **identity** `g_ADigitalPinMap` (Arduino logical

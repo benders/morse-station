@@ -27,7 +27,7 @@
 // Guarded to compile only for the RAK4631 target. See kv_esp32.cpp for the
 // ESP32 (Preferences/NVS) sibling.
 
-#if defined(DEVICE_RAK4631)
+#if defined(DEVICE_RAK4631) || defined(DEVICE_WIO_TRACKER_L1)
 
 #include "kv.h"
 #include <Arduino.h>
@@ -297,4 +297,4 @@ void Store::remove(const char* k) {
 
 } // namespace kv
 
-#endif // DEVICE_RAK4631
+#endif // DEVICE_RAK4631 || DEVICE_WIO_TRACKER_L1

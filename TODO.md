@@ -193,8 +193,11 @@ status board live in `wio-tracker-port.md`.
       RAK's always-on divider); `ADC_MULTIPLIER = 2.0` upstream — confirm ratio
       on the bench.
 - [x] **W7** `src/display.cpp` — include Wio in the U8g2 SSD1306 I2C path.
-- [ ] **W8** Extend `platform_nrf52`/`kv_nrf52`/`ble_provision_nrf52`/
-      `sidetone` device guards to cover `DEVICE_WIO_TRACKER_L1`.
+- [x] **W8** Extend `platform_nrf52`/`kv_nrf52`/`ble_provision_nrf52`/
+      `sidetone` device guards to cover `DEVICE_WIO_TRACKER_L1`; also added
+      `#define LED_BUILTIN PIN_LED1` to the vendored variant.h (InternalFS
+      needs it; NOT LED_BLUE — that's the buzzer pin). `wio_tracker_l1` now
+      LINKS clean (RAM 27748/248832, Flash 186528/815104).
 - [ ] **W9** Build, fit, flash, hardware-validate.
 
 ---

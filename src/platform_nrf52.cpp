@@ -24,7 +24,7 @@
 // most specific single cause when multiple bits are set (priority order below)
 // so the boot banner and bootlog ring stay simple one-byte values.
 
-#if defined(DEVICE_RAK4631)
+#if defined(DEVICE_RAK4631) || defined(DEVICE_WIO_TRACKER_L1)
 
 #include "platform.h"
 #include <Arduino.h>
@@ -119,4 +119,4 @@ uint8_t unique_id_byte() {
 
 } // namespace platform
 
-#endif // DEVICE_RAK4631
+#endif // DEVICE_RAK4631 || DEVICE_WIO_TRACKER_L1
