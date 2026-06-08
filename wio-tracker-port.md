@@ -6,7 +6,7 @@ Status board (update as work proceeds — mirror into `TODO.md`):
 |-------|-------|-------|
 | W1 | Vendor board JSON + variant + references; add `[env:wio_tracker_l1]` | `[x]` |
 | W2 | `src/pins.h` — `DEVICE_WIO_TRACKER_L1` branch | `[x]` |
-| W3 | `src/radio.cpp` — share the nRF52/global-SPI SX1262 path; RF switch + TCXO | `[ ]` |
+| W3 | `src/radio.cpp` — share the nRF52/global-SPI SX1262 path; RF switch + TCXO | `[x]` |
 | W4 | `src/sidetone_nrf52.cpp` — new passive-buzzer backend (`-DSIDETONE_BUZZER`) | `[ ]` |
 | W5 | `src/pins.h` + buttons — wire an on-board button as the Morse key + mode btn | `[ ]` |
 | W6 | `src/battery.cpp` — gated nRF52 analog read | `[ ]` |
@@ -459,9 +459,16 @@ Widen each to `#if defined(DEVICE_RAK4631) || defined(DEVICE_WIO_TRACKER_L1)`:
 - `src/platform_nrf52.cpp` — restart / system_off / reset_reason(+label) /
   unique_id all apply unchanged (nRF52840). **No code change beyond the guard.**
 - `src/kv_nrf52.cpp` — LittleFS persistence, identical. Guard only.
-- `src/ble_provision_nrf52.cpp` — Bluefruit BLE-UART console, identical. Guard
-  only. (And make sure the NimBLE `ble_provision.cpp` body guard stays
-  ESP-only — it already excludes nRF52.)
+  - **VARIANT GAP (found in W3):** the vendored `variants/Seeed_Wio_Tracker_L1/
+    variant.h` does **not** define `LED_BUILTIN`, but Adafruit's
+    `InternalFileSystem` (`flash_cache.c`) references it → build fails with
+    `'LED_BUILTIN' undeclared` the moment kv_nrf52/InternalFS is pulled in. The
+    RAK's WisCore variant defines it; this one doesn't. **Fix:** add
+    `#define LED_BUILTIN <pin>` to the vendored `variant.h` (use the board's
+    status/Mesh LED — e.g. alias `PIN_LED1`/the Mesh_LED pin; check the upstream
+    Meshtastic variant for the exact value). Record the edit in
+    `reference/wio-tracker-l1-pro/README.md` (it's a local change to a vendored
+    file). This blocks the W8 link until fixed.
 - `src/sidetone_nrf52.cpp` — whole-file guard widened (W4).
 - Double-check `platform_esp32.cpp` / `kv_esp32.cpp` guards do **not** accidentally
   include the Wio (they're ESP-only; leave them).

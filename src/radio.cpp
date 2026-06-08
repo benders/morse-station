@@ -5,16 +5,18 @@
 // nRF52 has no IRAM and no IRAM_ATTR macro; the ESP32 one only matters for
 // placing ISR code in IRAM so it survives flash-cache-disabled sections (e.g.
 // during NVS writes). Neutralize it on nRF52 so on_rx() compiles unchanged.
-#if defined(DEVICE_RAK4631) && !defined(IRAM_ATTR)
+#if (defined(DEVICE_RAK4631) || defined(DEVICE_WIO_TRACKER_L1)) && !defined(IRAM_ATTR)
 #define IRAM_ATTR
 #endif
 
 namespace {
 
-#if defined(DEVICE_RAK4631)
-// No second SPI peripheral the way the ESP32-S3 exposes HSPI/VSPI — the
-// RAK4631's SX1262 lives on the global `SPI`, re-pinned explicitly via
-// SPI.begin()/setPins() in init() below (see §2 / reference/rak4631/README.md).
+#if defined(DEVICE_RAK4631) || defined(DEVICE_WIO_TRACKER_L1)
+// No second SPI peripheral the way the ESP32-S3 exposes HSPI/VSPI — both
+// nRF52840 boards' SX1262 lives on the global `SPI` (re-pinned explicitly via
+// SPI.setPins()/begin() for the RAK; the Wio's variant default SPI pins ARE
+// the LoRa pins, so a bare SPI.begin() suffices — see init() below and
+// §2 / reference/rak4631 + reference/wio-tracker-l1-pro READMEs).
 SX1262 chip = new Module(PIN_NSS, PIN_DIO1, PIN_NRST, PIN_BUSY, SPI);
 #else
 SPIClass radioSpi(HSPI);
@@ -35,9 +37,10 @@ constexpr float    TCXO_V        = 1.8f;
 // VERIFY ON HW: Cap LoRa-1262. If beginFSK() fails (RADIOLIB_ERR_SPI_CMD_*),
 // the module likely uses a plain crystal — set this to 0.0f.
 constexpr float    TCXO_V        = 1.8f;
-#elif defined(DEVICE_RAK4631)
+#elif defined(DEVICE_RAK4631) || defined(DEVICE_WIO_TRACKER_L1)
 // RAK4631 WisCore module: SX1262's DIO3 drives a 1.8 V TCXO (§2 of the port
-// plan / reference/rak4631).
+// plan / reference/rak4631). The Wio Tracker L1 Pro's Wio-SX1262 module uses
+// the same 1.8 V TCXO (confirmed in W1 / reference/wio-tracker-l1-pro).
 constexpr float    TCXO_V        = 1.8f;
 #endif
 
@@ -88,15 +91,18 @@ bool init(int& err) {
     fem_power_on();
 #endif
 
+#if defined(DEVICE_RAK4631) || defined(DEVICE_WIO_TRACKER_L1)
 #if defined(DEVICE_RAK4631)
     // Power the SX1262's onboard LDO. Without this the radio simply does not
     // respond on SPI (beginFSK() times out / SPI_CMD errors) — easy to miss,
-    // called out explicitly in §2 of the port plan.
+    // called out explicitly in §2 of the port plan. The Wio has no such pin
+    // (always-on LDO, confirmed W1) — do NOT drive a power-enable for it.
     pinMode(SX126X_POWER_EN, OUTPUT);
     digitalWrite(SX126X_POWER_EN, HIGH);
     delay(10);                      // let the LDO rail settle before SPI traffic
 
     SPI.setPins(PIN_MISO, PIN_SCK, PIN_MOSI);
+#endif
     SPI.begin();
 #else
     radioSpi.begin(PIN_SCK, PIN_MISO, PIN_MOSI, PIN_NSS);
@@ -109,6 +115,24 @@ bool init(int& err) {
     // line; the Cap LoRa-1262 wires DIO2 to its on-cap RF switch the same way.
     err = chip.setDio2AsRfSwitch(true);
     if (err != RADIOLIB_ERR_NONE) return false;
+
+#if defined(DEVICE_WIO_TRACKER_L1)
+    // This board is NOT pure-DIO2: the vendored variant.h additionally defines
+    // a discrete RXEN gate (SX126X_RXEN = D5 / "LoRa_SW") in series with the
+    // DIO2-driven switch — DIO2 alone leaves RX deaf. Register it with RadioLib
+    // so it toggles RXEN automatically around transmit()/startReceive(), the
+    // same way upstream Meshtastic drives SX126x boards that combine
+    // SX126X_DIO2_AS_RF_SWITCH with a separate SX126X_RXEN/SX126X_TXEN pair
+    // (see meshtastic/firmware src/mesh/SX126xInterface.cpp: it always calls
+    // lora.setRfSwitchPins(SX126X_RXEN, SX126X_TXEN), defaulting either pin to
+    // RADIOLIB_NC when undefined). The variant defines SX126X_TXEN as
+    // RADIOLIB_NC (TX path is handled by DIO2), so we pass it straight through.
+    //
+    // HARDWARE-UNVALIDATED (no unit yet as of W3) — confirm with an on-air RX
+    // check in W9; if RX is still deaf, try driving SX126X_RXEN HIGH manually
+    // instead of/in addition to setRfSwitchPins().
+    chip.setRfSwitchPins(SX126X_RXEN, SX126X_TXEN);
+#endif
 
     err = chip.setSyncWord(SYNC_WORD, sizeof(SYNC_WORD));
     if (err != RADIOLIB_ERR_NONE) return false;

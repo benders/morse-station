@@ -163,9 +163,20 @@ status board live in `wio-tracker-port.md`.
       `pio run -e wio_tracker_l1` now fails in `radio.cpp` (HSPI/TCXO_V/
       on_rx/SPI.begin 4-arg — W3 territory), not pins.h; `rak4631` still
       links clean (12.3% RAM / 23.4% flash).
-- [ ] **W3** `src/radio.cpp` — widen RAK4631 guards to cover the Wio (global
-      SPI / IRAM_ATTR shim / TCXO_V=1.8f); confirm whether `LoRa_SW`
-      (`SX126X_RXEN`, logical D5) needs driving alongside `setDio2AsRfSwitch`.
+- [x] **W3** `src/radio.cpp` — widened RAK4631 guards (IRAM_ATTR shim,
+      Module-over-global-SPI, TCXO_V=1.8f) to also cover
+      `DEVICE_WIO_TRACKER_L1`; kept `SX126X_POWER_EN` RAK-only (Wio has no
+      power-enable pin). Added Wio-only RF-switch handling: kept
+      `setDio2AsRfSwitch(true)` and additionally called
+      `chip.setRfSwitchPins(SX126X_RXEN, SX126X_TXEN)` (consuming the variant's
+      own macros — `SX126X_RXEN`=D5/`LoRa_SW`, `SX126X_TXEN`=`RADIOLIB_NC`),
+      matching upstream Meshtastic's `SX126xInterface.cpp` precedent for boards
+      combining `SX126X_DIO2_AS_RF_SWITCH` with a discrete RXEN/TXEN pair.
+      `radio.cpp.o` now compiles clean for `wio_tracker_l1` (failure moved on
+      to `flash_cache.c`/`LED_BUILTIN`, an unported-TU issue for later phases);
+      `rak4631` still links clean (191100 flash / 30492 RAM, byte-identical to
+      pre-W3); `heltec_v4` still configures+links. RXEN/TXEN wiring is
+      hardware-unvalidated — needs an on-air RX check in W9.
 - [ ] **W4** `src/sidetone_nrf52.cpp` — new `-DSIDETONE_BUZZER` backend
       (NRF_PWM0 square wave). NOTE: this variant's `g_ADigitalPinMap` is **not**
       identity (unlike RAK) — must translate `PIN_BUZZER` (logical D12) to
