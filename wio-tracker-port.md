@@ -12,7 +12,7 @@ Status board (update as work proceeds — mirror into `TODO.md`):
 | W6 | `src/battery.cpp` — gated nRF52 analog read | `[x]` |
 | W7 | `src/display.cpp` — include Wio in the U8g2 OLED path | `[x]` |
 | W8 | Extend `platform_nrf52`/`kv_nrf52`/`ble_provision_nrf52`/`sidetone` guards | `[x]` |
-| W9 | Build, fit, flash, hardware-validate | `[~]` (build/fit ✅; **flashed + boots on real hardware** ✅ banner/config/BLE/OLED/battery; radio+sidetone+buttons still to test) |
+| W9 | Build, fit, flash, hardware-validate | `[~]` (build/fit ✅; **boots on real hardware** ✅ banner/config/BLE/OLED/battery; 2 HW bugs found+fixed: buzzer tick, SH1106 panel. On-air radio + buttons still to test) |
 
 This file is the implementation spec, written so a **Sonnet sub-agent can execute
 one phase at a time**. **Read `AGENTS.md` first** — its rules bind every phase:
@@ -523,6 +523,19 @@ volume → copy `firmware.uf2`). But first the app had to be relinked for the
 Validated by that one boot: banner + nRF52 reset-reason label, LittleFS config
 read (W8), Bluefruit BLE advertising (W8), OLED present on I²C @ 0x3D (W7 probe),
 gated battery read ~4.18 V/99% (W6 — `DIVIDER_WIO=2.0` is approximately right).
+
+**Two hardware bugs found on the bench and fixed (both confirmed):**
+- **Constant buzzer "ticking":** Bluefruit's auto connection-LED blinks
+  `LED_BLUE`, which the variant aliases to `PIN_LED2 = D12 = P1.00 = the buzzer
+  pin`. Fixed with `Bluefruit.autoConnLed(false)` in `ble_provision_nrf52.cpp`
+  (Wio guard). Commit `93b9bdf`.
+- **OLED right-edge distortion:** the panel is an **SH1106** (132-col RAM, 2-col
+  visible offset), not an SSD1306 — despite the variant's `USE_SSD1306` flag.
+  Fixed by using `U8G2_SH1106_128X64_NONAME_F_HW_I2C` for the Wio in
+  `display.cpp` (RAK keeps SSD1306). Commit `4ad5d17`.
+
+**Still to validate on-air:** radio TX/RX + RXEN against a hunter; sidetone tone
+quality/keying; button mapping (Menu key + joystick-press menu).
 
 1. **Build:** ✅ `pio run -e wio_tracker_l1` LINKS CLEAN — **186528 B flash
    (22.9% of 815104) / 27748 B RAM (11.2% of 248832)**, fits comfortably. No
