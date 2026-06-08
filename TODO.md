@@ -177,7 +177,7 @@ status board live in `wio-tracker-port.md`.
       `rak4631` still links clean (191100 flash / 30492 RAM, byte-identical to
       pre-W3); `heltec_v4` still configures+links. RXEN/TXEN wiring is
       hardware-unvalidated — needs an on-air RX check in W9.
-- [ ] **W4** `src/sidetone_nrf52.cpp` — new `-DSIDETONE_BUZZER` backend
+- [x] **W4** `src/sidetone_nrf52.cpp` — new `-DSIDETONE_BUZZER` backend
       (NRF_PWM0 square wave). NOTE: this variant's `g_ADigitalPinMap` is **not**
       identity (unlike RAK) — must translate `PIN_BUZZER` (logical D12) to
       absolute GPIO 32 before writing `PSEL.OUT[0]`; see the README's pin-map

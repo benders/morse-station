@@ -1,11 +1,24 @@
-// sidetone_nrf52.cpp — RAK4631 (nRF52840) sidetone backend.
+// sidetone_nrf52.cpp — nRF52840 sidetone backend (RAK4631 and Wio Tracker L1 Pro).
 //
-// Two transports, selected at *build time* (see platformio.ini [env:rak4631]):
+// Three transports, selected at *build time* by the env's build_flags:
 //
 //   default            -> I2S into a MAX98357A class-D amp (digital, 16-bit PCM).
+//                         [env:rak4631]
 //   -DSIDETONE_PAM8403 -> PWM into an RC low-pass into a PAM8403 analog amp.
+//                         [env:rak4631] alternate build.
+//   -DSIDETONE_BUZZER  -> direct PWM square wave into the Wio's built-in passive
+//                         piezo buzzer. [env:wio_tracker_l1] — its ONLY option:
+//                         the case is sealed, there is no amp, and the only
+//                         audio transducer on the board is this buzzer (net
+//                         BUZ_PWM -> NPN transistor -> piezo, active-high,
+//                         resonant ~2700 Hz). The #if defined(SIDETONE_BUZZER)
+//                         arm below replaces the whole DDS/envelope/feeder
+//                         machinery the other two transports share — a passive
+//                         piezo just needs an on/off square wave at the tone
+//                         frequency, no amplitude shaping. See the dedicated
+//                         comment block in that arm for the register setup.
 //
-// Both share the exact same generator design as the Heltec I2S path
+// The I2S and PAM8403 arms share the exact same generator design as the Heltec I2S path
 // (sidetone.cpp): a DDS sine scaled by a volume gain, with a raised-cosine
 // attack/release envelope so key down/up is click-free. The volume/level/mute
 // knobs are byte-for-byte identical between the two paths; only the *transport*
@@ -37,11 +50,11 @@
 // MAX98357A tie GAIN to VIN (a floating GAIN -> intermittent distortion, the
 // exact bug seen on the Heltec build; see docs/components/max98357a.md).
 //
-// Guarded to compile only for the RAK4631 target. The ESP32 I2S sibling
-// (sidetone.cpp) is guarded to Heltec V4/V3; sidetone_cardputer.cpp self-guards
-// to the Cardputer ADV.
+// Guarded to compile only for the RAK4631 and Wio Tracker L1 Pro targets (both
+// nRF52840). The ESP32 I2S sibling (sidetone.cpp) is guarded to Heltec V4/V3;
+// sidetone_cardputer.cpp self-guards to the Cardputer ADV.
 
-#if defined(DEVICE_RAK4631)
+#if defined(DEVICE_RAK4631) || defined(DEVICE_WIO_TRACKER_L1)
 
 #include "sidetone.h"
 #include "pins.h"
@@ -53,7 +66,21 @@
 
 namespace {
 
-#if defined(SIDETONE_PAM8403)
+#if defined(SIDETONE_BUZZER)
+// ---- Buzzer (passive piezo via NPN, direct square-wave PWM) ---------------
+//
+// Far simpler than the DDS paths below: a passive piezo just needs an on/off
+// square wave at the sidetone frequency — no sine table, no amplitude
+// envelope, no DMA feeder. NRF_PWM0 free-runs the wave entirely in hardware
+// once started; sidetone_on()/off() just start/stop it. See sidetone_init()
+// for the full register setup and the g_ADigitalPinMap translation note.
+//
+// PRESCALER = DIV_16 -> 16 MHz / 16 = 1 MHz base clock, so
+// COUNTERTOP = 1'000'000 / freq_hz gives an exact-enough period, and
+// COUNTERTOP/2 is a 50% duty compare value.
+constexpr uint32_t PWM_BASE_CLK_HZ = 1000000;
+
+#elif defined(SIDETONE_PAM8403)
 // PWM carrier = 16 MHz / COUNTERTOP = 62.5 kHz (well above audio, easy to RC
 // filter). REFRESH=1 holds each compare value for 2 carrier periods, so the
 // audio sample rate is carrier / (REFRESH+1) = 31.25 kHz. Duty is 9-bit-ish:
@@ -73,6 +100,7 @@ constexpr int      FRAMES      = 256;     // stereo frames per DMA buffer; one
                                           // ~15 ms/buffer => relaxed feeder cadence.
 #endif
 
+#if !defined(SIDETONE_BUZZER)
 // 256-entry signed 16-bit sine, indexed by the top 8 bits of the DDS phase.
 int16_t           s_sine[256];
 volatile uint32_t s_phase     = 0;
@@ -190,8 +218,136 @@ void feeder(void*) {
     }
 }
 #endif
+#endif // !SIDETONE_BUZZER
+
+#if defined(SIDETONE_BUZZER)
+// State for the buzzer transport. The wave runs entirely in hardware once
+// started (LOOP + SHORTS restart trick, same as the PAM8403 arm); on/off just
+// start/stop NRF_PWM0's sequence and park the pin LOW so the transistor (and
+// thus the piezo) draws nothing while idle/keyed-up.
+uint32_t s_countertop  = 0;     // PWM period in base-clock ticks
+uint16_t s_compare     = 0;     // duty compare value (bit15=0 => duty/COUNTERTOP)
+volatile bool s_on     = false; // logical key state (independent of mute)
+volatile bool s_muted  = false;
+uint8_t  s_level       = 32;    // sidetone_set_level units, stored only (no-op)
+uint8_t  s_volume      = 255;   // sidetone_set_volume units, stored only (no-op)
+
+__attribute__((aligned(4))) uint16_t s_seq[1];  // single-entry sequence buffer
+
+// Re-arm PSEL + sequence and kick off the free-running square wave. Safe to
+// call repeatedly (e.g. on() after a prior off()/STOP) — TASKS_STOP leaves the
+// peripheral configured, so re-issuing SEQSTART resumes cleanly.
+void buzzer_start() {
+    NRF_PWM0->PSEL.OUT[0] = g_ADigitalPinMap[PIN_BUZZER];
+    NRF_PWM0->EVENTS_SEQEND[0] = 0;
+    NRF_PWM0->EVENTS_SEQEND[1] = 0;
+    NRF_PWM0->TASKS_SEQSTART[0] = 1;
+}
+
+// Stop the wave and park the pin low (transistor off, no current through the
+// piezo). Disconnecting PSEL as well as driving the pin via GPIO ensures the
+// pin sits at a clean digital LOW rather than wherever the PWM left it.
+void buzzer_stop() {
+    NRF_PWM0->TASKS_STOP = 1;
+    NRF_PWM0->PSEL.OUT[0] = 0x80000000;
+    digitalWrite(PIN_BUZZER, LOW);
+}
+#endif
 
 } // namespace
+
+#if defined(SIDETONE_BUZZER)
+
+void sidetone_init(int /*gpio*/, uint32_t freq_hz) {
+    pinMode(PIN_BUZZER, OUTPUT);
+    digitalWrite(PIN_BUZZER, LOW);
+
+    if (freq_hz < 1) freq_hz = 1;
+    s_countertop = PWM_BASE_CLK_HZ / freq_hz;     // e.g. 600 Hz -> 1667
+    if (s_countertop < 2) s_countertop = 2;       // need room for a 50% duty step
+    s_compare    = (uint16_t)(s_countertop / 2);  // 50% duty square wave
+    s_seq[0]     = s_compare;                     // bit15=0 => duty/COUNTERTOP
+
+    s_on    = false;
+    s_muted = false;
+
+    // Channel 0 only; channels 1-3 disconnected. PSEL value must be the
+    // *absolute* nRF GPIO number — unlike the RAK4631, this variant's
+    // g_ADigitalPinMap[] is NOT identity (logical Arduino pin != absolute
+    // GPIO), so we must translate via g_ADigitalPinMap[PIN_BUZZER] rather than
+    // pass PIN_BUZZER directly (see reference/wio-tracker-l1-pro/README.md,
+    // W1 finding). Getting this wrong drives the wrong physical pin.
+    NRF_PWM0->PSEL.OUT[0] = g_ADigitalPinMap[PIN_BUZZER];
+    NRF_PWM0->PSEL.OUT[1] = 0x80000000;
+    NRF_PWM0->PSEL.OUT[2] = 0x80000000;
+    NRF_PWM0->PSEL.OUT[3] = 0x80000000;
+
+    NRF_PWM0->ENABLE     = PWM_ENABLE_ENABLE_Enabled << PWM_ENABLE_ENABLE_Pos;
+    NRF_PWM0->MODE       = PWM_MODE_UPDOWN_Up        << PWM_MODE_UPDOWN_Pos;
+    NRF_PWM0->PRESCALER  = PWM_PRESCALER_PRESCALER_DIV_16 << PWM_PRESCALER_PRESCALER_Pos;
+    NRF_PWM0->COUNTERTOP = s_countertop;
+    NRF_PWM0->LOOP       = 1;   // loop forever via the SHORTS restart below
+    NRF_PWM0->DECODER    = (PWM_DECODER_LOAD_Common      << PWM_DECODER_LOAD_Pos) |
+                           (PWM_DECODER_MODE_RefreshCount << PWM_DECODER_MODE_Pos);
+
+    NRF_PWM0->SEQ[0].PTR      = (uint32_t)s_seq;
+    NRF_PWM0->SEQ[0].CNT      = 1;          // single compare value -> steady duty
+    NRF_PWM0->SEQ[0].REFRESH  = 0;
+    NRF_PWM0->SEQ[0].ENDDELAY = 0;
+
+    // LOOPSDONE -> SEQSTART0 restarts SEQ0 forever with zero CPU involvement —
+    // same free-run trick the PAM8403 arm uses, just with one compare value
+    // instead of a streamed buffer, so the wave is a steady 50% square at
+    // freq_hz once started.
+    NRF_PWM0->SHORTS = PWM_SHORTS_LOOPSDONE_SEQSTART0_Enabled
+                       << PWM_SHORTS_LOOPSDONE_SEQSTART0_Pos;
+
+    // Configured but NOT started — sidetone_init() must leave the buzzer
+    // silent. sidetone_on() issues the first TASKS_SEQSTART[0].
+    NRF_PWM0->EVENTS_SEQEND[0] = 0;
+    NRF_PWM0->EVENTS_SEQEND[1] = 0;
+}
+
+void sidetone_set_volume(uint8_t vol) {
+    // A transistor-driven passive piezo has essentially no usable amplitude
+    // range — it's an on/off resonator, not a linear transducer, so faking a
+    // smooth loudness curve here would be dishonest. Store the value (so
+    // `show`/state stays sane and the RSSI-driven hunter path has somewhere
+    // to write) and otherwise no-op; the wave is always full duty-cycle swing.
+    s_volume = vol;
+}
+
+void sidetone_set_level(uint8_t units) {
+    // Same rationale as sidetone_set_volume(): store only, for state/`vol`
+    // command consistency. Clamp to the documented 1..32 range.
+    if (units < 1)  units = 1;
+    if (units > 32) units = 32;
+    s_level = units;
+}
+
+void sidetone_set_mute(bool m) {
+    s_muted = m;
+    if (s_muted) {
+        // Silence immediately regardless of s_on, but remember s_on so an
+        // unmute while keyed resumes the tone (matches the sidetone.h
+        // contract used by the other transports).
+        if (s_on) buzzer_stop();
+    } else if (s_on) {
+        buzzer_start();
+    }
+}
+
+void sidetone_on() {
+    s_on = true;
+    if (!s_muted) buzzer_start();
+}
+
+void sidetone_off() {
+    s_on = false;
+    buzzer_stop();
+}
+
+#else
 
 void sidetone_init(int /*gpio*/, uint32_t freq_hz) {
     for (int i = 0; i < 256; i++)
@@ -312,4 +468,6 @@ void sidetone_set_mute(bool m) { s_muted = m; }   // feeder writes silence while
 void sidetone_on()  { s_on = true; }   // the envelope ramp gives the clickless edge
 void sidetone_off() { s_on = false; }
 
-#endif // DEVICE_RAK4631
+#endif // SIDETONE_BUZZER
+
+#endif // DEVICE_RAK4631 || DEVICE_WIO_TRACKER_L1

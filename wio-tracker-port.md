@@ -7,7 +7,7 @@ Status board (update as work proceeds — mirror into `TODO.md`):
 | W1 | Vendor board JSON + variant + references; add `[env:wio_tracker_l1]` | `[x]` |
 | W2 | `src/pins.h` — `DEVICE_WIO_TRACKER_L1` branch | `[x]` |
 | W3 | `src/radio.cpp` — share the nRF52/global-SPI SX1262 path; RF switch + TCXO | `[x]` |
-| W4 | `src/sidetone_nrf52.cpp` — new passive-buzzer backend (`-DSIDETONE_BUZZER`) | `[ ]` |
+| W4 | `src/sidetone_nrf52.cpp` — new passive-buzzer backend (`-DSIDETONE_BUZZER`) | `[x]` |
 | W5 | `src/pins.h` + buttons — wire an on-board button as the Morse key + mode btn | `[ ]` |
 | W6 | `src/battery.cpp` — gated nRF52 analog read | `[ ]` |
 | W7 | `src/display.cpp` — include Wio in the U8g2 OLED path | `[ ]` |
