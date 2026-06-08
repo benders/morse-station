@@ -315,16 +315,19 @@ static bool handle_setup_command(const char* line, Print& out) {
     } else if (!strcmp(line, "keymode") || !strcmp(line, "keymode show") ||
                !strncmp(line, "keymode ", 8)) {
         // Runtime toggle between the compat KeyState stream (default — no
-        // behavior change) and EdgeEvent emission (E3). Not yet NVS-persisted
-        // (E5): a reboot always comes back up in compat. See docs/edge-events.md.
+        // behavior change) and EdgeEvent emission (E3). NVS-persisted (E5) and
+        // restored into g_keymode at boot, so a fox flipped to edge over the air
+        // comes back up in edge mode. See docs/edge-events.md.
         const char* arg = line + 7;
         while (*arg == ' ') arg++;
         if (!*arg || !strcmp(arg, "show")) {
             // report only
         } else if (!strcmp(arg, "compat")) {
             g_keymode = KEYMODE_COMPAT;
+            config::set_keymode(g_keymode);
         } else if (!strcmp(arg, "edge")) {
             g_keymode = KEYMODE_EDGE;
+            config::set_keymode(g_keymode);
         } else {
             out.println("  ? keymode <compat|edge>");
             return false;
@@ -524,6 +527,9 @@ void setup() {
     }
 
     config::begin();
+    // Restore the persisted keying mode (compat/edge) so a fox flipped to edge
+    // over the air stays in edge across reboots. Default is compat.
+    g_keymode = config::keymode() ? KEYMODE_EDGE : KEYMODE_COMPAT;
     // Restore the last-used fox TX power level (clamp in case the table shrank).
     pwr_idx = config::fox_pwr_idx();
     if (pwr_idx >= N_PWR) pwr_idx = 0;

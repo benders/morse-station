@@ -34,6 +34,14 @@ void    set_wpm(uint8_t wpm);
 uint8_t char_wpm();
 void    set_char_wpm(uint8_t wpm);
 
+// Keying transmit mode: 0 = compat (legacy KeyState stream), 1 = edge
+// (EdgeEvent on key edges — see docs/edge-events.md). Persisted so a fox flipped
+// to edge over the air comes back up in edge mode. Restored into g_keymode at
+// boot (main.cpp); the `keymode` console command sets it live and writes through
+// here. Default 0 (compat) so a fresh/legacy unit behaves exactly as before.
+uint8_t keymode();
+void    set_keymode(uint8_t mode);
+
 // Last-selected boot mode (the Mode enum in main.cpp, stored as a raw uint8_t).
 // The boot menu starts highlighted on this and persists the chosen mode, so a
 // unit powers back up in whatever it was last used as. Default 0 (Hunter).
