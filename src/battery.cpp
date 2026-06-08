@@ -224,4 +224,81 @@ bool charging() { return false; }      // no charge-sense line wired in this por
 
 } // namespace battery
 
+#elif defined(DEVICE_WIO_TRACKER_L1)
+// ---- Wio Tracker L1 Pro: gated divider on PIN_VBAT_ADC, nRF52 analogRead --
+//
+// Like the Heltec, this board gates its VBAT divider with a MOSFET
+// (PIN_VBAT_CTRL, net BAT_CTL) rather than reading continuously like the RAK.
+// pins.h defines BATT_GATE_ACTIVE_HIGH=1 for this board (drive HIGH to connect
+// the divider, LOW to park/disconnect) — reuse the same GATE_CONNECT/GATE_PARK
+// idiom as the Heltec branch, but convert counts -> volts using the RAK's
+// nRF52 ADC reference math (internal 0.6V * 1/6 gain == 3.6V full-scale @ 12-bit).
+//
+// DIVIDER_WIO ~= 2.0, taken from the upstream Seeed/Meshtastic variant's
+// ADC_MULTIPLIER for this board. TODO CONFIRM/CALIBRATE on real hardware (W9).
+#include "pins.h"
+#include <Arduino.h>
+
+namespace {
+
+constexpr float DIVIDER_WIO = 2.0f;     // TODO CONFIRM against schematic / bench (W9)
+constexpr float ADC_REF_V   = 3.6f;     // nRF52 ADC default reference (internal 0.6V * gain 1/6)
+constexpr int   ADC_MAX     = 4095;     // 12-bit
+
+float  smoothed_v = 0.0f;
+uint32_t last_ms  = 0;
+
+// Gate levels derived from the per-board polarity macro (BATT_GATE_ACTIVE_HIGH=1
+// for the Wio: CONNECT=HIGH, PARK=LOW).
+#if BATT_GATE_ACTIVE_HIGH
+static constexpr int GATE_CONNECT = HIGH;
+static constexpr int GATE_PARK    = LOW;
+#else
+static constexpr int GATE_CONNECT = LOW;
+static constexpr int GATE_PARK    = HIGH;
+#endif
+
+float read_volts() {
+    digitalWrite(PIN_VBAT_CTRL, GATE_CONNECT);
+    delay(10);                          // let the divider settle
+    uint32_t acc = 0;
+    for (int i = 0; i < 8; i++) acc += analogRead(PIN_VBAT_ADC);
+    digitalWrite(PIN_VBAT_CTRL, GATE_PARK);   // disconnect to stop idle drain
+    float raw = acc / 8.0f;
+    return (raw / ADC_MAX) * ADC_REF_V * DIVIDER_WIO;
+}
+
+} // namespace
+
+namespace battery {
+
+void begin() {
+    pinMode(PIN_VBAT_CTRL, OUTPUT);
+    digitalWrite(PIN_VBAT_CTRL, GATE_PARK);   // divider disconnected when idle
+    analogReadResolution(12);
+    smoothed_v = read_volts();         // seed so the first frame is steady
+    last_ms = millis();
+}
+
+int percent() {
+    uint32_t now = millis();
+    if (now - last_ms >= 2000) {
+        last_ms = now;
+        float v = read_volts();
+        smoothed_v = smoothed_v > 0.0f ? smoothed_v * 0.7f + v * 0.3f : v;
+        Serial.printf("# batt %.2fV -> %d%%\n", smoothed_v, volts_to_percent(smoothed_v));
+    }
+    if (smoothed_v <= 0.5f) return -1;
+    return volts_to_percent(smoothed_v);
+}
+
+int millivolts() {
+    float v = read_volts();
+    return v > 0.5f ? (int)(v * 1000.0f + 0.5f) : -1;
+}
+
+bool charging() { return false; }      // no charge-sense line wired in this port
+
+} // namespace battery
+
 #endif

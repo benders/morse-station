@@ -9,7 +9,7 @@ Status board (update as work proceeds — mirror into `TODO.md`):
 | W3 | `src/radio.cpp` — share the nRF52/global-SPI SX1262 path; RF switch + TCXO | `[x]` |
 | W4 | `src/sidetone_nrf52.cpp` — new passive-buzzer backend (`-DSIDETONE_BUZZER`) | `[x]` |
 | W5 | `src/pins.h` + buttons — wire an on-board button as the Morse key + mode btn | `[x]` (no code — satisfied by W2; verified against variant.h) |
-| W6 | `src/battery.cpp` — gated nRF52 analog read | `[ ]` |
+| W6 | `src/battery.cpp` — gated nRF52 analog read | `[x]` |
 | W7 | `src/display.cpp` — include Wio in the U8g2 OLED path | `[ ]` |
 | W8 | Extend `platform_nrf52`/`kv_nrf52`/`ble_provision_nrf52`/`sidetone` guards | `[ ]` |
 | W9 | Build, fit, flash, hardware-validate | `[ ]` |

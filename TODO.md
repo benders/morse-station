@@ -188,7 +188,7 @@ status board live in `wio-tracker-port.md`.
       for `PIN_MODE_BTN`. No code needed — satisfied by the W2 pin defines;
       `main.cpp`/`MorseKey` handling is device-agnostic (INPUT_PULLUP, LOW=
       pressed). Verified against variant.h; no pin collisions.
-- [ ] **W6** `src/battery.cpp` — gated read; gate (`BAT_CTL`, logical D30/abs
+- [x] **W6** `src/battery.cpp` — gated read; gate (`BAT_CTL`, logical D30/abs
       GPIO4) is **active-HIGH** per upstream `initVariant()` (opposite the
       RAK's always-on divider); `ADC_MULTIPLIER = 2.0` upstream — confirm ratio
       on the bench.
