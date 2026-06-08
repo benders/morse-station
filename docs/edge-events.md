@@ -220,3 +220,59 @@ mid-loop join). Exit non-zero on mismatch. Runs the matrix unattended:
 - **E7 — field tune.** Only after E6 passes on the bench: physical-distance
   loss/decode, then classifier polish ("approach 1") if anything remains.
   Update `docs/protocol.md` with the edge model. Commit.
+
+## E6 bench validation results (2026-06-08)
+
+Hardware: fox + two hunters on the bench, all flashed from branch `edge-events`.
+Stations 42 (Heltec V4.2, ESP32) and 43 (Heltec V4.3, ESP32); 115 (Wio Tracker
+L1 Pro, nRF52840). Message `PARIS PARIS PARIS` looped; decode scored by
+`scripts/edge_test.py` (longest-common-substring / len(msg), PASS ≥ 0.6).
+
+| fox | mode | wpm | hunter 42 | hunter 115 | hunter 43 |
+|-----|------|-----|-----------|------------|-----------|
+| 43  | edge | 13  | PASS 1.88 | PASS 1.88  | —         |
+| 43  | edge | 5   | PASS 1.06 | PASS 1.06  | —         |
+| 43  | edge | 20  | PASS 1.59 | PASS 2.35  | —         |
+| 43  | compat | 13 | FAIL 0.41 | FAIL 0.29 | —         |
+| 42  | edge | 13  | —         | PASS 1.94  | PASS 1.18 |
+
+**Edge keying works on real hardware** across both chip families, 5–20 WPM, with
+an ESP32 *or* nRF52 hunter, and with a hunter whose own `keymode=compat` still
+decoding an edge fox (bilingual interop confirmed). The single-loss self-heal
+was observed live: hunter 115 @20wpm decoded cleanly through a `seq` gap
+(24→25→27, 26 lost) — `dp` reconstructed the missing segment.
+
+**Why compat "fails" — this is the feature's whole point, quantified.** Same
+bench, same fox, same point-blank RSSI, flip `keymode`:
+
+| mode   | packets / 50 s | loss | decode               |
+|--------|----------------|------|----------------------|
+| compat | ~1257 (~25/s)  | 19%  | garbled `PTRIS PARTN`|
+| edge   | ~153 (~3/s)    | 2%   | clean `PARIS PARIS…` |
+
+Legacy KeyState floods the channel at ~25 pkt/s; even at point-blank range it
+sheds 19% to airtime saturation, and because its decode *samples* key level,
+every drop corrupts timing. Edge sends 8× fewer packets, loses 2%, and
+self-heals that. The compat path is unchanged legacy code — the garble is the
+pre-existing error floor edge-events removes, not a regression.
+
+**Open item (not an edge-protocol defect): Wio-as-fox TX is weak.** With 115 as
+the edge fox its *timing is correct* (dits ~66 ms, dahs ~198 ms at wpm 13 /
+farns 18), but hunter 43 saw ~80% packet loss and hunter 42 received nothing.
+At that loss the self-heal is overwhelmed (multi-packet gaps → `flush()` →
+fragmented `S PARIT`), so it degrades gracefully rather than emitting wrong
+timing. Root cause is the nRF52 + SX1262 **Fox TX power/config** (the known
+"Fox TX TODO" on these boards), independent of edge keying. Track under E7.
+
+### Harness bugs found + fixed during validation (commit 49a0c2c)
+- `edge_test.py` decoded nothing despite perfect on-air decode: the hunter
+  mirrors each decoded char inline (no newline) right before the `CH <sid> <c>`
+  dump, so captured lines arrive merged (`PCH 43 P`); the anchored `^CH` regex
+  missed all of them. Now `.search()`-based.
+- `devices.py parse_show` dropped `mode=` (matched positionally right after
+  `farns=`, but firmware now interleaves `vol=`), so the harness couldn't tell a
+  hunter from a fox and `devices.sh --usb` showed `MODE ?`. Now each field is
+  matched independently.
+- Hunters are checked for Hunter mode over the runtime console *before* any
+  reset, so the un-resettable nRF52 (no DTR/RTS) stays in the run instead of
+  being dropped.
