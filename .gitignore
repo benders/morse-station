@@ -4,3 +4,11 @@ compile_commands.json
 
 # Python venv for BLE test tooling
 tools/blevenv/
+
+# Python bytecode (from the host-side scripts/ helpers)
+__pycache__/
+*.pyc
+
+# Per-machine Claude Code state (permission overrides + runtime locks)
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
