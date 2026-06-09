@@ -2,14 +2,21 @@
 """List connected morse-station boards and their station IDs.
 
 For every /dev/cu.usbmodem* device this reports the serial port, the board type,
-the MAC, and the **live** station id + callsign read from the firmware's boot
+the chip id, and the **live** station id + callsign read from the firmware's boot
 banner. The live read matters because a unit's station id may be provisioned in
 NVS to something other than the MAC-derived default (the two Heltec hunters are),
 so the default alone is not trustworthy — see docs/.
 
+The CHIP ID column is each board's USB serial number from `ioreg`. On the ESP32-S3
+boards (Heltec/Cardputer) that serial number IS the 6-byte efuse MAC; on the
+nRF52840 boards (RAK4631, Wio Tracker L1) it is the 64-bit device id (16 hex
+chars, no colons). Both are unique per board — only the *format* differs. The
+firmware's MAC-derived default station id (below) can only be computed from the
+MAC-format ids; for the nRF52 chip ids it is left blank.
+
 How each field is obtained:
-  * port + MAC  -- from `ioreg` (the ESP32-S3 USB serial number IS the MAC); no
-                   reset, instant.
+  * port+chip   -- from `ioreg` (the USB serial number; see above). No reset,
+                   instant.
   * board type  -- from the flash size via `esptool flash_id` (8MB = Cardputer
                    ADV / cardputer_adv, 16MB = Heltec V4 / heltec_v4).
   * station id  -- the firmware prints `# config: id=.. call=.. ...` at boot, so
@@ -83,39 +90,46 @@ def mac_default_id(mac: str) -> int:
     return (x % 254) + 1
 
 
-def port_mac_map() -> dict[str, str]:
-    """Map /dev/cu.usbmodem* -> MAC via ioreg. The Espressif USB serial number is
-    the MAC; the serial tty (IOCalloutDevice) is nested under that USB device, so
-    a callout belongs to the nearest enclosing (shallower-indented) serial number.
+def port_chip_map() -> dict[str, str]:
+    """Map /dev/cu.usbmodem* -> chip id (USB serial number) via ioreg. The serial
+    tty (IOCalloutDevice) is nested under its USB device, so a callout belongs to
+    the nearest enclosing (shallower-indented) serial number.
+
+    EVERY serial number is pushed onto the ancestor stack, not just MAC-format
+    ones. The nRF52840 boards (Wio, RAK) advertise a 16-hex-char device id rather
+    than a colon-MAC; if we skipped those, an nRF callout would inherit a *sibling*
+    Heltec's MAC left on the stack — which is exactly the false-duplicate-MAC bug
+    this column used to show. Pushing the nRF board's own (non-MAC) serial shadows
+    the sibling so each port reports its true, distinct chip id.
     """
     try:
         raw = subprocess.run(["ioreg", "-l", "-w", "0"],
                              capture_output=True, check=True).stdout
         out = raw.decode("utf-8", "replace")   # ioreg emits stray non-UTF8 bytes
     except Exception as e:
-        sys.stderr.write(f"warning: ioreg failed ({e}); cannot read MACs\n")
+        sys.stderr.write(f"warning: ioreg failed ({e}); cannot read chip ids\n")
         return {}
 
     mapping: dict[str, str] = {}
-    stack: list[tuple[int, str]] = []   # (indent, mac) ancestor chain
+    stack: list[tuple[int, str]] = []   # (indent, chip) ancestor chain
     for line in out.splitlines():
         q = line.find('"')
         if q < 0:
             continue
         indent = q
-        m = re.search(r'"USB Serial Number" = "([0-9A-Fa-f:]+)"', line)
-        if m and MAC_RE.match(m.group(1).upper()):
-            mac = m.group(1).upper()
+        m = re.search(r'"USB Serial Number" = "([^"]+)"', line)
+        if m:
+            chip = m.group(1).upper()
             while stack and stack[-1][0] >= indent:   # keep a clean ancestor stack
                 stack.pop()
-            stack.append((indent, mac))
+            stack.append((indent, chip))
             continue
         c = re.search(r'"IOCalloutDevice" = "(/dev/cu\.usbmodem[^"]+)"', line)
         if c:
             owner = None
-            for ind, mac in stack:                    # deepest ancestor wins
+            for ind, chip in stack:                   # deepest ancestor wins
                 if ind < indent:
-                    owner = mac
+                    owner = chip
             if owner:
                 mapping[c.group(1)] = owner
     return mapping
@@ -387,7 +401,7 @@ def usb_mode() -> int:
     ioreg. No BOARD column — flash-size detection needs a bootloader reset, which
     only --boot does.
     """
-    macs = port_mac_map()
+    chips = port_chip_map()
     ports = sorted(glob.glob("/dev/cu.usbmodem*"))
     if not ports:
         print("no /dev/cu.usbmodem* devices found")
@@ -395,19 +409,19 @@ def usb_mode() -> int:
 
     rows = []
     for port in ports:
-        mac = macs.get(port, "?")
-        default_id = mac_default_id(mac) if MAC_RE.match(mac) else None
+        chip = chips.get(port, "?")
+        default_id = mac_default_id(chip) if MAC_RE.match(chip) else None
         print(f"# reading {port} (live, no reset) ...", file=sys.stderr)
         info = read_station_live(port)
         station = info.get("id", default_id)
         note = _classify(station, default_id, "id" in info)
-        rows.append((port, mac,
+        rows.append((port, chip,
                      str(station) if station is not None else "?",
                      info.get("call", "?"), info.get("mode", "?"),
                      info.get("mute", "?"), note))
 
     print(f"\n# morse-station devices ({len(rows)} found) — live over USB, no reset")
-    _print_table(("PORT", "MAC", "STATION", "CALLSIGN", "MODE", "MUTE", "NOTES"), rows)
+    _print_table(("PORT", "CHIP ID", "STATION", "CALLSIGN", "MODE", "MUTE", "NOTES"), rows)
     return 0
 
 
@@ -418,7 +432,7 @@ def boot_mode(no_flash: bool) -> int:
     the fallback for firmware too old to have the runtime serial console, and it
     adds the BOARD column from `esptool flash_id`.
     """
-    macs = port_mac_map()
+    chips = port_chip_map()
     ports = sorted(glob.glob("/dev/cu.usbmodem*"))
     if not ports:
         print("no /dev/cu.usbmodem* devices found")
@@ -426,8 +440,8 @@ def boot_mode(no_flash: bool) -> int:
 
     rows = []
     for port in ports:
-        mac = macs.get(port, "?")
-        default_id = mac_default_id(mac) if MAC_RE.match(mac) else None
+        chip = chips.get(port, "?")
+        default_id = mac_default_id(chip) if MAC_RE.match(chip) else None
 
         board = "?"
         if not no_flash:
@@ -439,14 +453,15 @@ def boot_mode(no_flash: bool) -> int:
         got = "id" in info
         station = info.get("id", default_id)
         note = (_classify(station, default_id, True) if got
-                else "UNVERIFIED — console window missed; showing MAC default")
-        rows.append((port, board, mac,
+                else "UNVERIFIED — console window missed" +
+                     (f"; showing MAC default {default_id}" if default_id else ""))
+        rows.append((port, board, chip,
                      str(station) if station is not None else "?",
                      info.get("call", "?"), info.get("mode", "?"),
                      info.get("mute", "?"), note))
 
     print(f"\n# morse-station devices ({len(rows)} found) — boot read, resets each board")
-    _print_table(("PORT", "BOARD", "MAC", "STATION", "CALLSIGN", "MODE", "MUTE", "NOTES"),
+    _print_table(("PORT", "BOARD", "CHIP ID", "STATION", "CALLSIGN", "MODE", "MUTE", "NOTES"),
                  rows)
     return 0
 
