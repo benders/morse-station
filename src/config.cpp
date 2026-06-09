@@ -15,6 +15,7 @@ uint8_t cached_keymode  = 0;      // 0=compat (KeyState stream), 1=edge (EdgeEve
 uint8_t cached_boot_mode = 0;     // last-selected boot mode (Mode enum, 0=Hunter)
 uint8_t cached_fox_pwr_idx = 0;   // last-selected fox TX power level (PWR_LEVELS index, 0=LO)
 bool    cached_muted = false;     // sidetone mute (silent node), persisted
+bool    cached_lna   = true;      // V4.3 FEM RX LNA in path (CTX select), persisted
 uint8_t cached_volume = 8;        // sidetone level in GAIN_Q15/1024 units (8 -> 8192)
 
 // Compile-time platform name — always correct for the firmware variant. This is
@@ -50,6 +51,7 @@ constexpr const char* KEY_KMODE = "keymode";
 constexpr const char* KEY_BMODE = "boot_mode";
 constexpr const char* KEY_FPWR  = "fox_pwr_idx";
 constexpr const char* KEY_MUTE  = "muted";
+constexpr const char* KEY_LNA   = "lna";
 constexpr const char* KEY_VOL   = "volume";
 constexpr const char* KEY_MODEL = "board_model";
 
@@ -95,6 +97,9 @@ void begin() {
 
     if (prefs.isKey(KEY_MUTE))
         cached_muted = prefs.getBool(KEY_MUTE, cached_muted);
+
+    if (prefs.isKey(KEY_LNA))
+        cached_lna = prefs.getBool(KEY_LNA, cached_lna);
 
     if (prefs.isKey(KEY_VOL))
         cached_volume = clamp_u8(prefs.getUChar(KEY_VOL, cached_volume), VOL_MIN, VOL_MAX);
@@ -220,6 +225,16 @@ void set_muted(bool m) {
     cached_muted = m;
     prefs.begin(NS, false);
     prefs.putBool(KEY_MUTE, m);
+    prefs.end();
+}
+
+bool lna() { return cached_lna; }
+
+void set_lna(bool on) {
+    if (on == cached_lna) return;    // avoid a needless flash write
+    cached_lna = on;
+    prefs.begin(NS, false);
+    prefs.putBool(KEY_LNA, on);
     prefs.end();
 }
 

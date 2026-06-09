@@ -63,6 +63,12 @@ void IRAM_ATTR on_rx() { rx_flag = true; }
 } // namespace
 
 #ifdef HAS_FEM
+// Runtime RX LNA select (V4.3 KCT8103L). True = CTX LOW in RX, routing through
+// the LNA; false = CTX HIGH in RX, bypassing the LNA (antenna feeds the SX1262
+// without front-end gain). Defaults on (boot is sensitive RX). Only affects RX —
+// TX always bypasses the LNA (CTX HIGH). See set_lna() / fem_set_rx().
+static bool s_lna_on = true;
+
 // Power and enable the external front-end module (PA + LNA). The V4 needs this
 // or RX is badly desensitised. We drive the superset of both board revisions'
 // control pins (see pins.h): the pins a given revision doesn't use are just
@@ -72,8 +78,19 @@ void IRAM_ATTR on_rx() { rx_flag = true; }
 // CTX (GPIO5) is left to fem_set_rx()/fem_set_tx(): on the V4.3 KCT8103L it is
 // the software TX/RX switch *and* the RX LNA select, so it must track the radio
 // state. (On the V4.2 GC1109 the real CTX is DIO2; GPIO5 is a free pin there.)
-void fem_set_rx() { digitalWrite(PIN_FEM_CTX, LOW); }   // KCT8103L: LNA in RX path
-void fem_set_tx() { digitalWrite(PIN_FEM_CTX, HIGH); }  // KCT8103L: TX path
+void fem_set_rx() {
+    // KCT8103L (V4.3): CSD is the chip POWER-DOWN line (HIGH = FEM powered);
+    // CTX is the LNA select for the RX path -- LOW routes through the LNA
+    // (sensitive), HIGH bypasses it. Driving CSD low would shut the whole FEM
+    // down (not a clean RX bypass), so we keep it HIGH and toggle CTX for the
+    // runtime LNA control. Matches MeshCore LoRaFEMControl::setRxModeEnable.
+    digitalWrite(PIN_FEM_CSD, HIGH);
+    digitalWrite(PIN_FEM_CTX, s_lna_on ? LOW : HIGH);
+}
+void fem_set_tx() {
+    digitalWrite(PIN_FEM_CSD, HIGH);                   // FEM powered for the PA
+    digitalWrite(PIN_FEM_CTX, HIGH);                   // KCT8103L: LNA bypassed / TX
+}
 
 void fem_power_on() {
     pinMode(PIN_FEM_VFEM, OUTPUT);
@@ -177,6 +194,23 @@ void set_pa(bool on) {
     digitalWrite(PIN_FEM_CPS, on ? HIGH : LOW);
 #else
     (void)on;
+#endif
+}
+
+void set_lna(bool on) {
+#ifdef HAS_FEM
+    s_lna_on = on;
+    fem_set_rx();   // re-apply CSD now if we're sitting in receive
+#else
+    (void)on;
+#endif
+}
+
+bool lna_on() {
+#ifdef HAS_FEM
+    return s_lna_on;
+#else
+    return false;
 #endif
 }
 

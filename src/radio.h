@@ -34,6 +34,18 @@ bool has_fem();
 // so a unit never comes up hot. Weigh FCC §15.249 before transmitting engaged.
 void set_pa(bool on);
 
+// Runtime RX LNA select for the Heltec V4.3 (KCT8103L) external FEM. on=true
+// routes RX through the LNA (CTX LOW — sensitive, the boot default); on=false
+// bypasses the LNA (CTX HIGH — antenna straight to the SX1262, for A/B-ing
+// front-end gain vs. a strong nearby fox, or chasing LNA overload). The FEM
+// stays powered either way (CSD HIGH); CTX is the LNA select, matching MeshCore.
+// Affects RX only — TX always bypasses the LNA. No-op on the V4.2 (GC1109), whose
+// GPIO5 is unused, and on non-FEM boards. Takes effect immediately. This call
+// only drives the pin; persistence lives in config (config::set_lna), which the
+// `lna` command writes and boot restores via radio::set_lna(config::lna()).
+void set_lna(bool on);
+bool lna_on();
+
 // Put the radio into continuous receive. Call once after init() on RX nodes.
 void start_receive();
 

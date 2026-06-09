@@ -68,6 +68,14 @@ void    set_volume(uint8_t units);
 bool muted();
 void set_muted(bool muted);
 
+// V4.3 (KCT8103L) FEM RX LNA select. Persisted so a unit deliberately set to
+// bypass (e.g. it sits close to a strong fox and the LNA overloads) stays that
+// way across power cycles. Applied at boot (main.cpp) via radio::set_lna() and
+// toggled live by the `lna` console command. Default true (LNA in path). No
+// effect on non-FEM boards or the V4.2 (its GPIO5 is unused).
+bool lna();
+void set_lna(bool on);
+
 // Board model identifier. Defaults to default_board_model() — the compile-time
 // platform name (heltec-v4 / wio-tracker-l1 / ...), which is ALWAYS correct for
 // the firmware variant. One binary serves board revisions that are not

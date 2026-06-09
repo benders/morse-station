@@ -284,6 +284,30 @@ static bool handle_setup_command(const char* line, Print& out) {
             out.printf("  pa       = %s (FEM CPS; +~6 dB on V4.2; auto-on in Fox/Livekey)\n",
                        g_pa_on ? "on" : "off");
         }
+    } else if (!strcmp(line, "lna") || !strncmp(line, "lna ", 4)) {
+        // Runtime RX LNA select for the V4.3 FEM (KCT8103L). `lna on` keeps the
+        // FEM enabled in receive so its LNA is in the path (boot default); `lna
+        // off` holds CSD LOW in RX, bypassing the FEM (antenna straight to the
+        // SX1262) — for A/B-ing front-end gain or chasing LNA overload near a
+        // strong fox. RX only; TX always re-engages the FEM PA. NOT persisted.
+        const char* arg = line + 3;
+        while (*arg == ' ') arg++;
+        if (!radio::has_fem()) {
+            out.println("  lna: no FEM on this board (n/a)");
+        } else {
+            if (!*arg || !strcmp(arg, "show")) {
+                // report only
+            } else if (!strcmp(arg, "on") || !strcmp(arg, "1")) {
+                config::set_lna(true);  radio::set_lna(true);
+            } else if (!strcmp(arg, "off") || !strcmp(arg, "0")) {
+                config::set_lna(false); radio::set_lna(false);
+            } else {
+                out.println("  ? lna <on|off>");
+                return false;
+            }
+            out.printf("  lna      = %s (FEM CTX; RX path; V4.3 KCT8103L; persisted)\n",
+                       radio::lna_on() ? "on" : "off");
+        }
     } else if (!strcmp(line, "model") || !strncmp(line, "model ", 6)) {
         // Board model identifier (admin). Persisted in NVS per physical unit, so
         // the same firmware can be flashed to every board and each retains its
@@ -399,6 +423,10 @@ static bool handle_setup_command(const char* line, Print& out) {
                    config::board_model(), dflt ? " (default)" : "",
                    platform::chip_id_str(), platform::soc_str());
         out.printf("  debug    = %s\n", g_debug ? "on" : "off");
+        if (radio::has_fem()) {
+            out.printf("  fem      = pa %s  lna %s\n",
+                       g_pa_on ? "on" : "off", radio::lna_on() ? "on" : "off");
+        }
     } else if (!strcmp(line, "batt")) {
         // Raw battery readout — disambiguates a 0% meter (no cell / flat vs a
         // scaling problem). millivolts() is the unsmoothed terminal voltage.
@@ -430,7 +458,7 @@ static bool handle_setup_command(const char* line, Print& out) {
         return true;
     } else {
         out.println("  ? call <SIGN> | msg <text> | id <n> | wpm <n> | "
-                    "farns <n> | pwr <0..3> | pa <on|off> | mode <0..2> | "
+                    "farns <n> | pwr <0..3> | pa <on|off> | lna <on|off> | mode <0..2> | "
                     "vol <1..32> | mute [on|off] | keymode <compat|edge> | "
                     "model [<name>|default] | debug [on|off] | show | "
                     "bootlog [clear] | reboot | done");
@@ -602,6 +630,7 @@ void setup() {
         Serial.printf("FATAL: radio init failed (code=%d)\n", err);
         while (true) delay(1000);
     }
+    radio::set_lna(config::lna());   // restore persisted V4.3 RX LNA select (no-op w/o FEM)
 
     switch (mode) {
         case MODE_FOX:
