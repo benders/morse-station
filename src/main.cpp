@@ -61,6 +61,18 @@ static int       pwr_idx = 0;   // LO (-9 dBm)
 // boards. The `pa` console command is a runtime override on top of this default.
 static bool g_pa_on = false;
 
+// Effective board model for `show`/`model`. The Heltec V4 sub-revision is
+// auto-detected from the FEM strap at radio::init() (V4.2 GC1109 vs V4.3
+// KCT8103L); every other board has the single fixed compile-time model. Requires
+// the radio to be initialised first (it is, by the time any console runs).
+static const char* board_model_str() {
+#if defined(DEVICE_HELTEC_V4)
+    return strstr(radio::fem_name(), "V4.3") ? "heltec-v4.3" : "heltec-v4.2";
+#else
+    return config::default_board_model();
+#endif
+}
+
 static morse::Player  player;
 static morse::Decoder decoder;
 static MorseKey       key;
@@ -308,27 +320,14 @@ static bool handle_setup_command(const char* line, Print& out) {
             out.printf("  lna      = %s (FEM CTX; RX path; V4.3 KCT8103L; persisted)\n",
                        radio::lna_on() ? "on" : "off");
         }
-    } else if (!strcmp(line, "model") || !strncmp(line, "model ", 6)) {
-        // Board model identifier (admin). Persisted in NVS per physical unit, so
-        // the same firmware can be flashed to every board and each retains its
-        // identity across reflashes. `model` / `model show` reports; `model
-        // <name>` pins a specific model (e.g. heltec-v4.2 vs heltec-v4.3, which
-        // are NOT runtime-detectable — no version strap); `model default`
-        // reverts to the compile-time platform name. Always printed with the
-        // hardware chip id so the model can't be wrong relative to the unit.
-        const char* arg = line + 5;
-        while (*arg == ' ') arg++;
-        if (!*arg || !strcmp(arg, "show")) {
-            // report only
-        } else if (!strcmp(arg, "default") || !strcmp(arg, "clear")) {
-            config::set_board_model("");
-        } else {
-            config::set_board_model(arg);
-        }
-        bool dflt = !strcmp(config::board_model(), config::default_board_model());
-        out.printf("  model    = %s%s  chip=%s  soc=%s\n",
-                   config::board_model(), dflt ? " (default)" : "",
-                   platform::chip_id_str(), platform::soc_str());
+    } else if (!strcmp(line, "model")) {
+        // Board model (read-only). The Heltec V4 sub-revision is auto-detected
+        // from the FEM strap at boot (see radio::fem_name / fem_power_on); every
+        // other board has a single fixed model. Printed with the hardware chip id
+        // so the model is always tied to a verifiable unit. There is no manual
+        // override — detection can't be wrong relative to the silicon present.
+        out.printf("  model    = %s  chip=%s  soc=%s\n",
+                   board_model_str(), platform::chip_id_str(), platform::soc_str());
     } else if (!strcmp(line, "reboot") || !strcmp(line, "restart")) {
         // Remote reboot: the boot menu auto-selects the stored boot_mode after
         // its idle timeout, so this applies a "mode <n>" change with no physical
@@ -418,13 +417,11 @@ static bool handle_setup_command(const char* line, Print& out) {
                    config::muted() ? "on" : "off", mn,
                    g_keymode == KEYMODE_EDGE ? "edge" : "compat",
                    config::fox_message());
-        bool dflt = !strcmp(config::board_model(), config::default_board_model());
-        out.printf("  model    = %s%s  chip=%s  soc=%s\n",
-                   config::board_model(), dflt ? " (default)" : "",
-                   platform::chip_id_str(), platform::soc_str());
+        out.printf("  model    = %s  chip=%s  soc=%s\n",
+                   board_model_str(), platform::chip_id_str(), platform::soc_str());
         out.printf("  debug    = %s\n", g_debug ? "on" : "off");
         if (radio::has_fem()) {
-            out.printf("  fem      = pa %s  lna %s\n",
+            out.printf("  fem      = %s  pa %s  lna %s\n", radio::fem_name(),
                        g_pa_on ? "on" : "off", radio::lna_on() ? "on" : "off");
         }
     } else if (!strcmp(line, "batt")) {
@@ -460,7 +457,7 @@ static bool handle_setup_command(const char* line, Print& out) {
         out.println("  ? call <SIGN> | msg <text> | id <n> | wpm <n> | "
                     "farns <n> | pwr <0..3> | pa <on|off> | lna <on|off> | mode <0..2> | "
                     "vol <1..32> | mute [on|off] | keymode <compat|edge> | "
-                    "model [<name>|default] | debug [on|off] | show | "
+                    "model | debug [on|off] | show | "
                     "bootlog [clear] | reboot | done");
     }
     return false;

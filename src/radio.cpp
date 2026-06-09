@@ -63,45 +63,79 @@ void IRAM_ATTR on_rx() { rx_flag = true; }
 } // namespace
 
 #ifdef HAS_FEM
-// Runtime RX LNA select (V4.3 KCT8103L). True = CTX LOW in RX, routing through
-// the LNA; false = CTX HIGH in RX, bypassing the LNA (antenna feeds the SX1262
-// without front-end gain). Defaults on (boot is sensitive RX). Only affects RX —
-// TX always bypasses the LNA (CTX HIGH). See set_lna() / fem_set_rx().
+// Which external FEM this board actually carries. Auto-detected at boot (see
+// fem_power_on) rather than chosen by a build flag, so one firmware image runs
+// on both Heltec V4 revisions:
+//   V4.2 -> GC1109   : antenna TX/RX switch is on DIO2; CPS (GPIO46) selects the
+//                      PA path (HIGH) vs bypass (LOW). GPIO5 is unused.
+//   V4.3 -> KCT8103L : CTX (GPIO5) is the software TX/RX switch AND RX LNA
+//                      select; CSD (GPIO2) gates power. GPIO46 is unused.
+// Mirrors MeshCore's variants/heltec_v4/LoRaFEMControl.
+enum FemType { FEM_GC1109, FEM_KCT8103L };
+static FemType s_fem = FEM_KCT8103L;   // overwritten by detect in fem_power_on()
+
+// Runtime RX LNA select (V4.3 KCT8103L only). True = CTX LOW in RX, routing
+// through the LNA; false = CTX HIGH in RX, bypassing the LNA (antenna feeds the
+// SX1262 without front-end gain). Defaults on (boot is sensitive RX). Only
+// affects RX — TX always bypasses the LNA (CTX HIGH). See set_lna()/fem_set_rx().
 static bool s_lna_on = true;
 
-// Power and enable the external front-end module (PA + LNA). The V4 needs this
-// or RX is badly desensitised. We drive the superset of both board revisions'
-// control pins (see pins.h): the pins a given revision doesn't use are just
-// free GPIOs there, so driving them is harmless.
-//   CSD = 1 -> chip enabled (GC1109 EN / KCT8103L CSD)
-//   CPS = 0 -> GC1109 PA bypass, matching our low-power (~+2 dBm) operation.
-// CTX (GPIO5) is left to fem_set_rx()/fem_set_tx(): on the V4.3 KCT8103L it is
-// the software TX/RX switch *and* the RX LNA select, so it must track the radio
-// state. (On the V4.2 GC1109 the real CTX is DIO2; GPIO5 is a free pin there.)
+// Current FEM PA state. On the GC1109 (V4.3 KCT8103L has no bypass pin) this
+// drives CPS during TX: HIGH = full PA (+~6 dB), LOW = bypass. set_pa() updates
+// it; fem_set_tx() applies it. Mirrors fem_power_on()'s boot-bypass default.
+static bool s_pa_on = false;
+
+// Drive the FEM into its receive configuration for the detected part.
 void fem_set_rx() {
-    // KCT8103L (V4.3): CSD is the chip POWER-DOWN line (HIGH = FEM powered);
-    // CTX is the LNA select for the RX path -- LOW routes through the LNA
-    // (sensitive), HIGH bypasses it. Driving CSD low would shut the whole FEM
-    // down (not a clean RX bypass), so we keep it HIGH and toggle CTX for the
-    // runtime LNA control. Matches MeshCore LoRaFEMControl::setRxModeEnable.
-    digitalWrite(PIN_FEM_CSD, HIGH);
-    digitalWrite(PIN_FEM_CTX, s_lna_on ? LOW : HIGH);
+    if (s_fem == FEM_KCT8103L) {
+        // V4.3: CSD is the chip POWER-DOWN line (HIGH = FEM powered); CTX is the
+        // LNA select for the RX path -- LOW routes through the LNA (sensitive),
+        // HIGH bypasses it. Keep CSD HIGH and toggle CTX for runtime LNA control.
+        // Matches MeshCore LoRaFEMControl::setRxModeEnable.
+        digitalWrite(PIN_FEM_CSD, HIGH);
+        digitalWrite(PIN_FEM_CTX, s_lna_on ? LOW : HIGH);
+    } else {
+        // V4.2 GC1109: EN HIGH keeps the chip enabled; CPS LOW selects the RX /
+        // bypass path. The antenna TX/RX switch itself is on DIO2 (handled by
+        // setDio2AsRfSwitch). GPIO5 (CTX) is unused on this revision — left alone.
+        digitalWrite(PIN_FEM_CSD, HIGH);
+        digitalWrite(PIN_FEM_CPS, LOW);
+    }
 }
+// Drive the FEM into its transmit configuration for the detected part.
 void fem_set_tx() {
-    digitalWrite(PIN_FEM_CSD, HIGH);                   // FEM powered for the PA
-    digitalWrite(PIN_FEM_CTX, HIGH);                   // KCT8103L: LNA bypassed / TX
+    if (s_fem == FEM_KCT8103L) {
+        digitalWrite(PIN_FEM_CSD, HIGH);                 // FEM powered for the PA
+        digitalWrite(PIN_FEM_CTX, HIGH);                 // LNA bypassed / TX path
+    } else {
+        digitalWrite(PIN_FEM_CSD, HIGH);                 // GC1109 enabled
+        digitalWrite(PIN_FEM_CPS, s_pa_on ? HIGH : LOW); // full PA vs bypass
+    }
 }
 
 void fem_power_on() {
+    // 1. Power the FEM LDO first, so the PA chip's internal CSD pull is actually
+    //    energised before we sense it. delay() lets the rail and chip settle.
     pinMode(PIN_FEM_VFEM, OUTPUT);
     digitalWrite(PIN_FEM_VFEM, HIGH);   // power the FEM LDO (both revs)
+    delay(1);                           // FEM startup time after power-on
+
+    // 2. Auto-detect the FEM type via the shared CSD pin's (GPIO2) default pull.
+    //    GC1109 CSD has an internal pull-DOWN  -> floats LOW  -> V4.2.
+    //    KCT8103L CSD has an internal pull-UP   -> floats HIGH -> V4.3.
+    //    Same trick as MeshCore LoRaFEMControl::init().
+    pinMode(PIN_FEM_CSD, INPUT);
+    delay(1);
+    s_fem = (digitalRead(PIN_FEM_CSD) == HIGH) ? FEM_KCT8103L : FEM_GC1109;
+
+    // 3. Take the control pins as outputs and land in a known RX/bypass state.
     pinMode(PIN_FEM_CSD, OUTPUT);
     digitalWrite(PIN_FEM_CSD, HIGH);    // chip enable (GC1109 EN / KCT8103L CSD)
     pinMode(PIN_FEM_CPS, OUTPUT);
-    digitalWrite(PIN_FEM_CPS, LOW);     // V4.2 PA bypass (low power)
-    pinMode(PIN_FEM_CTX, OUTPUT);
+    digitalWrite(PIN_FEM_CPS, LOW);     // V4.2 PA bypass (low power); unused on V4.3
+    pinMode(PIN_FEM_CTX, OUTPUT);       // V4.3 TX/RX + LNA select; unused on V4.2
+    s_pa_on = false;                    // never come up hot — bypass on every boot
     fem_set_rx();                       // default to RX/LNA until we transmit
-    delay(1);                           // let the FEM power up
 }
 #else
 inline void fem_set_rx() {}
@@ -186,12 +220,22 @@ bool has_fem() {
 #endif
 }
 
+const char* fem_name() {
+#ifdef HAS_FEM
+    return s_fem == FEM_KCT8103L ? "KCT8103L (V4.3)" : "GC1109 (V4.2)";
+#else
+    return "none";
+#endif
+}
+
 void set_pa(bool on) {
 #ifdef HAS_FEM
-    // CPS HIGH -> GC1109 (V4.2) PA path engaged (+~6 dB); LOW -> bypass. On the
-    // V4.3 (KCT8103L) this pin is freed and the part has no bypass, so this is a
-    // no-op there. CTX (TX/RX) still tracks via DIO2 / fem_set_tx() during send.
-    digitalWrite(PIN_FEM_CPS, on ? HIGH : LOW);
+    // GC1109 (V4.2): CPS selects the PA path (HIGH, +~6 dB) vs bypass (LOW). The
+    // V4.3 (KCT8103L) has no bypass pin, so this is a no-op there. We record the
+    // state and let fem_set_tx() apply CPS at the right moment (during send the
+    // FEM is in TX config); applying it here too keeps a bench A/B immediate.
+    s_pa_on = on;
+    if (s_fem == FEM_GC1109) digitalWrite(PIN_FEM_CPS, on ? HIGH : LOW);
 #else
     (void)on;
 #endif

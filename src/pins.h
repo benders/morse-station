@@ -41,6 +41,11 @@ static constexpr int PIN_DIO1 = 14;
 // its level ALSO selects the RX LNA: CTX=LOW -> LNA in RX path, CTX=HIGH -> TX
 // path / LNA bypass. So GPIO5 must track TX vs RX (see radio.cpp fem_set_rx/tx);
 // holding it HIGH leaves V4.3 RX permanently LNA-bypassed (badly desensitised).
+//
+// The two revisions are told apart at boot, not by a build flag: fem_power_on()
+// in radio.cpp powers the LDO, floats CSD (GPIO2), and reads its default pull
+// (GC1109 pulls down -> LOW -> V4.2; KCT8103L pulls up -> HIGH -> V4.3). The
+// FEM control then drives only the pins that revision actually uses.
 #define HAS_FEM 1
 static constexpr int PIN_FEM_VFEM = 7;     // FEM LDO power enable (both revs)
 static constexpr int PIN_FEM_CSD  = 2;     // chip enable: GC1109 CSD / KCT8103L CSD

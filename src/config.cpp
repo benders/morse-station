@@ -34,7 +34,6 @@ constexpr const char* DEF_MODEL = "wio-tracker-l1";
 #else
 constexpr const char* DEF_MODEL = "unknown";
 #endif
-char cached_model[config::MODEL_MAX + 1] = "";   // empty => fall back to DEF_MODEL
 
 constexpr uint8_t WPM_MIN = 5;
 constexpr uint8_t WPM_MAX = 40;
@@ -53,7 +52,6 @@ constexpr const char* KEY_FPWR  = "fox_pwr_idx";
 constexpr const char* KEY_MUTE  = "muted";
 constexpr const char* KEY_LNA   = "lna";
 constexpr const char* KEY_VOL   = "volume";
-constexpr const char* KEY_MODEL = "board_model";
 
 uint8_t clamp_u8(int v, uint8_t lo, uint8_t hi) {
     if (v < lo) return lo;
@@ -103,9 +101,6 @@ void begin() {
 
     if (prefs.isKey(KEY_VOL))
         cached_volume = clamp_u8(prefs.getUChar(KEY_VOL, cached_volume), VOL_MIN, VOL_MAX);
-
-    if (prefs.isKey(KEY_MODEL))
-        prefs.getString(KEY_MODEL, cached_model, sizeof(cached_model));
 
     prefs.end();
 }
@@ -202,21 +197,6 @@ void set_volume(uint8_t units) {
 }
 
 const char* default_board_model() { return DEF_MODEL; }
-
-const char* board_model() { return cached_model[0] ? cached_model : DEF_MODEL; }
-
-void set_board_model(const char* model) {
-    // Empty / null reverts to the compile-time default (stored as "" so the
-    // read path falls through to DEF_MODEL). kv has no remove(), so an empty
-    // string is the sentinel.
-    char next[config::MODEL_MAX + 1] = "";
-    if (model) strlcpy(next, model, sizeof(next));
-    if (!strcmp(next, cached_model)) return;        // no change -> no flash write
-    strlcpy(cached_model, next, sizeof(cached_model));
-    prefs.begin(NS, false);
-    prefs.putString(KEY_MODEL, cached_model);
-    prefs.end();
-}
 
 bool muted() { return cached_muted; }
 

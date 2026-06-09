@@ -13,7 +13,6 @@ namespace config {
 // Buffer sizes (callsign matches proto::CALLSIGN_MAX; message is generous).
 constexpr size_t CALLSIGN_MAX = 10;
 constexpr size_t FOX_MSG_MAX  = 96;
-constexpr size_t MODEL_MAX    = 24;
 
 void begin();
 
@@ -76,16 +75,12 @@ void set_muted(bool muted);
 bool lna();
 void set_lna(bool on);
 
-// Board model identifier. Defaults to default_board_model() — the compile-time
-// platform name (heltec-v4 / wio-tracker-l1 / ...), which is ALWAYS correct for
-// the firmware variant. One binary serves board revisions that are not
-// electrically distinguishable at runtime (e.g. Heltec V4.2 GC1109 vs V4.3
-// KCT8103L — no version strap, FEM control pins are high-Z), so the exact model
-// can be pinned per physical unit with set_board_model() and is kept in NVS
-// (survives reflashes). `show` prints it next to platform::chip_id_str() so the
-// model is always tied to a verifiable hardware id, never to anyone's memory.
-const char* board_model();                       // NVS value, or the default
-void        set_board_model(const char* model);  // "" / nullptr -> revert to default
-const char* default_board_model();               // compile-time platform name
+// Compile-time platform name (heltec-v4 / wio-tracker-l1 / ...), ALWAYS correct
+// for the firmware variant. The Heltec V4 sub-revision (V4.2 GC1109 vs V4.3
+// KCT8103L) is NOT pinned here — it is auto-detected from the FEM strap at boot
+// (radio::fem_name()) and `show` derives the displayed model from that, so the
+// model can never be wrong relative to the unit. There is deliberately no manual
+// model override.
+const char* default_board_model();
 
 } // namespace config

@@ -26,6 +26,12 @@ bool set_tx_power(int dbm);
 // True if this board has an external FEM (PA/LNA) — i.e. the Heltec V4.
 bool has_fem();
 
+// Human-readable name of the FEM auto-detected at init() (e.g. "KCT8103L (V4.3)"
+// or "GC1109 (V4.2)"). The revision is sensed at fem_power_on() by reading the
+// shared CSD pin's default pull level — no build flag selects it. Returns "none"
+// on boards without a FEM.
+const char* fem_name();
+
 // TESTING AID: engage (true) or bypass (false) the V4 FEM power amplifier via
 // its CPS line. PA bypass ≈ chip power (+22 dBm ceiling); PA engaged ≈ +28 dBm
 // on the V4.2 (GC1109, +~6 dB). Lets a bench A/B +22 vs +28 with no reflash.

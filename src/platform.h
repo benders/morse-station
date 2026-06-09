@@ -41,9 +41,9 @@ uint8_t unique_id_byte();
 
 // Full factory hardware id as a hex string — eFuse MAC on ESP32 (colon form,
 // e.g. "8C:FD:49:B6:75:5C", matching esptool read_mac), FICR DEVICEID on nRF52.
-// Stable per physical chip across reflashes; the unique audit anchor that ties a
-// (possibly human-set) board_model to the exact unit in `show`. Returns a
-// pointer to a static buffer (overwritten on each call).
+// Stable per physical chip across reflashes; the unique audit anchor that ties
+// the auto-detected board model to the exact unit in `show`. Returns a pointer
+// to a static buffer (overwritten on each call).
 const char* chip_id_str();
 
 // SoC family + silicon revision, e.g. "ESP32-S3 rev v0.2" (from
