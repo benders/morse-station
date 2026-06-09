@@ -142,28 +142,6 @@ static void ditdah_push(const char* s) {
     rolling_append(ditdah_buf, ditdah_len, sizeof(ditdah_buf), s, strlen(s));
 }
 
-// Read a line from Serial into buf (NUL-terminated, trailing CR/LF stripped).
-// Returns false on timeout_ms with no complete line. Blocks while typing.
-static bool serial_read_line(char* buf, size_t cap, uint32_t timeout_ms) {
-    size_t n = 0;
-    uint32_t start = millis();
-    while (millis() - start < timeout_ms) {
-        while (Serial.available()) {
-            char c = (char)Serial.read();
-            if (c == '\n' || c == '\r') {
-                if (n == 0) continue;          // skip leading blank lines
-                buf[n] = 0;
-                return true;
-            }
-            if (n + 1 < cap) buf[n++] = c;
-            start = millis();                  // keep alive while characters flow
-        }
-        delay(5);
-    }
-    buf[n] = 0;
-    return n > 0;
-}
-
 // ── Boot/crash reason ring buffer ───────────────────────────────────────────
 // An intermittent native-USB panic loses its backtrace mid-reset, so we persist
 // each boot's esp_reset_reason() to NVS and can dump the history later — the
@@ -486,30 +464,16 @@ static void serial_console_process() {
     }
 }
 
-// Boot-time serial provisioning. Offers a short window to enter a REPL that
-// writes callsign / fox message / station id to NVS. Commands:
-//   call <SIGN> | msg <text...> | id <n> | show | done
-static void run_setup_console() {
+// Print the persisted config at boot (diagnostics only). There is no blocking
+// "send 's' for setup" REPL: only the Cardputer has a keyboard, and over serial
+// it raced the persisted-mode boot (a probe like "show" tripped the 's' window
+// and trapped the node in the prompt). Provisioning is done live instead via
+// serial_console_process() and BLE (ble_provision) — both share
+// handle_setup_command() and need no reset.
+static void print_boot_config() {
     Serial.printf("\n# config: id=%u call=%s wpm=%u farns=%u msg=\"%s\"\n",
                   config::station_id(), config::callsign(), config::wpm(),
                   config::char_wpm(), config::fox_message());
-    Serial.print("# send 's' within 1s for setup console... ");
-
-    char line[160];
-    if (!serial_read_line(line, sizeof(line), 1000) ||
-        !(line[0] == 's' || line[0] == 'S')) {
-        Serial.println("(skipped)");
-        return;
-    }
-    Serial.println("\n# setup: call <SIGN> | msg <text> | id <n> | wpm <n> | "
-                   "farns <n> | pwr <0..3> | mode <0..2> | mute [on|off] | "
-                   "show | reboot | done");
-
-    while (true) {
-        Serial.print("setup> ");
-        if (!serial_read_line(line, sizeof(line), 120000)) continue;
-        if (handle_setup_command(line, Serial)) return;
-    }
 }
 
 // Blocking boot menu; returns the chosen mode.
@@ -591,7 +555,7 @@ void setup() {
     // Restore the last-used fox TX power level (clamp in case the table shrank).
     pwr_idx = config::fox_pwr_idx();
     if (pwr_idx >= N_PWR) pwr_idx = 0;
-    run_setup_console();
+    print_boot_config();
 
     // Start BLE-UART (NUS) field provisioning and leave it up for the whole
     // session, so an operator can adjust parameters on a running node over the

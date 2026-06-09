@@ -58,7 +58,12 @@ def cmd(s: serial.Serial, line: str, read_t: float = 1.2) -> str:
     out = []
     try:
         s.reset_input_buffer()
-        s.write((line + "\n").encode())
+        # Lead with a bare newline so we never trip the boot setup window: a
+        # freshly-rebooted board offers ~1s for 's' to enter the setup console
+        # BEFORE starting its persisted mode, and probes like "show" start with
+        # 's'. A leading '\n' gives that read a non-'s' first byte (skips setup
+        # -> persisted mode boots); the runtime console ignores blank lines too.
+        s.write(("\n" + line + "\n").encode())
         s.flush()
         end = time.time() + read_t
         while time.time() < end:
