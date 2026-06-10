@@ -31,11 +31,34 @@ static constexpr uint32_t TONE_HZ      = 750;
 // message clears from the hunter's screen before the next repeat begins.
 static constexpr uint32_t REPEAT_PAUSE = 12000;
 
+// Instructor remote control (docs: instructor station). The fox listens for
+// control packets during the tail of its inter-message pause; this window is
+// kept under the hunter's 3 s presence timeout so a hunter doesn't drop the fox
+// while it's briefly silent.
+//
+// Burst timing matters: at 4.8 kbps a ~100-byte `msg` command is ~200 ms on air,
+// far longer than the 30 ms keystate cadence, so blind continuous bursting would
+// collide with the fox's stream and garble hunter copy for the whole delivery.
+// Instead the instructor *silence-syncs* to a unicast target: the fox is silent
+// only during its RX window (otherwise it streams key-up keystate every 30 ms, or
+// in edge mode a heartbeat at least every 700 ms), so a gap longer than
+// CTRL_SILENCE_MS uniquely marks the window — the instructor bursts only then,
+// landing in the window with no keystate collision. Before the target is heard
+// (and for broadcast, which has no single phase to track) it falls back to a
+// sparse periodic probe. Bursting stops early once a unicast target acks, or
+// after CTRL_BURST_WINDOW (a safety bound covering one long, slow fox cycle).
+static constexpr uint32_t CTRL_RX_WINDOW_MS   = 2500;
+static constexpr uint32_t CTRL_BURST_INTERVAL = 250;     // min gap between bursts
+static constexpr uint32_t CTRL_SILENCE_MS     = 800;     // > 700 ms heartbeat → window
+static constexpr uint32_t CTRL_PROBE_INTERVAL = 1500;    // sparse probe before target heard
+static constexpr uint32_t CTRL_BURST_WINDOW   = 90000;
+
 // Callsign and fox message live in NVS (config), set via the boot serial console
 // (see run_setup_console). The callsign is sent in the periodic station-ID
 // packet; include it in the fox message text too for an audible CW ID.
 
-enum Mode { MODE_HUNTER = 0, MODE_FOX = 1, MODE_LIVEKEY = 2, MODE_HIBERNATE = 3 };
+enum Mode { MODE_HUNTER = 0, MODE_FOX = 1, MODE_LIVEKEY = 2, MODE_INSTRUCTOR = 3,
+            MODE_HIBERNATE = 4 };
 static Mode mode = MODE_HUNTER;
 
 // Fox TX power levels, cycled with the PRG button (sets the SX1262 *chip*
@@ -228,6 +251,43 @@ static void bootlog_clear() {
     bl.end();
 }
 
+// Remote-control (instructor) state. In MODE_INSTRUCTOR the `relay <id> <cmd>`
+// console verb stages a command here; loop_instructor() bursts it over GFSK and
+// listens for the target's ack. One command in flight at a time.
+struct CtrlPending {
+    bool     active    = false;   // a command is being delivered
+    uint8_t  target_id = proto::BROADCAST_ID;
+    uint8_t  seq       = 0;
+    char     cmd[proto::CTRL_CMD_MAX + 1] = {0};
+    uint32_t start_ms  = 0;       // when bursting began (for the timeout)
+    uint32_t last_tx   = 0;       // last burst send (for the inter-burst gap)
+    bool     delivered = false;   // a matching ack arrived (unicast)
+    uint8_t  acks_from[8];        // station ids that acked (broadcast tally)
+    uint8_t  n_acks    = 0;
+};
+static CtrlPending g_ctrl;
+static uint8_t     g_ctrl_seq = 0;   // monotonic command id (wraps mod 256)
+
+// A Print sink that captures the FIRST line of a command's reply into a small
+// buffer, so a station can return a short confirmation in its ack packet. The
+// console replies are like "  fox msg  = HELLO"; we keep the leading text up to
+// the first newline, trimmed of leading spaces.
+class CapturePrint : public Print {
+  public:
+    size_t write(uint8_t c) override {
+        if (c == '\n') { done_ = true; return 1; }
+        if (done_) return 1;                       // keep only the first line
+        if (len_ == 0 && (c == ' ' || c == '\t')) return 1;  // trim leading ws
+        if (len_ < sizeof(buf_) - 1) buf_[len_++] = (char)c;
+        return 1;
+    }
+    const char* c_str() { buf_[len_] = '\0'; return buf_; }
+  private:
+    char   buf_[proto::ACK_STATUS_MAX + 1] = {0};
+    size_t len_  = 0;
+    bool   done_ = false;
+};
+
 // Dispatch one provisioning command line, writing responses to `out`. Pure of
 // any transport: `out` is a Print& so the serial REPL (Serial) and a future
 // BLE-UART session can share this parser. Returns true when the session should
@@ -337,12 +397,48 @@ static bool handle_setup_command(const char* line, Print& out) {
         platform::restart();
     } else if (!strncmp(line, "mode ", 5)) {
         int m = atoi(line + 5);
-        if (m < 0 || m > 2) {            // 0=Hunter 1=Fox 2=Livekey (not Hibernate)
-            out.println("  ? mode 0=Hunter 1=Fox 2=Livekey");
+        if (m < 0 || m > 3) {       // 0=Hunter 1=Fox 2=Livekey 3=Instructor (not Hibernate)
+            out.println("  ? mode 0=Hunter 1=Fox 2=Livekey 3=Instructor");
         } else {
             config::set_boot_mode((uint8_t)m);
-            static const char* names[] = {"Hunter", "Fox", "Livekey"};
+            static const char* names[] = {"Hunter", "Fox", "Livekey", "Instructor"};
             out.printf("  boot mode = %d (%s)\n", m, names[m]);
+        }
+    } else if (!strncmp(line, "relay ", 6) || !strncmp(line, "fox ", 4)) {
+        // Instructor relay (docs: instructor station): packetize a console command
+        // and burst it over GFSK to a distant station, identical to what BLE/serial
+        // would run locally. `relay <id> <cmd...>` (alias `fox <id> <cmd>`): id is
+        // the target station_id, or 255 to broadcast to every station. The actual
+        // bursting + ack collection happens in loop_instructor(); here we just stage
+        // it. Only meaningful in MODE_INSTRUCTOR.
+        const char* arg = line + (line[0] == 'f' ? 4 : 6);
+        while (*arg == ' ') arg++;
+        if (mode != MODE_INSTRUCTOR) {
+            out.println("  relay: only in Instructor mode");
+        } else if (!*arg || !(*arg >= '0' && *arg <= '9')) {
+            out.println("  ? relay <id|255> <command...>");
+        } else {
+            int tid = atoi(arg);
+            while (*arg && *arg != ' ') arg++;   // skip the id
+            while (*arg == ' ') arg++;           // to the command line
+            if (tid < 0 || tid > 255 || !*arg) {
+                out.println("  ? relay <id|255> <command...>");
+            } else if (strlen(arg) > proto::CTRL_CMD_MAX) {
+                out.printf("  relay: command too long (max %u)\n",
+                           (unsigned)proto::CTRL_CMD_MAX);
+            } else {
+                g_ctrl.active    = true;
+                g_ctrl.target_id = (uint8_t)tid;
+                g_ctrl.seq       = g_ctrl_seq++;
+                strncpy(g_ctrl.cmd, arg, proto::CTRL_CMD_MAX);
+                g_ctrl.cmd[proto::CTRL_CMD_MAX] = '\0';
+                g_ctrl.start_ms  = millis();
+                g_ctrl.last_tx   = 0;            // send the first burst immediately
+                g_ctrl.delivered = false;
+                g_ctrl.n_acks    = 0;
+                out.printf("  relaying to id %d (seq %u): %s\n",
+                           tid, g_ctrl.seq, g_ctrl.cmd);
+            }
         }
     } else if (!strcmp(line, "mute") || !strncmp(line, "mute ", 5)) {
         // Bare "mute" toggles; "mute on|off" (or 1|0) sets explicitly. Persisted
@@ -407,9 +503,10 @@ static bool handle_setup_command(const char* line, Print& out) {
         }
         out.printf("  debug    = %s\n", g_debug ? "on" : "off");
     } else if (!strcmp(line, "show")) {
-        static const char* mnames[] = {"Hunter", "Fox", "Livekey", "Hibernate"};
+        static const char* mnames[] = {"Hunter", "Fox", "Livekey", "Instructor",
+                                       "Hibernate"};
         uint8_t bm = config::boot_mode();
-        const char* mn = (bm < 4) ? mnames[bm] : "?";
+        const char* mn = (bm < 5) ? mnames[bm] : "?";
         out.printf("  id=%u call=%s wpm=%u farns=%u vol=%u mute=%s mode=%s "
                    "keymode=%s msg=\"%s\"\n",
                    config::station_id(), config::callsign(),
@@ -504,8 +601,8 @@ static void print_boot_config() {
 // Blocking boot menu; returns the chosen mode.
 static Mode run_menu() {
     static const char* items[] = {"Hunter (RX)", "Fox (TX loop)", "Live key (TX)",
-                                   "Hibernate"};
-    const int n = 4;
+                                   "Instructor (RC)", "Hibernate"};
+    const int n = 5;
     // Start highlighted on the last-used mode (persisted in NVS), so a power
     // cycle defaults back to it. Hibernate is never stored, so this is 0..2.
     int sel = config::boot_mode();
@@ -646,6 +743,14 @@ void setup() {
             decoder.begin(config::wpm(), config::char_wpm());
             radio::start_receive();
             break;
+        case MODE_INSTRUCTOR:
+            // Remote control: TX commands at full reach (the fox is far) and sit
+            // in RX between bursts to hear acks. PA on for the command bursts.
+            pwr_idx = N_PWR - 1;                       // MAX — the fox is distant
+            radio::set_tx_power(PWR_LEVELS[pwr_idx].dbm);
+            radio::set_pa(true); g_pa_on = true;       // no-op w/o FEM
+            radio::start_receive();
+            break;
         case MODE_HIBERNATE:
             break;   // handled before radio init; never reached
     }
@@ -777,12 +882,77 @@ static bool prg_tapped(uint32_t now) {
     return edge;
 }
 
+// Apply an inbound control packet (instructor remote control, docs: instructor
+// station). Decodes the command, runs it through the SAME handle_setup_command()
+// the BLE/serial console uses, and acks the instructor. Returns true if the
+// buffer was a control packet addressed to us (handled), false otherwise so the
+// caller can keep trying other decoders. Call only while the radio is in RX.
+static bool control_rx_try(const uint8_t* buf, size_t n, uint32_t now) {
+    proto::ControlCmd c;
+    if (!proto::decode_ctrl(buf, n, c)) return false;
+    // Only the instructor (id 0) may command; only packets addressed to us (or
+    // broadcast) are honoured. A foreign control packet is still "handled" here
+    // (return true) so the caller doesn't misparse it as another type.
+    if (c.src_id != proto::INSTRUCTOR_ID) return true;
+    if (c.target_id != config::station_id() && c.target_id != proto::BROADCAST_ID)
+        return true;
+
+    // Dedup: the instructor bursts the same seq repeatedly. Apply the command
+    // once, but re-ack EVERY copy so a lost ack still gets answered.
+    static int  last_seq = -1;
+    static bool have_last = false;
+    bool fresh = !(have_last && (int)c.seq == last_seq);
+    char status[proto::ACK_STATUS_MAX + 1];
+    if (fresh) {
+        CapturePrint cap;
+        handle_setup_command(c.cmd, cap);
+        strncpy(status, cap.c_str(), proto::ACK_STATUS_MAX);
+        status[proto::ACK_STATUS_MAX] = '\0';
+        last_seq = c.seq; have_last = true;
+    } else {
+        snprintf(status, sizeof(status), "dup seq %u", c.seq);
+    }
+
+    if (g_debug) {
+        Serial.printf("RX C from=%u tgt=%u seq=%u fresh=%u cmd=%s\n",
+                      c.src_id, c.target_id, c.seq, fresh ? 1 : 0, c.cmd);
+    }
+
+    // Ack the instructor with a short confirmation, then re-arm RX.
+    uint8_t ackbuf[proto::CTRL_HDR_LEN + proto::ACK_STATUS_MAX];
+    size_t  alen = proto::encode_ack(config::station_id(), c.src_id, c.seq,
+                                     status, ackbuf);
+    radio::send(ackbuf, alen);
+    radio::start_receive();
+    return true;
+}
+
 static void loop_fox(uint32_t now) {
     if (prg_tapped(now)) {
         pwr_idx = (pwr_idx + 1) % N_PWR;
         radio::set_tx_power(PWR_LEVELS[pwr_idx].dbm);
         config::set_fox_pwr_idx((uint8_t)pwr_idx);
         last_draw = 0;   // force an immediate redraw of the new level
+    }
+
+    // Remote-control RX window (instructor station): the fox is otherwise
+    // TX-only, but it goes silent for the *tail* of its inter-message pause and
+    // listens for instructor control packets. The window is kept under the
+    // hunter's 3 s presence timeout (loop_hunter signal_timeout_ms) so a hunter
+    // doesn't drop the fox during it. Outside the window the fox keeps streaming
+    // keystate as before; the instructor bursts a command long enough to overlap
+    // one of these windows (see loop_instructor). Half-duplex: we must suppress
+    // our own TX while listening, so `rx_window` gates the keystate/edge TX below.
+    static bool rx_armed = false;
+    bool rx_window = player.finished() && pause_until != 0 &&
+                     now < pause_until && (now + CTRL_RX_WINDOW_MS >= pause_until);
+    if (rx_window) {
+        if (!rx_armed) { radio::start_receive(); rx_armed = true; }
+        uint8_t cbuf[128];
+        size_t cn; float cr;
+        if (radio::poll(cbuf, sizeof(cbuf), cn, cr)) control_rx_try(cbuf, cn, now);
+    } else {
+        rx_armed = false;
     }
 
     if (!player.finished()) {
@@ -799,9 +969,12 @@ static void loop_fox(uint32_t now) {
     set_tone(false);
     // keymode gate (E3): "edge" emits EdgeEvents on transitions + heartbeat;
     // "compat" (default) keeps the existing 30 ms KeyState stream untouched.
-    if (g_keymode == KEYMODE_EDGE) tx_edge(now, down);
-    else                           tx_keystate(now, down);
-    tx_ident(now);   // periodic station-ID packet (Part 97 callsign ID) — both modes
+    // Suppressed during rx_window so the half-duplex radio stays in receive.
+    if (!rx_window) {
+        if (g_keymode == KEYMODE_EDGE) tx_edge(now, down);
+        else                           tx_keystate(now, down);
+        tx_ident(now);   // periodic station-ID packet (Part 97 callsign ID) — both modes
+    }
 
     if (now - last_draw >= 100) {
         last_draw = now;
@@ -872,14 +1045,19 @@ static void loop_hunter(uint32_t now) {
     // dit/dah elements (same debounced detector the fox uses for power).
     if (prg_tapped(now)) { hunter_ditdah = !hunter_ditdah; last_draw = 0; }
 
-    uint8_t buf[32];
+    uint8_t buf[128];   // large enough for a control packet (4 + up to 100 bytes)
     size_t n;
     float r;
     if (radio::poll(buf, sizeof(buf), n, r)) {
         proto::KeyState  ks;
         proto::Ident     id;
         proto::EdgeEvent ev;
-        if (proto::decode(buf, n, ks)) {
+        if (control_rx_try(buf, n, now)) {
+            // Instructor remote control: applied + acked inside control_rx_try.
+            // Count it as signal so the presence bar doesn't blink during a
+            // run of control packets. The radio is re-armed by control_rx_try.
+            last_signal = now;
+        } else if (proto::decode(buf, n, ks)) {
             // KeyState (compat): a fox sending this is NOT in edge mode, so a
             // bilingual hunter follows it back to the polling decode path —
             // byte-identical to pre-E4 behavior once rx_is_edge is false.
@@ -1055,6 +1233,107 @@ static void loop_hunter(uint32_t now) {
     }
 }
 
+// Instructor remote control (docs: instructor station). Drives the command
+// staged by the `relay` verb: bursts the control packet over GFSK and listens
+// for the target's ack between bursts. Sits idle in RX (hearing nothing) when no
+// command is pending, so it can also still be driven over its own BLE/serial.
+static void loop_instructor(uint32_t now) {
+    // Silence-sync state for the *current* command (reset when a new seq starts).
+    // We listen for the unicast target's own transmissions to know when it falls
+    // silent (its RX window) and burst only then — see the CTRL_* timing notes.
+    static int      synced_seq    = -1;
+    static bool     fox_heard     = false;
+    static uint32_t fox_last_heard = 0;
+    if (g_ctrl.active && synced_seq != (int)g_ctrl.seq) {
+        synced_seq = g_ctrl.seq;
+        fox_heard  = false;
+    }
+
+    // Always service inbound packets and keep the radio armed for receive: acks
+    // (our confirmation) and the target fox's own traffic (silence tracking).
+    uint8_t buf[128];
+    size_t n; float r;
+    if (radio::poll(buf, sizeof(buf), n, r)) {
+        proto::ControlAck a;
+        if (proto::decode_ack(buf, n, a) && a.target_id == proto::INSTRUCTOR_ID) {
+            Serial.printf("ACK %u seq=%u: %s\n", a.src_id, a.seq, a.status);
+            char l1[24], l2[24];
+            snprintf(l1, sizeof(l1), "ACK id %u", a.src_id);
+            snprintf(l2, sizeof(l2), "%s", a.status);
+            display::status("Instructor", l1, l2);
+            last_draw = now;
+            if (g_ctrl.active && a.seq == g_ctrl.seq) {
+                // Tally the responder; stop a unicast burst once its target acks.
+                bool known = false;
+                for (uint8_t i = 0; i < g_ctrl.n_acks; ++i)
+                    if (g_ctrl.acks_from[i] == a.src_id) known = true;
+                if (!known && g_ctrl.n_acks < sizeof(g_ctrl.acks_from))
+                    g_ctrl.acks_from[g_ctrl.n_acks++] = a.src_id;
+                if (g_ctrl.target_id != proto::BROADCAST_ID) {
+                    g_ctrl.delivered = true;
+                    g_ctrl.active = false;     // unicast done
+                }
+            }
+        } else if (g_ctrl.active && n >= 2 && buf[1] == g_ctrl.target_id &&
+                   (buf[0] == proto::MAGIC || buf[0] == proto::MAGIC_IDENT ||
+                    buf[0] == proto::MAGIC_EDGE)) {
+            // Heard the target fox transmitting — it is alive and NOT in its RX
+            // window right now. Track the time so a following gap reveals the window.
+            fox_heard = true;
+            fox_last_heard = now;
+        }
+    }
+
+    if (!g_ctrl.active) {
+        if (now - last_draw >= 1000) {         // idle status, occasional redraw
+            last_draw = now;
+            display::status("Instructor", "ready", "relay <id> <cmd>");
+        }
+        return;
+    }
+
+    // Burst window elapsed without (enough) acks — give up on this command.
+    if (now - g_ctrl.start_ms >= CTRL_BURST_WINDOW) {
+        g_ctrl.active = false;
+        char l2[24];
+        snprintf(l2, sizeof(l2), "%u ack(s)", g_ctrl.n_acks);
+        display::status("Instructor", g_ctrl.n_acks ? "done" : "no response", l2);
+        Serial.printf("# relay seq=%u finished: %u ack(s)\n",
+                      g_ctrl.seq, g_ctrl.n_acks);
+        return;
+    }
+
+    // Decide whether to burst now. Unicast, target heard: only while the fox is
+    // silent (in its RX window), rate-limited so we don't machine-gun the window.
+    // Otherwise (broadcast, or target not yet heard): a sparse periodic probe that
+    // keeps the channel mostly clear so we can still detect the fox / reach all.
+    bool sync = g_ctrl.target_id != proto::BROADCAST_ID && fox_heard;
+    bool burst_now;
+    if (sync) {
+        burst_now = (now - fox_last_heard >= CTRL_SILENCE_MS) &&
+                    (now - g_ctrl.last_tx >= CTRL_BURST_INTERVAL);
+    } else {
+        burst_now = (now - g_ctrl.last_tx >= CTRL_PROBE_INTERVAL);
+    }
+
+    if (burst_now) {
+        g_ctrl.last_tx = now;
+        uint8_t cbuf[proto::CTRL_HDR_LEN + proto::CTRL_CMD_MAX];
+        size_t clen = proto::encode_ctrl(proto::INSTRUCTOR_ID, g_ctrl.target_id,
+                                         g_ctrl.seq, g_ctrl.cmd, cbuf);
+        radio::send(cbuf, clen);
+        radio::start_receive();
+        if (now - last_draw >= 500) {
+            last_draw = now;
+            char l1[24], l2[24];
+            snprintf(l1, sizeof(l1), "-> id %u seq %u", g_ctrl.target_id, g_ctrl.seq);
+            snprintf(l2, sizeof(l2), "%us %u ack %s", (now - g_ctrl.start_ms) / 1000,
+                     g_ctrl.n_acks, sync ? "sync" : "probe");
+            display::status("Instructor TX", l1, l2);
+        }
+    }
+}
+
 void loop() {
     uint32_t now = millis();
     // Dispatch any BLE provisioning commands on this (main) task, so the parser
@@ -1075,9 +1354,10 @@ void loop() {
     }
 #endif
     switch (mode) {
-        case MODE_FOX:     loop_fox(now);     break;
-        case MODE_LIVEKEY: loop_livekey(now); break;
-        case MODE_HUNTER:  loop_hunter(now);  break;
-        case MODE_HIBERNATE: break;   // never reached (slept in setup)
+        case MODE_FOX:        loop_fox(now);        break;
+        case MODE_LIVEKEY:    loop_livekey(now);    break;
+        case MODE_HUNTER:     loop_hunter(now);     break;
+        case MODE_INSTRUCTOR: loop_instructor(now); break;
+        case MODE_HIBERNATE:  break;   // never reached (slept in setup)
     }
 }

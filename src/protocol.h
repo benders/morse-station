@@ -146,4 +146,85 @@ inline bool decode_ident(const uint8_t* buf, size_t len, Ident& id) {
     return true;
 }
 
+// Remote control (docs: instructor station). An "instructor" node (the
+// Cardputer) reaches a distant fox over GFSK — not just short-range BLE — to
+// re-tune it live during an exercise (new clue text, speed, power). The control
+// packet carries an ASCII command line identical to what the BLE/serial console
+// accepts; the receiver runs it through the SAME handle_setup_command() parser.
+// The instructor is identified by the reserved source id INSTRUCTOR_ID (0), and
+// a receiver only honours control packets from that id. A target_id of
+// BROADCAST_ID (255) addresses every station; otherwise it must match the
+// receiver's station_id. Distinguished by MAGIC_CTRL so other packet parsers
+// ignore it. Variable length: a 4-byte header + a NUL-terminated command line.
+constexpr uint8_t MAGIC_CTRL    = 0x43;   // 'C' — instructor -> station command
+constexpr uint8_t MAGIC_CACK    = 0x41;   // 'A' — station -> instructor ack
+constexpr uint8_t INSTRUCTOR_ID = 0;      // reserved source id of the instructor
+constexpr size_t  CTRL_CMD_MAX  = 100;    // >= config FOX_MSG_MAX (96) + "msg "
+constexpr size_t  CTRL_HDR_LEN  = 4;      // magic, src, target, seq
+constexpr size_t  ACK_STATUS_MAX = 48;    // short confirmation text in an ack
+
+struct ControlCmd {
+    uint8_t src_id;                  // must be INSTRUCTOR_ID to be honoured
+    uint8_t target_id;              // recipient station_id, or BROADCAST_ID
+    uint8_t seq;                    // command id (wraps); dedup + ack matching
+    char    cmd[CTRL_CMD_MAX + 1];  // NUL-terminated ASCII command line
+};
+
+struct ControlAck {
+    uint8_t src_id;                    // responding station's id
+    uint8_t target_id;                // who the ack is for (the instructor, 0)
+    uint8_t seq;                      // echoes the ControlCmd.seq being answered
+    char    status[ACK_STATUS_MAX + 1]; // NUL-terminated short confirmation text
+};
+
+// Encode a control command. Writes CTRL_HDR_LEN + strlen(cmd) bytes (the command
+// is truncated to CTRL_CMD_MAX). Returns the byte count written.
+inline size_t encode_ctrl(uint8_t src_id, uint8_t target_id, uint8_t seq,
+                          const char* cmd, uint8_t* buf) {
+    buf[0] = MAGIC_CTRL;
+    buf[1] = src_id;
+    buf[2] = target_id;
+    buf[3] = seq;
+    size_t i = 0;
+    for (; cmd && cmd[i] && i < CTRL_CMD_MAX; ++i) buf[CTRL_HDR_LEN + i] = (uint8_t)cmd[i];
+    return CTRL_HDR_LEN + i;
+}
+
+inline bool decode_ctrl(const uint8_t* buf, size_t len, ControlCmd& c) {
+    if (len < CTRL_HDR_LEN || buf[0] != MAGIC_CTRL) return false;
+    c.src_id    = buf[1];
+    c.target_id = buf[2];
+    c.seq       = buf[3];
+    size_t body = len - CTRL_HDR_LEN;
+    if (body > CTRL_CMD_MAX) body = CTRL_CMD_MAX;
+    for (size_t i = 0; i < body; ++i) c.cmd[i] = (char)buf[CTRL_HDR_LEN + i];
+    c.cmd[body] = '\0';
+    return true;
+}
+
+// Encode an ack. Writes CTRL_HDR_LEN + strlen(status) bytes (status truncated to
+// ACK_STATUS_MAX). target_id is the instructor that the ack answers.
+inline size_t encode_ack(uint8_t src_id, uint8_t target_id, uint8_t seq,
+                         const char* status, uint8_t* buf) {
+    buf[0] = MAGIC_CACK;
+    buf[1] = src_id;
+    buf[2] = target_id;
+    buf[3] = seq;
+    size_t i = 0;
+    for (; status && status[i] && i < ACK_STATUS_MAX; ++i) buf[CTRL_HDR_LEN + i] = (uint8_t)status[i];
+    return CTRL_HDR_LEN + i;
+}
+
+inline bool decode_ack(const uint8_t* buf, size_t len, ControlAck& a) {
+    if (len < CTRL_HDR_LEN || buf[0] != MAGIC_CACK) return false;
+    a.src_id    = buf[1];
+    a.target_id = buf[2];
+    a.seq       = buf[3];
+    size_t body = len - CTRL_HDR_LEN;
+    if (body > ACK_STATUS_MAX) body = ACK_STATUS_MAX;
+    for (size_t i = 0; i < body; ++i) a.status[i] = (char)buf[CTRL_HDR_LEN + i];
+    a.status[body] = '\0';
+    return true;
+}
+
 } // namespace proto

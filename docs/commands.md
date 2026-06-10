@@ -17,7 +17,8 @@ command line terminated by CR or LF and read the echoed result.
 | `wpm <n>` | Overall (effective) keying speed, clamped **5..40**. Default 15. Raising it above `char_wpm` also raises `char_wpm` to match. | yes | fox only: re-arms the player at the next message loop |
 | `farns <n>` | Farnsworth **character** speed, clamped **wpm..40**. Default 18. Equal to `wpm` ⇒ plain timing. | yes | fox only: re-arms the player at the next message loop |
 | `pwr <0..3>` | Fox TX power: `0`=LO(−9) `1`=MED(+2) `2`=HI(+14) `3`=MAX(+22 dBm chip). Out-of-range prints the legend. | yes | fox only: retunes the SX1262 immediately |
-| `mode <0..2>` | Set the **boot** mode: `0`=Hunter `1`=Fox `2`=Livekey. (Hibernate is not selectable here.) Takes effect on next boot — pair with `reboot`. | yes | no (boot-time) |
+| `mode <0..3>` | Set the **boot** mode: `0`=Hunter `1`=Fox `2`=Livekey `3`=Instructor. (Hibernate is not selectable here.) Takes effect on next boot — pair with `reboot`. | yes | no (boot-time) |
+| `relay <id\|255> <cmd...>` | **Instructor mode only.** Send any command above to a *distant* station over the GFSK radio (not just short-range BLE). `id` is the target station, or `255` to broadcast to all. The target runs `<cmd>` through this same parser and returns an ack, shown on the instructor's screen/serial as `ACK <id>: <reply>`. Alias: `fox <id> <cmd>`. See "Instructor (remote control)" below. | n/a (the *target's* command persists per its own rule) | n/a |
 | `vol <1..32>` | Sidetone volume in `GAIN_Q15/1024` units (`8`→gain 8192, `32`→full swing 32768), clamped **1..32**. Default 8. Bare `vol` reports the current level. On the Heltec this scales the I2S sample amplitude; on the Cardputer it maps onto M5.Speaker 0..255. | yes | yes — applied immediately |
 | `mute [on\|off]` | Sidetone mute. Bare `mute` toggles; `on`/`1` and `off`/`0` set explicitly. For a node running near people. | yes | yes — applied immediately |
 | `keymode [compat\|edge]` | TX keying transport: `compat` = legacy 30 ms `KeyState` stream; `edge` = on-edge `EdgeEvent` packets carrying TX-measured durations (see `protocol.md` / `edge-events.md`). Bare `keymode` reports. Only the **fox/livekey TX** changes; hunters are bilingual and auto-follow per packet. Default `compat` (a fresh/legacy unit is unchanged). | yes | yes — fox/livekey emits the new format immediately |
@@ -89,6 +90,45 @@ The NUS is **open** — anyone in BLE range with a generic BLE-UART app can
 reconfigure or reboot a node. For a hobby fox hunt this is an acceptable trade
 for zero-friction access. If it ever matters, add NimBLE bonding / a passkey, or
 gate writes behind a shared secret.
+
+## Instructor (remote control over GFSK)
+
+In the field the fox may sit far from the operator — beyond BLE range. The
+**Instructor** boot mode (menu entry "Instructor (RC)", or `mode 3`) turns a node
+(typically the Cardputer) into a remote that pushes the commands above to a
+distant station over the **GFSK radio**, so an exercise leader can re-tune a fox
+live (new clue text, faster speed, more power) without walking to it.
+
+**How it's driven.** The instructor is itself reachable over its own BLE/serial
+console; you type `relay <id> <cmd>` there and it relays `<cmd>` on-air:
+
+```
+relay 43 msg DE W1ABC FOX UNDER THE OAK   # change fox 43's message
+relay 43 wpm 20                            # speed it up
+relay 255 mute on                          # quiet every station
+```
+
+The target runs the command through the *same* `handle_setup_command()` parser as
+BLE/serial (so it persists and live-applies identically) and returns a short
+**ack**; the instructor shows `ACK <id>: <reply>` on its screen and serial.
+
+**On-air mechanics.** Control rides in a dedicated packet type (`MAGIC_CTRL`,
+`protocol.h`); the instructor is the reserved source id **0**, and a station only
+honours control from id 0 addressed to its own id (or `255`, broadcast). Because
+the radio is half-duplex and a fox is almost always transmitting, the fox opens a
+short **receive window** (the silent tail of its inter-message pause, kept under
+the hunter 3 s presence timeout). The instructor *silence-syncs* to a unicast
+target — it watches the fox's own stream and bursts a command only when the fox
+falls silent (its window), avoiding collisions with the keystate the hunters are
+copying. It keeps trying for up to ~90 s and stops as soon as the target acks.
+Broadcast (`255`) has no single phase to track, so it falls back to a sparse
+periodic probe and collects acks from everyone for the window.
+
+**Caveats.** Same open trust model as BLE (any node on the channel could forge id
+0 — fine for a closed exercise). Broadcast delivery is best-effort and noisier on
+air than unicast. The full command set is reachable remotely, including `reboot`
+and `mode` (a `reboot` won't ack — the target resets first). Live-key stations
+don't answer control in this version.
 
 ## Examples
 
