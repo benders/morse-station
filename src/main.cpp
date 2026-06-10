@@ -380,6 +380,46 @@ static bool handle_setup_command(const char* line, Print& out) {
             out.printf("  lna      = %s (FEM CTX; RX path; V4.3 KCT8103L; persisted)\n",
                        radio::lna_on() ? "on" : "off");
         }
+    } else if (!strcmp(line, "txcw") || !strncmp(line, "txcw ", 5)) {
+        // Continuous-wave test carrier for SDR frequency-drift measurement. Emits
+        // an UNMODULATED carrier at radio::frequency_mhz() so an SDR (e.g. an
+        // rtl_tcp dongle + scripts/sdr_drift.py) reads this transmitter's true
+        // centre frequency as a single spectral peak; compare the peak across
+        // stations to map per-device TCXO drift. `txcw [secs]` (default 10, cap
+        // 120) transmits then auto-stops; `txcw off` (or `txcw 0`) stops now. The
+        // carrier uses the current `pwr` level and `pa` state (set those first).
+        // Blocks for the duration — the radio can't receive while keying CW — and
+        // a keypress on the serial console aborts early. Works over `relay <id>
+        // txcw ...` to a distant station. Mind FCC §15.249: a pure carrier is a
+        // continuous emission, so keep bursts short and the power low.
+        const char* arg = line + 4;
+        while (*arg == ' ') arg++;
+        if (!strcmp(arg, "off") || !strcmp(arg, "0")) {
+            radio::tx_cw(false);
+            out.println("  txcw: off");
+        } else {
+            int secs = *arg ? atoi(arg) : 10;
+            if (secs < 1)   secs = 1;
+            if (secs > 120) secs = 120;
+            radio::set_tx_power(PWR_LEVELS[pwr_idx].dbm);
+            out.printf("  txcw: %.4f MHz @ %d dBm (%s, pa %s) for %ds — keypress aborts\n",
+                       radio::frequency_mhz(), PWR_LEVELS[pwr_idx].dbm,
+                       PWR_LEVELS[pwr_idx].label, g_pa_on ? "on" : "off", secs);
+            if (!radio::tx_cw(true)) {
+                out.println("  txcw: start failed");
+            } else {
+                uint32_t end = millis() + (uint32_t)secs * 1000;
+                while ((int32_t)(end - millis()) > 0) {
+                    if (Serial.available()) {       // abort on any serial keypress
+                        while (Serial.available()) Serial.read();
+                        break;
+                    }
+                    delay(100);
+                }
+                radio::tx_cw(false);
+                out.println("  txcw: done");
+            }
+        }
     } else if (!strcmp(line, "model")) {
         // Board model (read-only). The Heltec V4 sub-revision is auto-detected
         // from the FEM strap at boot (see radio::fem_name / fem_power_on); every
@@ -516,6 +556,7 @@ static bool handle_setup_command(const char* line, Print& out) {
                    config::fox_message());
         out.printf("  model    = %s  chip=%s  soc=%s\n",
                    board_model_str(), platform::chip_id_str(), platform::soc_str());
+        out.printf("  build    = %s\n", GIT_REV);
         out.printf("  debug    = %s\n", g_debug ? "on" : "off");
         if (radio::has_fem()) {
             out.printf("  fem      = %s  pa %s  lna %s\n", radio::fem_name(),

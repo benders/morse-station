@@ -212,6 +212,19 @@ bool set_tx_power(int dbm) {
     return chip.setOutputPower(dbm) == RADIOLIB_ERR_NONE;
 }
 
+bool tx_cw(bool on) {
+    if (on) {
+        fem_set_tx();                         // FEM -> TX config (PA per s_pa_on)
+        // transmitDirect() with frf=0 keeps the current channel and issues
+        // SetTxContinuousWave: an unmodulated carrier at frequency_mhz(). It also
+        // sets the RF switch to TX, matching what transmit() does in send().
+        return chip.transmitDirect() == RADIOLIB_ERR_NONE;
+    }
+    chip.standby();                           // stop the carrier
+    start_receive();                          // FEM back to RX + re-arm receive
+    return true;
+}
+
 bool has_fem() {
 #ifdef HAS_FEM
     return true;

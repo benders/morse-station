@@ -52,6 +52,18 @@ void set_pa(bool on);
 void set_lna(bool on);
 bool lna_on();
 
+// Test aid for SDR frequency-drift measurement: emit an unmodulated continuous
+// wave (CW) carrier at the operating frequency (radio::frequency_mhz()), or stop
+// it. on=true drives the FEM into TX config and issues the SX1262
+// SetTxContinuousWave command (via RadioLib transmitDirect()); on=false returns
+// to standby + continuous receive. The carrier sits at exactly the channel
+// centre with no FSK modulation, so an SDR can read this transmitter's true
+// frequency as a single spectral peak. TX power / FEM PA follow the current
+// set_tx_power()/set_pa() state. Returns true on success. While CW is on the
+// radio cannot receive. Mind FCC §15.249 (the carrier is a pure unmodulated
+// emission) — keep bursts short.
+bool tx_cw(bool on);
+
 // Put the radio into continuous receive. Call once after init() on RX nodes.
 void start_receive();
 
