@@ -52,6 +52,8 @@ static constexpr uint32_t CTRL_BURST_INTERVAL = 250;     // min gap between burs
 static constexpr uint32_t CTRL_SILENCE_MS     = 800;     // > 700 ms heartbeat → window
 static constexpr uint32_t CTRL_PROBE_INTERVAL = 1500;    // sparse probe before target heard
 static constexpr uint32_t CTRL_BURST_WINDOW   = 90000;
+static constexpr uint32_t CTRL_ACK_LISTEN_MS  = 200;     // blocking RX right after a
+                                                         // burst to catch the prompt ack
 
 // Callsign and fox message live in NVS (config), set via the boot serial console
 // (see run_setup_console). The callsign is sent in the periodic station-ID
@@ -267,6 +269,11 @@ struct CtrlPending {
 };
 static CtrlPending g_ctrl;
 static uint8_t     g_ctrl_seq = 0;   // monotonic command id (wraps mod 256)
+// Instructor silence-sync state (file scope so the top-of-loop service and the
+// post-burst ack listener — both in/around loop_instructor — share one view of
+// when the target fox was last heard transmitting).
+static bool        g_fox_heard      = false;
+static uint32_t    g_fox_last_heard = 0;
 
 // A Print sink that captures the FIRST line of a command's reply into a small
 // buffer, so a station can return a short confirmation in its ack packet. The
@@ -495,6 +502,8 @@ static bool handle_setup_command(const char* line, Print& out) {
                 g_ctrl.active    = true;
                 g_ctrl.target_id = (uint8_t)tid;
                 g_ctrl.seq       = g_ctrl_seq++;
+                config::set_ctrl_seq(g_ctrl_seq);  // persist so a reboot doesn't
+                                                   // restart at 0 (dup collision)
                 strncpy(g_ctrl.cmd, arg, proto::CTRL_CMD_MAX);
                 g_ctrl.cmd[proto::CTRL_CMD_MAX] = '\0';
                 g_ctrl.start_ms  = millis();
@@ -745,6 +754,9 @@ void setup() {
     // Restore the last-used fox TX power level (clamp in case the table shrank).
     pwr_idx = config::fox_pwr_idx();
     if (pwr_idx >= N_PWR) pwr_idx = 0;
+    // Continue the instructor control-packet seq where it left off, so a reboot
+    // doesn't restart at 0 and collide with a fox's remembered last_seq.
+    g_ctrl_seq = config::ctrl_seq();
     print_boot_config();
 
     // Start BLE-UART (NUS) field provisioning and leave it up for the whole
@@ -1306,52 +1318,64 @@ static void loop_hunter(uint32_t now) {
 // staged by the `relay` verb: bursts the control packet over GFSK and listens
 // for the target's ack between bursts. Sits idle in RX (hearing nothing) when no
 // command is pending, so it can also still be driven over its own BLE/serial.
-static void loop_instructor(uint32_t now) {
-    // Silence-sync state for the *current* command (reset when a new seq starts).
-    // We listen for the unicast target's own transmissions to know when it falls
-    // silent (its RX window) and burst only then — see the CTRL_* timing notes.
-    static int      synced_seq    = -1;
-    static bool     fox_heard     = false;
-    static uint32_t fox_last_heard = 0;
-    if (g_ctrl.active && synced_seq != (int)g_ctrl.seq) {
-        synced_seq = g_ctrl.seq;
-        fox_heard  = false;
-    }
-
-    // Always service inbound packets and keep the radio armed for receive: acks
-    // (our confirmation) and the target fox's own traffic (silence tracking).
+// Service one inbound packet for the instructor: catch the target's ack (and stop
+// a unicast burst the instant it arrives) or note the fox's own traffic so
+// silence-sync knows when its RX window opens. Returns true if a packet was read.
+// Shared by the top-of-loop poll and the post-burst ack listener.
+static bool instructor_service_rx(uint32_t now) {
     uint8_t buf[128];
     size_t n; float r;
-    if (radio::poll(buf, sizeof(buf), n, r)) {
-        proto::ControlAck a;
-        if (proto::decode_ack(buf, n, a) && a.target_id == proto::INSTRUCTOR_ID) {
-            Serial.printf("ACK %u seq=%u: %s\n", a.src_id, a.seq, a.status);
-            char l1[24], l2[24];
-            snprintf(l1, sizeof(l1), "ACK id %u", a.src_id);
-            snprintf(l2, sizeof(l2), "%s", a.status);
-            display::status("Instructor", l1, l2);
-            last_draw = now;
-            if (g_ctrl.active && a.seq == g_ctrl.seq) {
-                // Tally the responder; stop a unicast burst once its target acks.
-                bool known = false;
-                for (uint8_t i = 0; i < g_ctrl.n_acks; ++i)
-                    if (g_ctrl.acks_from[i] == a.src_id) known = true;
-                if (!known && g_ctrl.n_acks < sizeof(g_ctrl.acks_from))
-                    g_ctrl.acks_from[g_ctrl.n_acks++] = a.src_id;
-                if (g_ctrl.target_id != proto::BROADCAST_ID) {
-                    g_ctrl.delivered = true;
-                    g_ctrl.active = false;     // unicast done
-                }
+    if (!radio::poll(buf, sizeof(buf), n, r)) return false;
+    proto::ControlAck a;
+    if (proto::decode_ack(buf, n, a) && a.target_id == proto::INSTRUCTOR_ID) {
+        Serial.printf("ACK %u seq=%u: %s\n", a.src_id, a.seq, a.status);
+        char l1[24], l2[24];
+        snprintf(l1, sizeof(l1), "ACK id %u", a.src_id);
+        snprintf(l2, sizeof(l2), "%s", a.status);
+        display::status("Instructor", l1, l2);
+        last_draw = now;
+        if (g_ctrl.active && a.seq == g_ctrl.seq) {
+            // Tally the responder; stop a unicast burst once its target acks.
+            bool known = false;
+            for (uint8_t i = 0; i < g_ctrl.n_acks; ++i)
+                if (g_ctrl.acks_from[i] == a.src_id) known = true;
+            if (!known && g_ctrl.n_acks < sizeof(g_ctrl.acks_from))
+                g_ctrl.acks_from[g_ctrl.n_acks++] = a.src_id;
+            if (g_ctrl.target_id != proto::BROADCAST_ID) {
+                g_ctrl.delivered = true;
+                g_ctrl.active = false;     // unicast done
             }
-        } else if (g_ctrl.active && n >= 2 && buf[1] == g_ctrl.target_id &&
-                   (buf[0] == proto::MAGIC || buf[0] == proto::MAGIC_IDENT ||
-                    buf[0] == proto::MAGIC_EDGE)) {
-            // Heard the target fox transmitting — it is alive and NOT in its RX
-            // window right now. Track the time so a following gap reveals the window.
-            fox_heard = true;
-            fox_last_heard = now;
         }
+    } else if (g_ctrl.active && n >= 2 && buf[1] == g_ctrl.target_id &&
+               (buf[0] == proto::MAGIC || buf[0] == proto::MAGIC_IDENT ||
+                buf[0] == proto::MAGIC_EDGE)) {
+        // Heard the target fox transmitting — it is alive and NOT in its RX
+        // window right now. Track the time so a following gap reveals the window.
+        g_fox_heard = true;
+        g_fox_last_heard = now;
     }
+    return true;
+}
+
+static void loop_instructor(uint32_t now) {
+    // Re-sample the clock: `now` was captured at the top of loop(), but a `relay`
+    // command is staged later in that SAME iteration (serial_console_process runs
+    // before this dispatch and writes g_ctrl.start_ms = millis(), after an NVS
+    // seq write). Using the stale `now` makes `now - start_ms` underflow on the
+    // first pass → the burst window looks elapsed and the command gives up
+    // instantly. A fresh sample keeps all the CTRL_* timers self-consistent.
+    now = millis();
+    // Reset silence-sync when a new command (seq) starts; g_fox_heard/_last_heard
+    // are file scope (see above) so the post-burst listener shares them.
+    static int synced_seq = -1;
+    if (g_ctrl.active && synced_seq != (int)g_ctrl.seq) {
+        synced_seq = g_ctrl.seq;
+        g_fox_heard = false;
+    }
+
+    // Always service inbound packets: acks (our confirmation) and the target fox's
+    // own traffic (silence tracking).
+    instructor_service_rx(now);
 
     if (!g_ctrl.active) {
         if (now - last_draw >= 1000) {         // idle status, occasional redraw
@@ -1376,10 +1400,10 @@ static void loop_instructor(uint32_t now) {
     // silent (in its RX window), rate-limited so we don't machine-gun the window.
     // Otherwise (broadcast, or target not yet heard): a sparse periodic probe that
     // keeps the channel mostly clear so we can still detect the fox / reach all.
-    bool sync = g_ctrl.target_id != proto::BROADCAST_ID && fox_heard;
+    bool sync = g_ctrl.target_id != proto::BROADCAST_ID && g_fox_heard;
     bool burst_now;
     if (sync) {
-        burst_now = (now - fox_last_heard >= CTRL_SILENCE_MS) &&
+        burst_now = (now - g_fox_last_heard >= CTRL_SILENCE_MS) &&
                     (now - g_ctrl.last_tx >= CTRL_BURST_INTERVAL);
     } else {
         burst_now = (now - g_ctrl.last_tx >= CTRL_PROBE_INTERVAL);
@@ -1392,7 +1416,16 @@ static void loop_instructor(uint32_t now) {
                                          g_ctrl.seq, g_ctrl.cmd, cbuf);
         radio::send(cbuf, clen);
         radio::start_receive();
-        if (now - last_draw >= 500) {
+        // The target acks the instant it decodes this burst — on a reliable link
+        // that ack lands in the tens of ms right after, exactly while we're
+        // settling back into RX. Poll a short blocking window now so a lockstep
+        // ack isn't missed (the old failure: every ack fell in this blind spot, so
+        // the instructor never saw "delivered" and bursted the whole 90 s window).
+        // Exits early the moment instructor_service_rx() clears g_ctrl.active.
+        uint32_t t0 = millis();
+        while (g_ctrl.active && (uint32_t)(millis() - t0) < CTRL_ACK_LISTEN_MS)
+            instructor_service_rx(millis());
+        if (g_ctrl.active && now - last_draw >= 500) {   // not if the ack just landed
             last_draw = now;
             char l1[24], l2[24];
             snprintf(l1, sizeof(l1), "-> id %u seq %u", g_ctrl.target_id, g_ctrl.seq);

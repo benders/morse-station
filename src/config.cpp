@@ -18,6 +18,7 @@ bool    cached_muted = false;     // sidetone mute (silent node), persisted
 bool    cached_lna   = true;      // V4.3 FEM RX LNA in path (CTX select), persisted
 uint32_t cached_rx_bw_dhz = 234;  // FSK RX bandwidth in deci-kHz (234 = 23.4 kHz),
                                   // mirrors radio.cpp RX_BW_KHZ default
+uint8_t cached_ctrl_seq = 0;      // instructor control-packet seq (persisted)
 uint8_t cached_volume = 8;        // sidetone level in GAIN_Q15/1024 units (8 -> 8192)
 
 // Compile-time platform name — always correct for the firmware variant. This is
@@ -54,6 +55,7 @@ constexpr const char* KEY_FPWR  = "fox_pwr_idx";
 constexpr const char* KEY_MUTE  = "muted";
 constexpr const char* KEY_LNA   = "lna";
 constexpr const char* KEY_RXBW  = "rx_bw_dhz";
+constexpr const char* KEY_CSEQ  = "ctrl_seq";
 constexpr const char* KEY_VOL   = "volume";
 
 uint8_t clamp_u8(int v, uint8_t lo, uint8_t hi) {
@@ -104,6 +106,9 @@ void begin() {
 
     if (prefs.isKey(KEY_RXBW))
         cached_rx_bw_dhz = prefs.getUInt(KEY_RXBW, cached_rx_bw_dhz);
+
+    if (prefs.isKey(KEY_CSEQ))
+        cached_ctrl_seq = prefs.getUChar(KEY_CSEQ, cached_ctrl_seq);
 
     if (prefs.isKey(KEY_VOL))
         cached_volume = clamp_u8(prefs.getUChar(KEY_VOL, cached_volume), VOL_MIN, VOL_MAX);
@@ -232,6 +237,16 @@ void set_rx_bw_khz(float khz) {
     cached_rx_bw_dhz = dhz;
     prefs.begin(NS, false);
     prefs.putUInt(KEY_RXBW, dhz);
+    prefs.end();
+}
+
+uint8_t ctrl_seq() { return cached_ctrl_seq; }
+
+void set_ctrl_seq(uint8_t seq) {
+    if (seq == cached_ctrl_seq) return;     // avoid a needless flash write
+    cached_ctrl_seq = seq;
+    prefs.begin(NS, false);
+    prefs.putUChar(KEY_CSEQ, seq);
     prefs.end();
 }
 

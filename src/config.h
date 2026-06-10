@@ -83,6 +83,14 @@ void set_lna(bool on);
 float rx_bw_khz();
 void  set_rx_bw_khz(float khz);
 
+// Instructor remote-control sequence counter (the seq stamped on control packets,
+// uint8 wrapping mod 256). Persisted so an instructor reboot does NOT restart at
+// 0 and collide with a target fox's still-remembered last_seq (which would make
+// the next command look like a duplicate and be silently dropped). Loaded into
+// g_ctrl_seq at boot (main.cpp) and written back each time a command is staged.
+uint8_t ctrl_seq();
+void    set_ctrl_seq(uint8_t seq);
+
 // Compile-time platform name (heltec-v4 / wio-tracker-l1 / ...), ALWAYS correct
 // for the firmware variant. The Heltec V4 sub-revision (V4.2 GC1109 vs V4.3
 // KCT8103L) is NOT pinned here — it is auto-detected from the FEM strap at boot
