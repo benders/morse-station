@@ -49,18 +49,30 @@ constexpr float    RX_BW_KHZ     = 23.4f;   // boot default; runtime in s_rx_bw_
 float              s_rx_bw_khz   = RX_BW_KHZ;
 constexpr int      TX_POWER_DBM  = 2;       // low power, 15.249-ish
 constexpr int      PREAMBLE_BITS = 16;
+// Per-board SX1262 reference (DIO3-driven TCXO supply voltage) and power-supply
+// mode (useRegulatorLDO: true = LDO only, false = DC-DC) passed straight into
+// beginFSK(). Getting TCXO_V wrong does NOT fail init — the chip still keys a
+// carrier off the underpowered/over-driven TCXO, but it drifts. The Cardputer
+// taught us that the hard way (see below).
 #if defined(DEVICE_HELTEC_V4) || defined(DEVICE_HELTEC_V3)
 // Heltec V4 and V3 both use a 1.8 V TCXO on the on-board SX1262.
 constexpr float    TCXO_V        = 1.8f;
+constexpr bool     USE_LDO       = false;
 #elif defined(DEVICE_CARDPUTER_ADV)
-// VERIFY ON HW: Cap LoRa-1262. If beginFSK() fails (RADIOLIB_ERR_SPI_CMD_*),
-// the module likely uses a plain crystal — set this to 0.0f.
-constexpr float    TCXO_V        = 1.8f;
+// Cap LoRa-1262 (removable module). The TCXO is 3.0 V, NOT 1.8 V — confirmed by
+// M5Stack's authoritative Arduino example, which calls radio.begin(..., 3.0,
+// true) (docs.m5stack.com/en/cap/Cap_LoRa-1262 -> Arduino Quick Start). With the
+// wrong 1.8 V the SDR saw the carrier wander ~50 kHz with kHz jitter and ~35 dB
+// SNR (docs/frequency-drift.md); TCXO_V=0 (plain crystal) killed init outright,
+// proving a real TCXO is present. 3.0 V + LDO is the vendor-blessed config.
+constexpr float    TCXO_V        = 3.0f;
+constexpr bool     USE_LDO       = true;
 #elif defined(DEVICE_RAK4631) || defined(DEVICE_WIO_TRACKER_L1)
 // RAK4631 WisCore module: SX1262's DIO3 drives a 1.8 V TCXO (§2 of the port
 // plan / reference/rak4631). The Wio Tracker L1 Pro's Wio-SX1262 module uses
 // the same 1.8 V TCXO (confirmed in W1 / reference/wio-tracker-l1-pro).
 constexpr float    TCXO_V        = 1.8f;
+constexpr bool     USE_LDO       = false;
 #endif
 
 // Sync word identifying our net (2 bytes).
@@ -178,7 +190,7 @@ bool init(int& err) {
     radioSpi.begin(PIN_SCK, PIN_MISO, PIN_MOSI, PIN_NSS);
 #endif
     err = chip.beginFSK(FREQ_MHZ, BITRATE_KBPS, FREQ_DEV_KHZ, RX_BW_KHZ,
-                        TX_POWER_DBM, PREAMBLE_BITS, TCXO_V, false);
+                        TX_POWER_DBM, PREAMBLE_BITS, TCXO_V, USE_LDO);
     if (err != RADIOLIB_ERR_NONE) return false;
 
     // DIO2 drives the TX/RX antenna switch. On the Heltec V4 that's the FEM CTX

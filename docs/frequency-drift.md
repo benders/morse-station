@@ -35,35 +35,41 @@ dongle: the Nooelec's ~0.5 ppm is ≈ −450 Hz at 905 MHz, right in this range.
 trust the **absolute** numbers, calibrate the dongle once against a known
 reference and pass the correction with `--ppm`.
 
-## Outlier: Cardputer ADV (Cap LoRa-1262) has no usable TCXO (2026-06-10)
+## Fixed: Cardputer ADV (Cap LoRa-1262) TCXO is 3.0 V, not 1.8 V (2026-06-10)
 
-The Cardputer ADV (station 73) is the exception. Its **Cap LoRa-1262** is a
-removable module, and unlike every on-board SX1262 above it does **not** present
-a stable reference. Measured with the same `txcw` + `sdr_drift.py` rig:
+The Cardputer ADV (station 73) was the one bad actor. Its **Cap LoRa-1262** is a
+removable module, and at the firmware's original `TCXO_V = 1.8f` its carrier did
+**not** hold a stable reference. Measured with the same `txcw` + `sdr_drift.py`
+rig, back-to-back 4 s reads landed at +6.6, −31.9, −31.9, −31.9 kHz, etc.:
 
-| Station | Board | Carrier behaviour | SNR | Jitter |
-|---------|-------|-------------------|-----|--------|
-| 73 | cardputer-adv (Cap LoRa-1262) | wanders **+7 to −47 ppm** (+6.6 kHz to −43 kHz) between reads | ~35 dB | up to 25 kHz |
+| Station | Board | TCXO_V | Carrier behaviour | SNR | Jitter |
+|---------|-------|--------|-------------------|-----|--------|
+| 73 | cardputer-adv | **1.8 V** | wanders +7 to −47 ppm (~50 kHz range) | ~35 dB | up to 25 kHz |
+| 73 | cardputer-adv | **3.0 V** | stable **−0.89 ppm** (−807 Hz), ~7 Hz spread | 89 dB | 6–120 (avg'd) |
 
-Back-to-back 4 s reads landed at +6.6, −31.9, −31.9, −31.9 kHz, etc. — a ~50 kHz
-range — versus the <1 ppm, <100 Hz-jitter, 79–90 dB-SNR carriers of every TCXO
-board. The dongle is not at fault: the 42/43 anchors held their known values in
-the very same runs.
+The dongle was never at fault: the 42/43 anchors held their known values in the
+very same runs.
 
-The firmware assumes a 1.8 V TCXO for this board (`TCXO_V = 1.8f` in
-`src/radio.cpp`, flagged `// VERIFY ON HW: Cap LoRa-1262`). The module almost
-certainly has a bare/uncompensated crystal instead, so commanding DIO3-TCXO mode
-leaves an unstable, temperature-wandering XOSC. **Untested fix:** set `TCXO_V=0`
-for `DEVICE_CARDPUTER_ADV` (use the crystal directly) and re-measure.
+**Root cause + fix.** The module's SX1262 TCXO runs at **3.0 V**, not 1.8 V —
+confirmed by M5Stack's authoritative Arduino example, which calls
+`radio.begin(..., 3.0, true)` (docs.m5stack.com/en/cap/Cap_LoRa-1262 → Arduino
+Quick Start; the 9th/10th args are `tcxoVoltage` and `useRegulatorLDO`). At the
+wrong 1.8 V the TCXO was underpowered and wandered. A control test at `TCXO_V=0`
+(plain-crystal mode, no DIO3 supply) killed init entirely, proving a real TCXO is
+present. `src/radio.cpp` now sets `TCXO_V = 3.0f` and `USE_LDO = true` for
+`DEVICE_CARDPUTER_ADV` only; after reflashing, station 73's carrier sits at
+−0.89 ppm — indistinguishable from the on-board-TCXO Heltec/RAK/Wio boards and
+well inside the 23.4 kHz RX filter.
 
-**Consequence:** against the narrowed 23.4 kHz RX filter (below), the Cardputer's
-carrier spends much of its time *outside* a receiver's passband, so a Cardputer
-fox/instructor is intermittently off-channel. It still works — the instructor
-remote-control test (73 → fox 42, hunters 43/115) delivered the command, got its
+**Why it mattered:** against the narrowed 23.4 kHz RX filter (below), the
+1.8 V-wandering carrier spent much of its time *outside* a receiver's passband, so
+a Cardputer fox/instructor was intermittently off-channel. It still worked — the
+instructor remote-control test (73 → fox 42, hunters 43/115) delivered the
+command, got its
 ACK, and both hunters copied the new message — but took ~18 s because the
-instructor had to fire many bursts before one landed in-filter. Widening the
-receiving fox (e.g. `rxbw 117`) is the interim workaround until the TCXO config
-is fixed.
+instructor had to fire many bursts before one landed in-filter. With the 3.0 V
+fix that delivery is now prompt; widening the receiving fox (e.g. `rxbw 117`) is
+no longer needed for a Cardputer instructor.
 
 ## Consequence: RX bandwidth narrowed (78.2 → 23.4 kHz)
 

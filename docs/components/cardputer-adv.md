@@ -89,11 +89,16 @@ Clearing + redrawing the panel directly each ~10 Hz frame flickered. Fixed by
 rendering into a full-frame `M5Canvas` back buffer and `pushSprite`-ing it once
 per frame. Stable on HW (ran ~100 s, heap flat at 275 KB, zero reboots).
 
-### TCXO is 1.8 V (confirmed)
+### TCXO is 3.0 V + LDO (not 1.8 V — corrected 2026-06-10)
 
-The Cap LoRa-1262's SX1262 uses a 1.8 V TCXO, not a plain crystal — `beginFSK()`
-succeeds and the cap decoded real off-air Morse as a hunter. (If a different cap
-fails init, suspect this first — see `sx1262.md`.)
+The Cap LoRa-1262's SX1262 uses a **3.0 V TCXO** and the **LDO** regulator —
+confirmed by M5Stack's authoritative Arduino example, which calls
+`radio.begin(..., 3.0, true)` (the 9th/10th args are `tcxoVoltage` and
+`useRegulatorLDO`). `beginFSK()` *succeeds* at any non-zero TCXO_V (the cap even
+decoded off-air Morse at the earlier wrong 1.8 V), so init success does NOT
+confirm the voltage — only an SDR carrier check does: at 1.8 V the carrier
+wandered ~50 kHz; at 3.0 V it sits at −0.89 ppm. `TCXO_V=0` (plain crystal) kills
+init, proving a real TCXO is present. See `docs/frequency-drift.md`.
 
 ### No FEM → +22 dBm is the real ceiling
 
