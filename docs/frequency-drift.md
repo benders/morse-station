@@ -35,6 +35,43 @@ dongle: the Nooelec's ~0.5 ppm is ≈ −450 Hz at 905 MHz, right in this range.
 trust the **absolute** numbers, calibrate the dongle once against a known
 reference and pass the correction with `--ppm`.
 
+## Consequence: RX bandwidth narrowed (78.2 → 23.4 kHz)
+
+This drift measurement directly settled a long-standing RX-filter question. The
+SX1262 FSK receive filter was set to **78.2 kHz** — far wider than the ~15 kHz
+Carson signal width (4.8 kbps / 5 kHz dev) — on the theory that board-to-board
+TCXO trims differed by **12–31 kHz (13–34 ppm)**, a figure read off early
+GFSK-*burst* spectra where the apparent offset was really demod/measurement
+error. The clean CW numbers above (**<1 ppm, <~1 kHz** spread) demolish that
+rationale: frequency error consumes ~1% of the old filter margin, and you would
+need ~35 ppm of pairwise drift to reach the 78.2 kHz edge.
+
+A round-robin link test (`scripts/foxhunt_roundrobin.py --rxbw`, all four
+stations, edge keymode, pwr LO, on the bench) confirmed it on-air:
+
+| RX BW    | worst-pair loss | 26↔115 (RAK↔Wio) |
+|----------|-----------------|------------------|
+| 78.2 kHz | 2.9 %           | 0–1 %            |
+| 39.0 kHz | 2.9 %           | 1 %              |
+| 23.4 kHz | 2.9 %           | 1 %              |
+| 19.5 kHz | 2.9 %           | 0 %              |
+
+All four are statistically identical (1–3 packets out of ~100). In particular
+the RAK↔Wio link (26↔115) — which an earlier `src/radio.cpp` comment claimed was
+"100 % deaf" at 39 kHz — passes cleanly at every width. As the filter narrows the
+hunter RSSI medians drop ~2–3 dB, consistent with the shrinking noise floor (the
+predicted ~3 dB/octave sensitivity gain).
+
+The firmware default is now **23.4 kHz** (~Carson 15 kHz + ~9.5 ppm cushion,
+~5 dB more sensitivity than 78.2). It is runtime-settable and NVS-persisted via
+the `rxbw <khz>` console command (snaps to the nearest SX1262 step; shown in
+`show`), so any unit can be re-widened in seconds if a real offset ever appears.
+
+**Caveat:** the round-robin above is a *strong-signal* bench test (RSSI −14 to
+−67 dBm). It proves narrowing does no harm and refutes the drift rationale, but
+the weak-signal **range** gain from the narrower filter still needs a field
+distance test.
+
 ## Reproducing
 
 On the host with the dongle (replace host as needed):
@@ -66,6 +103,17 @@ txcw off       # stop early
 
 `txcw` uses the current `pwr`/`pa` setting; keep power low and bursts short
 (a pure carrier is a continuous emission under FCC §15.249).
+
+To re-run the RX-bandwidth A/B over USB (sets the filter on every station, sweeps
+fox turns, prints the loss/RSSI matrix per width):
+
+```sh
+~/.platformio/penv/bin/python scripts/foxhunt_roundrobin.py \
+    --stations 42,43,115,26 --duration 30 --pwr 0 --rxbw 23.4
+```
+
+Or set one station's filter live from any console: `rxbw 23.4` (snaps to the
+nearest SX1262 step, persists), `rxbw` / `rxbw show` to report.
 
 See `scripts/sdr_drift.py` for the SDR side and `radio::tx_cw` in
 `src/radio.cpp` for the firmware side.
