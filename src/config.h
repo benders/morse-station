@@ -75,6 +75,14 @@ void set_muted(bool muted);
 bool lna();
 void set_lna(bool on);
 
+// FSK receive-bandwidth filter (SX1262 DSB), in kHz. Persisted so a unit
+// provisioned to a narrower filter keeps it across power cycles. Applied at boot
+// (main.cpp) via radio::set_rx_bw() and changed live by the `rxbw` console
+// command, which writes back the snapped value. Default 23.4 kHz (narrowed from
+// 78.2 — see radio.cpp RX_BW_KHZ). Stored as deci-kHz (the kv store has no float).
+float rx_bw_khz();
+void  set_rx_bw_khz(float khz);
+
 // Compile-time platform name (heltec-v4 / wio-tracker-l1 / ...), ALWAYS correct
 // for the firmware variant. The Heltec V4 sub-revision (V4.2 GC1109 vs V4.3
 // KCT8103L) is NOT pinned here — it is auto-detected from the FEM strap at boot

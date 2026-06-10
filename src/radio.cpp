@@ -27,16 +27,26 @@ SX1262   chip = new Module(PIN_NSS, PIN_DIO1, PIN_NRST, PIN_BUSY, radioSpi);
 constexpr float    FREQ_MHZ      = 905.0f;
 constexpr float    BITRATE_KBPS  = 4.8f;
 constexpr float    FREQ_DEV_KHZ  = 5.0f;
-// 78.2 kHz, not the ~Carson minimum (~15 kHz for 4.8k/5k dev). The extra width
-// is deliberate frequency-offset headroom: these SX1262 modules' TCXO trims
-// differ enough board-to-board that a relative carrier offset of ~12-31 kHz was
-// measured between the RAK4631 and Wio nRF52 units (~13-34 ppm @ 905 MHz). At
-// the old 39 kHz that offset fell OUTSIDE the RX filter and the RAK->Wio link
-// was 100% deaf at every power level; 78.2 kHz catches it (39 dead / 78 & 156
-// work — bracketed on the bench). Cost is ~3 dB sensitivity vs 39 kHz. Mesh
-// firmwares sidestep this entirely by running wide LoRa (Meshtastic LongFast =
-// 250 kHz), which also tolerates ~25% of BW in offset; narrow FSK does not.
-constexpr float    RX_BW_KHZ     = 78.2f;
+// 23.4 kHz: the ~Carson signal width (~15 kHz for 4.8k/5k dev) plus a generous
+// frequency-offset/temperature cushion (~8.6 kHz, ~9.5 ppm @ 905 MHz). This was
+// 78.2 kHz on the theory that the SX1262 TCXO trims differed by ~12-31 kHz
+// (~13-34 ppm) board-to-board — a figure taken from early GFSK-burst bench
+// readings, where the apparent "offset" was really demod/measurement error. A
+// clean unmodulated-CW measurement over an rtl_tcp SDR (the `txcw` command +
+// scripts/sdr_drift.py, docs/frequency-drift.md) put every unit within <1 ppm
+// (<~1 kHz) of the others, demolishing the headroom rationale. A round-robin
+// link test (scripts/foxhunt_roundrobin.py --rxbw) then confirmed 0-3% loss on
+// every pair at 78.2 / 39.0 / 19.5 kHz alike — including the RAK<->Wio link the
+// old comment claimed was "100% deaf" at 39 kHz. Narrowing buys ~3 dB/octave of
+// sensitivity (78.2->23.4 ~= 5 dB) at no measured link cost on the bench; the
+// field weak-signal range gain is the open item. Runtime-overridable + persisted
+// via the `rxbw` console command (radio::set_rx_bw / config::rx_bw_khz), so a
+// unit can be re-widened in seconds if a real offset ever shows up.
+constexpr float    RX_BW_KHZ     = 23.4f;   // boot default; runtime in s_rx_bw_khz
+// Live RX filter width, settable via radio::set_rx_bw() (the `rxbw` console
+// command) and restored from NVS at boot. Starts at the begin() default so a
+// board with no persisted value matches beginFSK().
+float              s_rx_bw_khz   = RX_BW_KHZ;
 constexpr int      TX_POWER_DBM  = 2;       // low power, 15.249-ish
 constexpr int      PREAMBLE_BITS = 16;
 #if defined(DEVICE_HELTEC_V4) || defined(DEVICE_HELTEC_V3)
@@ -269,6 +279,35 @@ bool lna_on() {
 #else
     return false;
 #endif
+}
+
+// Supported SX1262 GFSK RX bandwidths (kHz, double-sideband) — the same LUT
+// RadioLib's findRxBw() snaps to. We mirror it so set_rx_bw() can report the
+// value actually programmed instead of the raw request (RadioLib keeps it
+// internal). Nearest-by-absolute-difference, matching findRxBw.
+static float snap_rx_bw(float khz) {
+    static const float lut[] = {
+        4.8f, 5.8f, 7.3f, 9.7f, 11.7f, 14.6f, 19.5f, 23.4f, 29.3f, 39.0f,
+        46.9f, 58.6f, 78.2f, 93.8f, 117.3f, 156.2f, 187.2f, 234.3f, 312.0f,
+        373.6f, 467.0f};
+    float best = lut[0];
+    float bd = (khz > best) ? khz - best : best - khz;
+    for (float v : lut) {
+        float d = (khz > v) ? khz - v : v - khz;
+        if (d < bd) { bd = d; best = v; }
+    }
+    return best;
+}
+
+float rx_bw_khz() { return s_rx_bw_khz; }
+
+bool set_rx_bw(float khz) {
+    float snapped = snap_rx_bw(khz);
+    chip.standby();                       // reprogram modulation params off-air
+    int st = chip.setRxBandwidth(snapped);
+    if (st == RADIOLIB_ERR_NONE) s_rx_bw_khz = snapped;
+    start_receive();                      // re-arm RX (FEM back to RX) at new BW
+    return st == RADIOLIB_ERR_NONE;
 }
 
 void start_receive() {

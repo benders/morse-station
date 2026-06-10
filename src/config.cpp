@@ -16,6 +16,8 @@ uint8_t cached_boot_mode = 0;     // last-selected boot mode (Mode enum, 0=Hunte
 uint8_t cached_fox_pwr_idx = 0;   // last-selected fox TX power level (PWR_LEVELS index, 0=LO)
 bool    cached_muted = false;     // sidetone mute (silent node), persisted
 bool    cached_lna   = true;      // V4.3 FEM RX LNA in path (CTX select), persisted
+uint32_t cached_rx_bw_dhz = 234;  // FSK RX bandwidth in deci-kHz (234 = 23.4 kHz),
+                                  // mirrors radio.cpp RX_BW_KHZ default
 uint8_t cached_volume = 8;        // sidetone level in GAIN_Q15/1024 units (8 -> 8192)
 
 // Compile-time platform name — always correct for the firmware variant. This is
@@ -51,6 +53,7 @@ constexpr const char* KEY_BMODE = "boot_mode";
 constexpr const char* KEY_FPWR  = "fox_pwr_idx";
 constexpr const char* KEY_MUTE  = "muted";
 constexpr const char* KEY_LNA   = "lna";
+constexpr const char* KEY_RXBW  = "rx_bw_dhz";
 constexpr const char* KEY_VOL   = "volume";
 
 uint8_t clamp_u8(int v, uint8_t lo, uint8_t hi) {
@@ -98,6 +101,9 @@ void begin() {
 
     if (prefs.isKey(KEY_LNA))
         cached_lna = prefs.getBool(KEY_LNA, cached_lna);
+
+    if (prefs.isKey(KEY_RXBW))
+        cached_rx_bw_dhz = prefs.getUInt(KEY_RXBW, cached_rx_bw_dhz);
 
     if (prefs.isKey(KEY_VOL))
         cached_volume = clamp_u8(prefs.getUChar(KEY_VOL, cached_volume), VOL_MIN, VOL_MAX);
@@ -215,6 +221,17 @@ void set_lna(bool on) {
     cached_lna = on;
     prefs.begin(NS, false);
     prefs.putBool(KEY_LNA, on);
+    prefs.end();
+}
+
+float rx_bw_khz() { return cached_rx_bw_dhz / 10.0f; }
+
+void set_rx_bw_khz(float khz) {
+    uint32_t dhz = (uint32_t)(khz * 10.0f + 0.5f);
+    if (dhz == cached_rx_bw_dhz) return;    // avoid a needless flash write
+    cached_rx_bw_dhz = dhz;
+    prefs.begin(NS, false);
+    prefs.putUInt(KEY_RXBW, dhz);
     prefs.end();
 }
 

@@ -121,12 +121,20 @@ def set_mode_reboot(station_id: int, port: str, mode: int) -> str:
     return wait_for_station(station_id)
 
 
-def configure(station_id: int, port: str, msg: str, wpm: int, pwr: int) -> None:
-    """Persist edge keymode + identical traffic on a station (no reboot)."""
+def configure(station_id: int, port: str, msg: str, wpm: int, pwr: int,
+              rxbw: float | None = None) -> None:
+    """Persist edge keymode + identical traffic on a station (no reboot).
+
+    When `rxbw` is given, also set the FSK receive bandwidth (kHz) so the whole
+    set runs the same filter; the firmware snaps to the nearest supported step
+    and echoes the applied value back (printed here for the run record)."""
     s = open_port(port)
     try:
         time.sleep(0.4)
-        for c in (f"keymode edge", f"wpm {wpm}", f"msg {msg}", f"pwr {pwr}"):
+        cmds = [f"keymode edge", f"wpm {wpm}", f"msg {msg}", f"pwr {pwr}"]
+        if rxbw is not None:
+            cmds.append(f"rxbw {rxbw}")
+        for c in cmds:
             print(f"    [{station_id}] {c}: {cmd(s, c).strip()}")
     finally:
         s.close()
@@ -246,6 +254,9 @@ def main() -> int:
     ap.add_argument("--pwr", type=int, default=0,
                     help="fox TX power index 0..3 (default 0=LO)")
     ap.add_argument("--wpm", type=int, default=13)
+    ap.add_argument("--rxbw", type=float, default=None,
+                    help="set FSK RX bandwidth (kHz) on every station before the "
+                         "run; firmware snaps to nearest step (default: leave as-is)")
     ap.add_argument("--msg", default="PARIS PARIS PARIS")
     ap.add_argument("--csv", default=None,
                     help="raw per-packet CSV path (default foxhunt_<ts>.csv)")
@@ -263,9 +274,10 @@ def main() -> int:
         return 1
     print("  " + ", ".join(f"{i}->{idmap[i].rsplit('/', 1)[-1]}" for i in ids))
 
-    print("\n# configuring edge keymode + identical traffic ...")
+    rxbw_note = f", rxbw {args.rxbw} kHz" if args.rxbw is not None else ""
+    print(f"\n# configuring edge keymode + identical traffic{rxbw_note} ...")
     for sid in ids:
-        configure(sid, idmap[sid], args.msg, args.wpm, args.pwr)
+        configure(sid, idmap[sid], args.msg, args.wpm, args.pwr, args.rxbw)
 
     rows: list = []
     try:
@@ -295,6 +307,8 @@ def main() -> int:
                     "lvl", "rssi_dbm"])
         w.writerows(sorted(rows, key=lambda r: r[0]))
     print(f"\n# raw CSV: {csv_path}  ({len(rows)} rows)")
+    if args.rxbw is not None:
+        print(f"# RX bandwidth this run: {args.rxbw} kHz (firmware-snapped)")
 
     summarize(rows, ids)
     return 0

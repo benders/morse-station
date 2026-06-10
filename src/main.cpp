@@ -380,6 +380,31 @@ static bool handle_setup_command(const char* line, Print& out) {
             out.printf("  lna      = %s (FEM CTX; RX path; V4.3 KCT8103L; persisted)\n",
                        radio::lna_on() ? "on" : "off");
         }
+    } else if (!strcmp(line, "rxbw") || !strncmp(line, "rxbw ", 5)) {
+        // FSK receive-bandwidth filter (SX1262 DSB). `rxbw <khz>` sets it live and
+        // persists; `rxbw` / `rxbw show` just reports. RadioLib snaps the request
+        // to the nearest supported step (4.8..467 kHz) and `show`/this line report
+        // the value actually programmed. The 78.2 kHz default is wide for
+        // frequency-offset headroom, but the CW/SDR drift test put every unit
+        // <1 ppm (~<1 kHz) apart, so against the ~15 kHz Carson signal width there
+        // is room to narrow for ~3 dB/octave more sensitivity. Narrow past the
+        // signal width and you start clipping edges — A/B with the round-robin.
+        const char* arg = line + 4;
+        while (*arg == ' ') arg++;
+        if (*arg && strcmp(arg, "show")) {
+            float khz = atof(arg);
+            if (khz < 4.0f || khz > 467.0f) {
+                out.println("  ? rxbw <4.8..467 kHz>");
+                return false;
+            }
+            if (!radio::set_rx_bw(khz)) {       // snaps + reprograms the modem
+                out.println("  rxbw: set failed (wrong modem?)");
+                return false;
+            }
+            config::set_rx_bw_khz(radio::rx_bw_khz());   // persist the snapped value
+        }
+        out.printf("  rxbw     = %.1f kHz (FSK RX filter; persisted)\n",
+                   radio::rx_bw_khz());
     } else if (!strcmp(line, "txcw") || !strncmp(line, "txcw ", 5)) {
         // Continuous-wave test carrier for SDR frequency-drift measurement. Emits
         // an UNMODULATED carrier at radio::frequency_mhz() so an SDR (e.g. an
@@ -558,6 +583,7 @@ static bool handle_setup_command(const char* line, Print& out) {
                    board_model_str(), platform::chip_id_str(), platform::soc_str());
         out.printf("  build    = %s\n", GIT_REV);
         out.printf("  debug    = %s\n", g_debug ? "on" : "off");
+        out.printf("  rxbw     = %.1f kHz\n", radio::rx_bw_khz());
         if (radio::has_fem()) {
             out.printf("  fem      = %s  pa %s  lna %s\n", radio::fem_name(),
                        g_pa_on ? "on" : "off", radio::lna_on() ? "on" : "off");
@@ -593,7 +619,8 @@ static bool handle_setup_command(const char* line, Print& out) {
         return true;
     } else {
         out.println("  ? call <SIGN> | msg <text> | id <n> | wpm <n> | "
-                    "farns <n> | pwr <0..3> | pa <on|off> | lna <on|off> | mode <0..2> | "
+                    "farns <n> | pwr <0..3> | pa <on|off> | lna <on|off> | "
+                    "rxbw <khz> | mode <0..2> | "
                     "vol <1..32> | mute [on|off] | keymode <compat|edge> | "
                     "model | debug [on|off] | show | "
                     "bootlog [clear] | reboot | done");
@@ -766,6 +793,7 @@ void setup() {
         while (true) delay(1000);
     }
     radio::set_lna(config::lna());   // restore persisted V4.3 RX LNA select (no-op w/o FEM)
+    radio::set_rx_bw(config::rx_bw_khz());   // restore persisted FSK RX bandwidth
 
     switch (mode) {
         case MODE_FOX:

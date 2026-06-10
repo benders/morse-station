@@ -52,6 +52,18 @@ void set_pa(bool on);
 void set_lna(bool on);
 bool lna_on();
 
+// Runtime FSK receive-bandwidth (SX1262 DSB filter, kHz). set_rx_bw() snaps the
+// request to the nearest supported step (4.8..467 kHz, RadioLib findRxBw),
+// reprograms the modem, and re-arms receive; rx_bw_khz() returns the value that
+// is actually programmed (post-snap). Applies to every board (not FEM-specific).
+// Persistence lives in config (config::set_rx_bw_khz); the `rxbw` console command
+// writes it and boot restores via radio::set_rx_bw(config::rx_bw_khz()). Narrower
+// = ~3 dB/octave more sensitivity but less frequency-offset headroom; the default
+// 78.2 kHz is wide because early bench measurements suggested large TCXO offsets,
+// since refuted by the CW/SDR test (<1 ppm). Returns true on success.
+bool  set_rx_bw(float khz);
+float rx_bw_khz();
+
 // Test aid for SDR frequency-drift measurement: emit an unmodulated continuous
 // wave (CW) carrier at the operating frequency (radio::frequency_mhz()), or stop
 // it. on=true drives the FEM into TX config and issues the SX1262
