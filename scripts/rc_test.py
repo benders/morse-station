@@ -12,8 +12,8 @@ PORTS = {
     "HUNT43":  "/dev/cu.usbmodem21301",
     "HUNT115": "/dev/cu.usbmodem22301",
 }
-NEW_MSG = "RC DE 73"
-RUN_S   = 60.0
+NEW_MSG = "ACK OK 73"
+RUN_S   = 35.0
 
 def ts():
     return datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
