@@ -239,9 +239,14 @@ status board live in `wio-tracker-port.md`.
       `heltec_v3` — 625,521 B flash / 34,748 B RAM (SUCCESS).
       `heltec_v4` — 625,781 B flash / 34,684 B RAM (SUCCESS, matches baseline).
       `cardputer_adv` — 761,173 B flash / 34,920 B RAM (SUCCESS, matches baseline).
-      **NOTE: V3 hardware validation is still pending (no V3 unit available).**
-      Flash with `scripts/devices.sh` when a unit is in-hand and confirm boot
-      banner, battery reading, sidetone, radio RX/TX.
+- [x] **P1.6** V3 **hardware-validated** (station 38, 2026-06-11). The one fix a
+      real unit needed: the V3's USB-C is a CP2102/UART0 bridge (not native USB
+      like the V4), so `[env:heltec_v3]` overrides `-DARDUINO_USB_CDC_ON_BOOT=0`
+      to route the console to UART0. Confirmed on hardware: serial console + BLE,
+      `pwr 0..3`, `txcw` carrier at **−0.53 ppm** (stable TCXO, no FEM), watchdog
+      (`bootlog reason=6(TASK_WDT)`), battery active-LOW gate (−1/no-cell, none
+      attached). Station tools updated for the CP2102 port (`scripts/station_serial.py`).
+      See `docs/components/heltec-v3.md`.
 
 ---
 

@@ -71,6 +71,28 @@ instructor had to fire many bursts before one landed in-filter. With the 3.0 V
 fix that delivery is now prompt; widening the receiving fox (e.g. `rxbw 117`) is
 no longer needed for a Cardputer instructor.
 
+## Added: Heltec V3 (station 38, 2026-06-11)
+
+A new **Heltec V3** (ESP32-S3, on-board SX1262, no FEM) was brought to parity and
+measured against an `rtl_tcp` dongle on `whitebox.lan`, `txcw` keyed over its USB
+serial console:
+
+| Station | Board | SoC | Carrier (MHz) | Drift | ppm | SNR |
+|---------|-------|-----|---------------|-------|-----|-----|
+| 38 | heltec-v3 | ESP32-S3 | 904.999519 | −481 Hz | −0.532 | 92 dB |
+
+A stable on-board TCXO (1.8 V, like the V4 — cross-checked against MeshCore
+`variants/heltec_v3`), squarely in the healthy <1 ppm population, nothing like
+the Cardputer's pre-fix wander. Numbers are *not* folded into the 2026-06-09
+table above: different dongle host and keyed over USB rather than BLE, so the
+common-mode reference offset isn't directly comparable. The relative figure is
+consistent with the others to well within the dongle's own error.
+
+The V3's USB port is a **CP2102 bridge** (`/dev/cu.usbserial-*`), not native USB,
+so it resets on open and the console is silent unless it does; `sdr_drift.py`
+(and the other station tools) handle this via `scripts/station_serial.py`, so
+`--station 38` / `--stations …,38` work the same as for a native-USB board.
+
 ## Consequence: RX bandwidth narrowed (78.2 → 23.4 kHz)
 
 This drift measurement directly settled a long-standing RX-filter question. The

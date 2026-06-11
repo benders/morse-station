@@ -70,9 +70,10 @@ cycles). To re-pick a mode, reset the board (the menu runs again at boot).
   (provisioning and live control over all three transports).
 - [`docs/components/`](docs/components/) — per-component lessons learned:
   [Heltec V4](docs/components/heltec-v4.md),
+  [Heltec V3](docs/components/heltec-v3.md),
   [Cardputer ADV](docs/components/cardputer-adv.md),
   [SX1262](docs/components/sx1262.md),
-  [PAM8403](docs/components/pam8403.md).
+  [MAX98357A](docs/components/max98357a.md).
 - [`docs/debug-heltec-v4.md`](docs/debug-heltec-v4.md) — capturing panic
   backtraces over UART/JTAG.
 - [`TODO.md`](TODO.md) — open work · [`DONE.md`](DONE.md) — completed work.
