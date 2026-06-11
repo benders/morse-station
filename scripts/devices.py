@@ -81,6 +81,12 @@ def parse_show(text: str) -> dict:
     mode = re.search(r"\bmode=(\w+)", text)
     if mode:
         out["mode"] = mode.group(1)
+    # The `model` line carries the real MCU id: `... chip=F0:9E:9E:76:7B:D8 ...`.
+    # This is the only reliable per-chip identifier for a V3, whose USB port is a
+    # CP2102 bridge with its own (often shared) serial number — see usb_mode.
+    chip = re.search(r"\bchip=([0-9A-Fa-f:]+)", text)
+    if chip:
+        out["chip"] = chip.group(1).upper()
     return out
 
 
@@ -269,6 +275,7 @@ def read_station_live(port: str, timeout: float = 3.0) -> dict:
         return info
     try:
         s.reset_input_buffer()
+        bridge = is_uart_bridge(port)   # V3: wait for the chip= line, not just id=
         buf = ""
         last_send = 0.0
         deadline = time.time() + timeout
@@ -285,7 +292,12 @@ def read_station_live(port: str, timeout: float = 3.0) -> dict:
                 parsed = parse_show(buf)
                 if parsed:
                     info.update(parsed)
-                    break
+                    # On a CP2102 bridge the ioreg serial is the UART chip, not
+                    # the MCU, so keep reading until `show`'s chip= line lands and
+                    # the caller can use the real ESP32 MAC. info already has id,
+                    # so we still return cleanly if older firmware omits chip=.
+                    if not bridge or "chip" in info:
+                        break
     finally:
         s.close()
     return info
@@ -420,10 +432,16 @@ def usb_mode() -> int:
     rows = []
     for port in ports:
         chip = chips.get(port, "?")
-        default_id = mac_default_id(chip) if MAC_RE.match(chip) else None
         how = "reboots on connect" if is_uart_bridge(port) else "live, no reset"
         print(f"# reading {port} ({how}) ...", file=sys.stderr)
         info = read_station_live(port)
+        # A CP2102 bridge (V3) reports the UART's serial (e.g. "0001") — shared
+        # across V3 units and unrelated to the MCU. Prefer the real ESP32 chip
+        # MAC the firmware prints in `show`: unique, reflash-stable, and it yields
+        # a proper MAC-default id.
+        if is_uart_bridge(port) and info.get("chip"):
+            chip = info["chip"]
+        default_id = mac_default_id(chip) if MAC_RE.match(chip) else None
         station = info.get("id", default_id)
         note = _classify(station, default_id, "id" in info)
         rows.append((port, chip,
@@ -462,6 +480,11 @@ def boot_mode(no_flash: bool) -> int:
 
         print(f"# reading station id on {port} (resetting) ...", file=sys.stderr)
         info = read_station(port)
+        # Prefer the firmware-reported ESP32 chip MAC over a CP2102 bridge serial
+        # (see usb_mode). Opportunistic: only if `show` reached the model line.
+        if is_uart_bridge(port) and info.get("chip"):
+            chip = info["chip"]
+            default_id = mac_default_id(chip) if MAC_RE.match(chip) else None
         got = "id" in info
         station = info.get("id", default_id)
         note = (_classify(station, default_id, True) if got
