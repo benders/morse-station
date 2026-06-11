@@ -9,6 +9,7 @@
 #
 # Usage: watchdog_test.py <port> [--timeout-budget 25]
 import sys, time, os, glob, serial
+from station_serial import open_console, is_uart_bridge
 
 port = sys.argv[1]
 WDT_CAUSES = ("TASK_WDT", "WATCHDOG")   # ESP32 / nRF52 labels from reset_reason_label()
@@ -46,26 +47,33 @@ def open_retry(path, tries=30, gap=0.5):
 
 
 print(f"## watchdog test on {port}")
+# Heltec V3 (usbserial/CP2102): the USB device is the bridge, not the ESP32, so
+# the port does NOT drop when the MCU reboots — AND closing it would toggle
+# DTR/RTS and reset the board ourselves, destroying the watchdog event before it
+# fires. So on a bridge we hold ONE handle open straight through the reboot;
+# native-USB boards drop/re-enumerate and are reconnected in phase 2 as before.
+bridge = is_uart_bridge(port)
 
 # --- phase 0: clear the bootlog so we read a fresh post-reboot reason ---
-s = serial.Serial(port, 115200, timeout=0.1)
-s.reset_input_buffer()
+s = open_console(port)   # boots a usbserial board; opens instantly on usbmodem
 s.write(b"bootlog clear\r\n"); s.flush()
 drain(s, 1.5)
 
 # --- phase 1: stall, watch it wedge and reboot ---
-# NB: a busy-spinning loop() starves the USB-CDC task, so the host may see the
-# port drop a few seconds BEFORE the 8 s watchdog actually fires. We therefore
-# ignore the drop and just wait a fixed budget (> watchdog timeout) before
-# reconnecting — racing the reconnect against the drop reads bootlog too early.
+# NB (native USB): a busy-spinning loop() starves the USB-CDC task, so the host
+# may see the port drop a few seconds BEFORE the 8 s watchdog actually fires. We
+# therefore ignore the drop and just wait a fixed budget (> watchdog timeout)
+# before reconnecting — racing the reconnect against the drop reads bootlog too
+# early. On a bridge the port stays put and we never close it here.
 print(">> sending `stall` (expect ~8s wedge then a watchdog reboot)")
 t_stall = time.time()
 s.write(b"stall\r\n"); s.flush()
 out = drain(s, 4, echo_prefix="   ")   # just long enough to catch the ack line
-try:
-    s.close()
-except Exception:
-    pass
+if not bridge:
+    try:
+        s.close()
+    except Exception:
+        pass
 
 if "# stalling" not in out:
     print("FAIL: device never acknowledged `stall` (old firmware? no watchdog cmd)")
@@ -74,27 +82,45 @@ if "watchdog did NOT fire" in out:
     print("FAIL: stall ran to completion — watchdog never fired")
     sys.exit(1)
 
-# --- phase 2: wait past the watchdog timeout, then poll bootlog until the node
+# --- phase 2: wait past the watchdog timeout, then read bootlog once the node
 # has finished rebooting (boot can take ~10s+ on the Cardputer: splash + on-device
-# keyboard window + 5s menu idle) and answers the console again. ---
+# keyboard window + 5s menu idle). ---
 WAIT_S = 12
 print(f">> waiting {WAIT_S}s for the watchdog to fire and the node to reboot ...")
 time.sleep(WAIT_S)
 
 log = ""
-hit = False
-for attempt in range(12):          # ~ up to 36s of post-reboot boot slack
-    s = open_retry(port)
-    if s is None:
-        print(f"FAIL: port {port} did not re-appear after reboot")
-        sys.exit(1)
-    s.reset_input_buffer()
-    s.write(b"bootlog\r\n"); s.flush()
-    log = drain(s, 3.0)
-    s.close()
-    if "reason=" in log or any(c in log for c in WDT_CAUSES):
-        break                      # device is up and answered the console
-    time.sleep(2.0)                # still booting (menu/splash) — retry
+if bridge:
+    # The same handle survived the MCU reboot. Flush the ESP-ROM boot banner,
+    # then ask for the bootlog; retry a few times in case boot is still finishing.
+    for attempt in range(6):
+        drain(s, 1.0)                  # absorb boot-banner chatter
+        try:
+            s.reset_input_buffer()
+            s.write(b"bootlog\r\n"); s.flush()
+        except (serial.SerialException, OSError):
+            break
+        log = drain(s, 3.0)
+        if "reason=" in log or any(c in log for c in WDT_CAUSES):
+            break
+        time.sleep(2.0)
+    try:
+        s.close()
+    except Exception:
+        pass
+else:
+    for attempt in range(12):          # ~ up to 36s of post-reboot boot slack
+        s = open_retry(port)
+        if s is None:
+            print(f"FAIL: port {port} did not re-appear after reboot")
+            sys.exit(1)
+        s.reset_input_buffer()
+        s.write(b"bootlog\r\n"); s.flush()
+        log = drain(s, 3.0)
+        s.close()
+        if "reason=" in log or any(c in log for c in WDT_CAUSES):
+            break                      # device is up and answered the console
+        time.sleep(2.0)                # still booting (menu/splash) — retry
 
 for ln in log.splitlines():
     if ln.strip():

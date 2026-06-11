@@ -56,6 +56,8 @@ import time
 
 import serial  # provided by the PlatformIO venv
 
+from station_serial import usb_ports, open_console, is_uart_bridge
+
 ESPTOOL = os.path.expanduser("~/.platformio/packages/tool-esptoolpy/esptool.py")
 MAC_RE = re.compile(r"^[0-9A-F]{2}(:[0-9A-F]{2}){5}$")
 
@@ -124,7 +126,7 @@ def port_chip_map() -> dict[str, str]:
                 stack.pop()
             stack.append((indent, chip))
             continue
-        c = re.search(r'"IOCalloutDevice" = "(/dev/cu\.usbmodem[^"]+)"', line)
+        c = re.search(r'"IOCalloutDevice" = "(/dev/cu\.(?:usbmodem|usbserial)[^"]+)"', line)
         if c:
             owner = None
             for ind, chip in stack:                   # deepest ancestor wins
@@ -162,11 +164,16 @@ def pulse_reset(s: serial.Serial) -> None:
 
 
 def wait_for_port(path: str, timeout: float = 6.0) -> str | None:
-    """The native-USB CDC drops on reset and re-enumerates; wait for it back.
-    Prefer the original name, else any usbmodem that reappears."""
+    """After a reset, wait for the port to be usable again.
+
+    A native-USB CDC drops and re-enumerates (possibly under a new name); a
+    CP2102 bridge (Heltec V3) keeps the same /dev/cu.usbserial* node throughout,
+    because the USB device is the bridge, not the rebooting MCU."""
+    if is_uart_bridge(path):
+        return path                       # bridge node never drops on an MCU reset
     deadline = time.time() + timeout
     while time.time() < deadline:
-        ports = glob.glob("/dev/cu.usbmodem*")
+        ports = glob.glob("/dev/cu.usbmodem*")   # native re-enumerates as usbmodem
         if path in ports:
             return path
         if ports:
@@ -254,7 +261,10 @@ def read_station_live(port: str, timeout: float = 3.0) -> dict:
     """
     info: dict = {}
     try:
-        s = serial.Serial(port, 115200, timeout=0.1)
+        # Native usbmodem boards open without a reset (true "live" read). A V3 /
+        # CP2102 bridge is rebooted by the open and read once it boots — opening
+        # it any other way leaves its console silent. open_console handles both.
+        s = open_console(port)
     except Exception:
         return info
     try:
@@ -402,16 +412,17 @@ def usb_mode() -> int:
     only --boot does.
     """
     chips = port_chip_map()
-    ports = sorted(glob.glob("/dev/cu.usbmodem*"))
+    ports = usb_ports()
     if not ports:
-        print("no /dev/cu.usbmodem* devices found")
+        print("no station devices found (/dev/cu.usbmodem* or /dev/cu.usbserial*)")
         return 1
 
     rows = []
     for port in ports:
         chip = chips.get(port, "?")
         default_id = mac_default_id(chip) if MAC_RE.match(chip) else None
-        print(f"# reading {port} (live, no reset) ...", file=sys.stderr)
+        how = "reboots on connect" if is_uart_bridge(port) else "live, no reset"
+        print(f"# reading {port} ({how}) ...", file=sys.stderr)
         info = read_station_live(port)
         station = info.get("id", default_id)
         note = _classify(station, default_id, "id" in info)
@@ -420,7 +431,8 @@ def usb_mode() -> int:
                      info.get("call", "?"), info.get("mode", "?"),
                      info.get("mute", "?"), note))
 
-    print(f"\n# morse-station devices ({len(rows)} found) — live over USB, no reset")
+    print(f"\n# morse-station devices ({len(rows)} found) — live over USB "
+          "(native: no reset; V3/CP2102: reboots on connect)")
     _print_table(("PORT", "CHIP ID", "STATION", "CALLSIGN", "MODE", "MUTE", "NOTES"), rows)
     return 0
 
@@ -433,9 +445,9 @@ def boot_mode(no_flash: bool) -> int:
     adds the BOARD column from `esptool flash_id`.
     """
     chips = port_chip_map()
-    ports = sorted(glob.glob("/dev/cu.usbmodem*"))
+    ports = usb_ports()
     if not ports:
-        print("no /dev/cu.usbmodem* devices found")
+        print("no station devices found (/dev/cu.usbmodem* or /dev/cu.usbserial*)")
         return 1
 
     rows = []

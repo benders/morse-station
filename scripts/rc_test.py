@@ -4,8 +4,11 @@
 # `msg` change to the fox over GFSK. Prints tagged, timestamped lines so we can
 # see: instructor ACK, fox RX-C (command received), and hunter CH (decoded text
 # of the NEW message keyed by the fox).
-import sys, time, threading, serial, datetime
+import sys, time, threading, datetime
+from station_serial import open_console
 
+# Edit these to match the rig under test. A Heltec V3 station would be a
+# /dev/cu.usbserial-* port — open_console() handles its reset-on-open boot wait.
 PORTS = {
     "FOX42":   "/dev/cu.usbmodem20301",
     "INSTR73": "/dev/cu.usbmodem21101",
@@ -44,10 +47,10 @@ def send(s, cmd):
     s.write((cmd + "\r\n").encode())
     s.flush()
 
-# Open all ports
+# Open all ports (open_console reboots + waits out a V3/usbserial board; native
+# usbmodem boards open instantly).
 for tag, port in PORTS.items():
-    handles[tag] = serial.Serial(port, 115200, timeout=0.15)
-    handles[tag].reset_input_buffer()
+    handles[tag] = open_console(port, timeout=0.15)
 
 deadline = time.time() + RUN_S
 threads = []
