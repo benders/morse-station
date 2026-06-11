@@ -82,19 +82,19 @@ bool charging() {
 // ---- Heltec V4 / V3: divider on PIN_VBAT_ADC, gated by PIN_VBAT_CTRL ------
 //
 // Both boards use a 390k/100k voltage divider on PIN_VBAT_ADC (GPIO1) gated by
-// a MOSFET on PIN_VBAT_CTRL (GPIO37).  The gate polarity differs:
+// a MOSFET on PIN_VBAT_CTRL (GPIO37).  Both gates are active-HIGH:
 //
 //   Heltec V4 (BATT_GATE_ACTIVE_HIGH=1): drive GPIO37 HIGH to connect the
 //     divider, LOW to disconnect.  Verified on hardware: HIGH puts ~0.83 V on
 //     GPIO1 at a 4.05 V cell; LOW reads 0 on both V4.2 and V4.3.
 //
-//   Heltec V3 (BATT_GATE_ACTIVE_HIGH=0): drive GPIO37 LOW to connect the
-//     divider, HIGH to disconnect.  Active-LOW gate — opposite convention to V4.
-//     (Documented in Heltec V3 schematic and project memory.)
+//   Heltec V3 (BATT_GATE_ACTIVE_HIGH=1): same active-HIGH gate as the V4.
+//     HARDWARE-VERIFIED 2026-06-11 on a real V3 with a cell: gate HIGH reads
+//     821 mV on GPIO1 -> 4.03 V; gate LOW reads 0.  (An earlier schematic-based
+//     "active-LOW" guess was wrong and left the meter stuck at -1.)
 //
 // The compile-time macro BATT_GATE_ACTIVE_HIGH (defined in pins.h per board)
-// selects the correct connect/park levels.  When the macro is 1 the generated
-// code is byte-identical to the original V4 path.
+// selects the correct connect/park levels.
 #include "pins.h"
 #include <Arduino.h>
 

@@ -122,15 +122,16 @@ static constexpr int PIN_OLED_RST  = 21;
 static constexpr int PIN_VEXT_CTRL = 36;   // LOW = peripheral 3.3V rail on
 
 // Battery fuel gauge: same 390k/100k divider on GPIO1 as V4; same gate GPIO37.
-// POLARITY DIFFERENCE: on V3 the gate MOSFET is active-LOW (drive LOW to
-// connect the divider / enable the ADC read, HIGH to disconnect and stop idle
-// drain).  This is opposite to the V4 (active-HIGH).  Verified in the Heltec
-// V3 schematic and documented in project memory.  See battery.cpp.
+// The gate MOSFET is active-HIGH (drive GPIO37 HIGH to connect the divider /
+// enable the ADC read, LOW to disconnect and stop idle drain) — SAME as the V4.
+// HARDWARE-VERIFIED 2026-06-11 on a real V3 with a cell: gate HIGH reads
+// adc=963 / 821 mV -> 4.03 V; gate LOW reads 0.  This refutes the earlier
+// schematic-based "active-LOW" assumption (which left the meter stuck at -1).
 static constexpr int PIN_VBAT_ADC  = 1;
 static constexpr int PIN_VBAT_CTRL = 37;
 
-// Battery gate polarity: V3 gate (GPIO37) is active-LOW — see battery.cpp.
-#define BATT_GATE_ACTIVE_HIGH 0
+// Battery gate polarity: V3 gate (GPIO37) is active-HIGH — see battery.cpp.
+#define BATT_GATE_ACTIVE_HIGH 1
 
 // Sidetone — same I2S → MAX98357A path as V4.  The authoritative pin
 // assignment is in platformio.ini ([env:heltec_v3] build_flags); the #ifndef
