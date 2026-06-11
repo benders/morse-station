@@ -35,6 +35,15 @@ namespace platform {
 
 // Reboot immediately. NVIC_SystemReset() is the standard Cortex-M system
 // reset; it does not return.
+//
+// NB: on the RAK4631 an intentional reboot is sometimes followed by a spurious
+// second reset (the node boots twice — observed independent of this code, e.g.
+// during the GPREGRET2 experiments). It self-settles (no boot loop), but the
+// reboot-intent flag in main.cpp therefore logs the second boot as an unexpected
+// WATCHDOG event. A real field watchdog (a wedged loop) is unaffected — it is a
+// single reset and logs a single WATCHDOG. Root-causing the double-boot is a
+// separate task (suspect: SoftDevice reset handling); sd_nvic_SystemReset() was
+// tried and did NOT eliminate it.
 void restart() {
     NVIC_SystemReset();
 }
@@ -94,6 +103,13 @@ int reset_reason() {
     return RR_UNKNOWN;
 }
 
+// Reset codes for the application's flash reboot-intent synthesis (see
+// platform.h / main.cpp). These return our RR_* values so reset_reason_label()
+// renders them as the expected strings on this platform.
+int reset_code_soft()     { return RR_SREQ; }   // "SOFT"
+int reset_code_off()      { return RR_OFF;  }   // "OFF_WAKE"
+int reset_code_watchdog() { return RR_DOG;  }   // "WATCHDOG"
+
 // Labels for the enum above — printed in the boot banner and `bootlog` dump.
 const char* reset_reason_label(int x) {
     static const char* rr[] = {
@@ -101,6 +117,41 @@ const char* reset_reason_label(int x) {
         "OFF_WAKE", "DEBUG_WAKE", "NFC_WAKE", "VBUS_WAKE", "UNKNOWN",
     };
     return (x >= 0 && x < (int)(sizeof(rr) / sizeof(rr[0]))) ? rr[x] : "?";
+}
+
+// Hardware watchdog via the nRF52840 WDT peripheral. Unlike the ESP32 task WDT,
+// this is a free-running hardware counter clocked off the always-on 32.768 kHz
+// LFCLK — it keeps counting even if the CPU, the SoftDevice, or an ISR wedges,
+// and a timeout triggers a full chip reset. NB: on the Adafruit bootloader the
+// reset cause does NOT survive to reset_reason() (the bootloader clears RESETREAS,
+// and GPREGRET2/.noinit RAM are likewise wiped on a watchdog reset), so the
+// "why did we reboot?" label is recovered at the application layer from a flash
+// reboot-intent flag instead (see config::reboot_intent / main.cpp). The WDT is
+// NOT one of the SoftDevice-restricted peripherals, so direct register access is
+// safe with S140 enabled. Two silicon constraints shape this code:
+//   - CRV/CONFIG/RREN can only be written BEFORE TASKS_START; once the watchdog
+//     is running it cannot be reconfigured or stopped until the next reset. So
+//     watchdog_begin() is one-shot (guarded by s_wdt_armed).
+//   - HALT=Pause stops the counter while a debugger has the core halted (so a
+//     breakpoint doesn't spuriously reset); SLEEP=Run keeps it counting in
+//     System ON sleep, so a node that wedges while idle still reboots.
+static bool s_wdt_armed = false;
+
+void watchdog_begin(uint32_t timeout_ms) {
+    if (s_wdt_armed) return;        // cannot reconfigure once started (silicon)
+    NRF_WDT->CONFIG = (WDT_CONFIG_HALT_Pause << WDT_CONFIG_HALT_Pos) |
+                      (WDT_CONFIG_SLEEP_Run  << WDT_CONFIG_SLEEP_Pos);
+    // CRV counts down at 32.768 kHz; reset fires CRV+1 ticks after the last feed.
+    uint64_t crv = ((uint64_t)timeout_ms * 32768ULL) / 1000ULL;
+    if (crv < 1) crv = 1;
+    NRF_WDT->CRV  = (uint32_t)(crv - 1);
+    NRF_WDT->RREN = WDT_RREN_RR0_Enabled << WDT_RREN_RR0_Pos;  // reload register 0
+    NRF_WDT->TASKS_START = 1;
+    s_wdt_armed = true;
+}
+
+void watchdog_feed() {
+    if (s_wdt_armed) NRF_WDT->RR[0] = WDT_RR_RR_Reload;
 }
 
 // Derive a stable 1..254 station-ID byte from the factory FICR DEVICEID

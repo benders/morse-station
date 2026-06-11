@@ -25,7 +25,8 @@ command line terminated by CR or LF and read the echoed result.
 | `debug [on\|off]` | Toggle a parseable serial dump of the live link for unattended testing: received packets (`RX E`/`RX K`/`RX I`), decoded elements (`EL`), and characters (`CH`); a fox also prints `TX E`. Bare `debug` toggles. **Not** persisted (RAM only). See `edge-events.md` "Unattended test instrumentation". | no (RAM) | yes |
 | `show` | Print the current config: `id`, `call`, `wpm`, `farns`, `vol`, `mute`, boot `mode`, `keymode`, `msg`. | — | — |
 | `batt` | Print the raw battery readout: terminal `mV`, smoothed `%`, and `charging`. Disambiguates a `0%` meter (no cell / flat pack vs a scaling problem). | — | — |
-| `bootlog` | Dump the boot/crash-reason ring (last 16 boots, oldest first): `#<boot> reason=<n>(<name>)`. Diagnoses crashes after the fact with no serial attached at reset time. `bootlog clear` empties the ring (the monotonic boot counter is kept). | — | reads NVS |
+| `bootlog` | Dump the boot/crash-reason ring (last 16 boots, oldest first): `#<boot> reason=<n>(<name>)`. A watchdog reboot shows as `TASK_WDT` (ESP32) or `WATCHDOG` (nRF52) — see "Field watchdog" below. Diagnoses crashes after the fact with no serial attached at reset time. `bootlog clear` empties the ring (the monotonic boot counter is kept). | — | reads NVS |
+| `stall [secs]` | **Resiliency self-test.** Deliberately wedge `loop()` by spinning **without feeding the hardware watchdog**, to prove a hung node actually reboots itself in the field. The 8 s watchdog fires first and you never return — next boot's `bootlog` shows the watchdog cause. Optional `secs` (default 30) caps the spin as a backstop; if it ends and prints `# stall ended — watchdog did NOT fire`, the watchdog is disarmed. Always compiled (unlike the debug-only `panic`). See "Field watchdog". | — | yes — wedges the running node |
 | `reboot` / `restart` | Soft-reset the node. The boot menu auto-selects the stored boot mode after its idle timeout, so this applies a `mode <n>` change with **no physical interaction**. | — | — |
 | `done` / `exit` | End the (blocking boot) console session and continue to the run mode. No-op at runtime / over BLE. | — | — |
 | anything else | Prints the one-line usage legend. | — | — |
@@ -130,6 +131,33 @@ air than unicast. The full command set is reachable remotely, including `reboot`
 and `mode` (a `reboot` won't ack — the target resets first). Live-key stations
 don't answer control in this version.
 
+## Field watchdog
+
+Every node arms a **hardware watchdog** so a wedged unit reboots itself instead of
+going silently dead in the field. It is armed for **8 s** at the end of `setup()`
+and fed at the top of `loop()`; if `loop()` stalls past 8 s the chip resets. The
+implementation lives behind the `platform::` seam:
+
+- **ESP32** (Heltec, Cardputer): the FreeRTOS **Task WDT** (`esp_task_wdt`) on the
+  Arduino `loopTask`. A timeout is reported by `esp_reset_reason()` as `TASK_WDT`.
+- **nRF52** (Wio Tracker, RAK4631): the **`NRF_WDT`** peripheral, clocked off the
+  always-on 32.768 kHz LFCLK so it keeps counting even if the CPU, the SoftDevice,
+  or an ISR wedges. The Adafruit bootloader clears the hardware `RESETREAS` (and
+  wipes `.noinit` RAM) before the app runs, so the reason is instead recovered
+  from a persisted flash **reboot-intent** flag: every boot re-arms it to
+  `RUNNING`, and a clean `reboot`/`hibernate` stamps `SOFT`/`OFF` first — so an
+  *unexpected* reset (watchdog, crash, brownout) is the only path that boots with
+  `RUNNING` still set, reported as `WATCHDOG`. A bare power-cycle therefore also
+  reads `WATCHDOG` (it too is "unexpected"); only `reboot` and `hibernate` are
+  distinguished.
+
+**Testing it.** Send `stall` (see the command table) to wedge `loop()` on purpose;
+the watchdog should reset the node within ~8 s, and the next boot's `bootlog` shows
+the watchdog cause. `scripts/watchdog_test.py <port>` automates the whole round
+trip (clear ring → `stall` → confirm the USB port re-enumerates → read `bootlog`)
+and exits non-zero if the watchdog did not fire. Hardware-validated on the Heltec
+boards (ESP32) and the Wio Tracker L1 (nRF52: reset at 8.3 s → `reason=2(WATCHDOG)`).
+
 ## Examples
 
 Provision a unit as the fox `KC8HOB` at 15/18 WPM, then send it on-air over the
@@ -160,4 +188,6 @@ mute on
 - `scripts/devices.py` — map USB ports ↔ station IDs / mode / mute (`--usb`
   reads a running node without resetting it; `--ble` over the air).
 - `scripts/monitor.sh` / `monitor.py` — serial monitor.
+- `scripts/watchdog_test.py` — fire `stall` and confirm the hardware watchdog
+  reboots the node (PASS/FAIL exit code). See "Field watchdog".
 - `tools/ble_provision_test.py` — bleak-based round-trip test of the BLE NUS.

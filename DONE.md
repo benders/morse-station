@@ -167,6 +167,28 @@ identically). See `docs/protocol.md`.
       (`src/main.cpp` `bootlog_record`/`bootlog_dump`/`handle_setup_command`;
       `docs/commands.md`.) Builds clean on both `heltec_v4` and `cardputer_adv`.
 
+- [x] **Hardware watchdog (field resiliency).** A hardware watchdog reboots a
+      wedged node in the field instead of leaving it silently dead. Behind the
+      `platform::` seam: ESP32 uses the Task WDT (`esp_task_wdt` on the Arduino
+      `loopTask`), nRF52 uses the `NRF_WDT` peripheral clocked off the always-on
+      32.768 kHz LFCLK (keeps counting even if the CPU/SoftDevice/an ISR wedges).
+      Armed for **8 s** at the end of `setup()` (`watchdog_begin`) and fed at the
+      top of `loop()` (`watchdog_feed`); a timeout triggers a full chip reset that
+      shows up in the next boot's `bootlog` as the watchdog cause (`TASK_WDT` on
+      ESP32, `WATCHDOG` on nRF52). On the Adafruit nRF52 bootloader the hardware
+      reset cause does **not** survive (it clears `RESETREAS` and wipes `.noinit`
+      RAM), so the nRF52 reason is recovered at the app layer from a persisted
+      flash **reboot-intent** flag (`HAS_REBOOT_INTENT`): every boot re-arms it to
+      `RUNNING`, and a clean `reboot`/`hibernate` stamps `SOFT`/`OFF` — so an
+      *unexpected* reset (watchdog, crash, brownout) is the only thing that boots
+      back with `RUNNING` still set ⇒ reported as `WATCHDOG`. New always-compiled
+      `stall [secs]` console command spins `loop()` with no WDT feed to prove the
+      watchdog actually fires (`scripts/watchdog_test.py` automates the round
+      trip). **Hardware-validated** on the Heltec boards (ESP32 Task WDT) and on
+      the Wio Tracker L1 (nRF52 `NRF_WDT`: `stall 12` → reset at 8.3 s → next boot
+      `reason=2(WATCHDOG)`). (`src/platform_esp32.cpp` / `src/platform_nrf52.cpp`
+      `watchdog_begin`/`watchdog_feed`; `src/main.cpp`; `docs/commands.md`.)
+
 ---
 
 ## Cardputer ADV port (experimental fox)

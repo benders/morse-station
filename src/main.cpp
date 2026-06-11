@@ -253,6 +253,42 @@ static void bootlog_clear() {
     bl.end();
 }
 
+// --- Reboot-intent flag (nRF52 reset-cause recovery) -------------------------
+// The Adafruit nRF52 bootloader clears the hardware reset-cause register
+// (RESETREAS) before our app runs, so platform::reset_reason() can't tell why we
+// rebooted — every cause reads POWERON. (GPREGRET2 and .noinit RAM are likewise
+// wiped on a watchdog reset; see the git history of this commit for the dead
+// ends.) Instead we persist a tiny "why am I about to reset" flag in flash — the
+// same kv store the bootlog uses, so it is already usable this early in setup() —
+// and read it back next boot:
+//   SOFT / OFF -> the reboot was intentional (restart() / system_off() stamped it)
+//   RUNNING    -> we reset while running with no intent stamped => the watchdog
+//                 fired (or a crash/brownout — all "unexpected")
+//   NONE       -> flag never written => genuine first cold boot (keep POWERON)
+// Every boot re-arms the flag to RUNNING. ESP32's reset_reason() is accurate, so
+// the synthesis is nRF52-only and set_reboot_intent() is a no-op there (the enum
+// is defined unconditionally so the shared call sites still compile).
+enum { REBOOT_INTENT_NONE = 0, REBOOT_INTENT_RUNNING = 1,
+       REBOOT_INTENT_SOFT = 2, REBOOT_INTENT_OFF = 3 };
+
+#if defined(DEVICE_RAK4631) || defined(DEVICE_WIO_TRACKER_L1)
+#define HAS_REBOOT_INTENT 1
+
+static void set_reboot_intent(uint8_t v) {
+    kv::Store s; s.begin("boot", false);
+    if (s.getUChar("intent", REBOOT_INTENT_NONE) != v) s.putUChar("intent", v);
+    s.end();
+}
+static uint8_t get_reboot_intent() {
+    kv::Store s; s.begin("boot", true);
+    uint8_t v = s.getUChar("intent", REBOOT_INTENT_NONE);
+    s.end();
+    return v;
+}
+#else
+static inline void set_reboot_intent(uint8_t) {}   // ESP32: reset_reason() is accurate
+#endif
+
 // Remote-control (instructor) state. In MODE_INSTRUCTOR the `relay <id> <cmd>`
 // console verb stages a command here; loop_instructor() bursts it over GFSK and
 // listens for the target's ack. One command in flight at a time.
@@ -465,6 +501,7 @@ static bool handle_setup_command(const char* line, Print& out) {
         // its idle timeout, so this applies a "mode <n>" change with no physical
         // interaction. Give the BLE notify a moment to flush before resetting.
         out.println("# rebooting");
+        set_reboot_intent(REBOOT_INTENT_SOFT);   // so next boot logs "SOFT", not a false watchdog
         delay(150);
         platform::restart();
     } else if (!strncmp(line, "mode ", 5)) {
@@ -611,6 +648,24 @@ static bool handle_setup_command(const char* line, Print& out) {
     } else if (!strcmp(line, "bootlog clear")) {
         bootlog_clear();
         out.println("# bootlog cleared");
+    } else if (!strcmp(line, "stall") || !strncmp(line, "stall ", 6)) {
+        // Resiliency test: deliberately wedge loop() by spinning WITHOUT feeding
+        // the watchdog, to prove the hardware watchdog actually reboots a hung
+        // node in the field. Normally the WDT (platform::watchdog_begin, 8 s)
+        // fires first and we never return; next boot's bootlog shows the watchdog
+        // cause (TASK_WDT on ESP32, WATCHDOG on nRF52). The optional arg caps the
+        // spin (default 30 s) as a backstop in case the watchdog is disabled.
+        // Unlike `panic`, this is always compiled — it's the intended way to
+        // verify field resiliency, and a bounded spin is harmless on its own.
+        const char* arg = line + 5;
+        while (*arg == ' ') arg++;
+        int secs = *arg ? atoi(arg) : 30;
+        if (secs <= 0) secs = 30;
+        out.printf("# stalling %ds with no watchdog feed — expect a reboot\n", secs);
+        delay(150);   // let the BLE notify / serial line flush before we wedge
+        uint32_t end = millis() + (uint32_t)secs * 1000;
+        while ((int32_t)(millis() - end) < 0) { /* spin — never feed the WDT */ }
+        out.println("# stall ended — watchdog did NOT fire (is it armed?)");
 #ifdef DEBUG_PANIC_CMD
     } else if (!strcmp(line, "panic")) {
         // Debug-only: deliberately crash to exercise the panic/backtrace capture
@@ -632,7 +687,7 @@ static bool handle_setup_command(const char* line, Print& out) {
                     "rxbw <khz> | mode <0..2> | "
                     "vol <1..32> | mute [on|off] | keymode <compat|edge> | "
                     "model | debug [on|off] | show | "
-                    "bootlog [clear] | reboot | done");
+                    "bootlog [clear] | stall [secs] | reboot | done");
     }
     return false;
 }
@@ -721,6 +776,7 @@ static void hibernate() {
     pinMode(PIN_FEM_VFEM, OUTPUT);  digitalWrite(PIN_FEM_VFEM, LOW);   // FEM off
     pinMode(PIN_VEXT_CTRL, OUTPUT); digitalWrite(PIN_VEXT_CTRL, HIGH); // peripheral rail off
 #endif
+    set_reboot_intent(REBOOT_INTENT_OFF);   // so the RST-wake boot logs "OFF_WAKE", not a watchdog
     platform::system_off();         // only RST wakes us -> full restart
 }
 
@@ -741,6 +797,18 @@ void setup() {
         // serial) reports prev=<crash cause>; the full history survives in NVS for
         // the `bootlog` command even when several reboots land back to back.
         int r = platform::reset_reason();
+#ifdef HAS_REBOOT_INTENT
+        // reset_reason() is the unreliable POWERON catch-all on this bootloader;
+        // refine it from the persisted reboot-intent flag, then re-arm to RUNNING.
+        {
+            uint8_t intent = get_reboot_intent();
+            if      (intent == REBOOT_INTENT_SOFT)    r = platform::reset_code_soft();
+            else if (intent == REBOOT_INTENT_OFF)     r = platform::reset_code_off();
+            else if (intent == REBOOT_INTENT_RUNNING) r = platform::reset_code_watchdog();
+            // REBOOT_INTENT_NONE: never armed => genuine first cold boot, keep POWERON.
+            set_reboot_intent(REBOOT_INTENT_RUNNING);
+        }
+#endif
         int prev = 0;
         uint32_t bc = bootlog_record(r, prev);
         Serial.printf("# boot #%u reason now=%d(%s) prev=%d(%s)\n",
@@ -838,6 +906,14 @@ void setup() {
 
     // Radio and run mode are up — let BLE provisioning apply changes live.
     g_live_apply = true;
+
+    // Arm the hardware watchdog now that boot is done (the splash delays and the
+    // blocking run_menu() above would have tripped it). From here loop() must
+    // pet it every pass; a wedged loop reboots the node and the next boot's
+    // bootlog records the watchdog cause. 8 s is generous — the run-mode loops
+    // are non-blocking state machines whose longest single window is ~200 ms.
+    // Exercise this path with the `stall` console command.
+    platform::watchdog_begin(8000);
 }
 
 // Send the current key state as a packet on the 30 ms cadence.
@@ -1438,6 +1514,10 @@ static void loop_instructor(uint32_t now) {
 
 void loop() {
     uint32_t now = millis();
+    // Pet the hardware watchdog once per pass. If loop() ever wedges (a hung
+    // radio call, a runaway handler) this stops happening and the node reboots
+    // itself — the field-resiliency contract. Armed at the end of setup().
+    platform::watchdog_feed();
     // Dispatch any BLE provisioning commands on this (main) task, so the parser
     // never races the loop's config reads. Cheap when idle.
     ble_provision::process();

@@ -52,10 +52,42 @@ const char* chip_id_str();
 // same SoC), so it cannot distinguish Heltec V4.2 from V4.3. Static buffer.
 const char* soc_str();
 
+// Hardware watchdog — field resiliency. watchdog_begin() arms a hardware
+// watchdog that reboots the MCU if watchdog_feed() is not called within
+// timeout_ms; call it once after boot setup completes (so the long splash/menu
+// delays and the blocking run_menu() don't trip it), then feed it every pass of
+// the main loop. A watchdog reboot is recorded in `bootlog` as a field lockup
+// after the fact: directly via reset_reason() on ESP32 (TASK_WDT), and on nRF52
+// via the flash reboot-intent flag in main.cpp (the Adafruit bootloader clears
+// the hardware reset-cause register, so reset_reason() can't see it — see
+// reset_code_*() below). On nRF52 the watchdog peripheral cannot be reconfigured
+// once started (silicon limitation) so begin() is effectively one-shot; the
+// ESP32 task-WDT tolerates a repeat init harmlessly. Each platform supplies its
+// own implementation (esp_task_wdt on ESP32, NRF_WDT registers on nRF52).
+void watchdog_begin(uint32_t timeout_ms);
+
+// Pet the watchdog so it does not fire. No-op if watchdog_begin() was never
+// called (e.g. on the hibernate path, which never reaches the run loop).
+void watchdog_feed();
+
 // Map a reset_reason() value to a short human-readable label for the boot
 // banner and `bootlog` dump. Each platform supplies its own table (the ESP32
 // and nRF52 reset-cause encodings are different small enums); main.cpp no
 // longer keeps its own copy. Unknown values return "?".
 const char* reset_reason_label(int reason);
+
+// reset_reason() codes for *synthesizing* a cause when the hardware reset-cause
+// register is unreliable — specifically nRF52 under the Adafruit bootloader,
+// which clears RESETREAS so reset_reason() always reports POWERON. main.cpp keeps
+// a small flash "reboot intent" flag (set before an intentional restart()/
+// system_off(), armed to RUNNING each boot) and maps it onto these codes so the
+// boot banner / `bootlog` still distinguish a soft reboot, a hibernate wake, and
+// an unexpected (watchdog/crash) reset. Each platform returns a value matching
+// its own reset_reason()/reset_reason_label() encoding (meaningful only within
+// one MCU family). On ESP32 reset_reason() is already accurate, so these are
+// provided only for symmetry.
+int reset_code_soft();        // intentional restart() / soft reset  -> "SOFT"
+int reset_code_off();         // wake from system_off() / hibernate  -> "OFF_WAKE"/"DEEPSLEEP"
+int reset_code_watchdog();    // unexpected reset (watchdog / crash)  -> "WATCHDOG"/"TASK_WDT"
 
 } // namespace platform

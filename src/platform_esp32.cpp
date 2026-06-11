@@ -18,9 +18,31 @@
 #include "platform.h"
 #include <esp_sleep.h>    // esp_deep_sleep_start()
 #include <esp_system.h>   // esp_restart(), esp_reset_reason()
+#include <esp_task_wdt.h> // esp_task_wdt_init/add/reset — the Task Watchdog Timer
 #include <Arduino.h>      // ESP.getEfuseMac()
 
 namespace platform {
+
+// Hardware watchdog via the ESP-IDF Task Watchdog Timer (TWDT). The arduino-esp32
+// core leaves the Arduino loopTask UNsubscribed by default, so a wedged loop()
+// would never reboot. We re-init the TWDT with our own timeout, subscribe the
+// calling task (loopTask, since watchdog_begin() runs at the end of setup()),
+// and feed it from loop(). panic=true makes a timeout reboot the chip; the next
+// boot's esp_reset_reason() reports TASK_WDT(6), captured in the bootlog ring.
+static bool s_wdt_armed = false;
+
+void watchdog_begin(uint32_t timeout_ms) {
+    uint32_t secs = (timeout_ms + 999) / 1000;   // TWDT timeout is in whole seconds
+    if (secs == 0) secs = 1;
+    esp_task_wdt_init(secs, true);   // panic=true → reset on timeout
+    esp_task_wdt_add(NULL);          // watch the calling task (the Arduino loopTask)
+    esp_task_wdt_reset();
+    s_wdt_armed = true;
+}
+
+void watchdog_feed() {
+    if (s_wdt_armed) esp_task_wdt_reset();
+}
 
 // Reboot immediately via the ESP-IDF software reset.
 void restart() {
@@ -55,6 +77,15 @@ const char* reset_reason_label(int x) {
                                "BROWNOUT","SDIO"};
     return (x >= 0 && x < (int)(sizeof(rr) / sizeof(rr[0]))) ? rr[x] : "?";
 }
+
+// Reset codes matching esp_reset_reason_t. ESP32's reset_reason() is already
+// accurate (the chip latches the cause and the ROM doesn't clear it), so the
+// reboot-intent synthesis in main.cpp is nRF52-only and never consults these on
+// ESP32 — they exist for seam symmetry. ESP_RST_SW=3, ESP_RST_DEEPSLEEP=8,
+// ESP_RST_TASK_WDT=6.
+int reset_code_soft()     { return 3; }   // ESP_RST_SW   -> "SW"
+int reset_code_off()      { return 8; }   // ESP_RST_DEEPSLEEP -> "DEEPSLEEP"
+int reset_code_watchdog() { return 6; }   // ESP_RST_TASK_WDT  -> "TASK_WDT"
 
 // Derive a stable 1..254 station-ID byte from the factory eFuse MAC.
 // The MAC is a 48-bit value; XOR all six bytes together, then map into
