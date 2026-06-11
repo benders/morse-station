@@ -38,7 +38,6 @@ Accuracy notes:
 from __future__ import annotations
 
 import argparse
-import glob
 import re
 import socket
 import struct
@@ -48,36 +47,13 @@ import time
 import numpy as np
 import serial  # PlatformIO venv
 
+# Shared station-console helpers: usb_ports() discovers usbmodem* + usbserial*
+# (Heltec V3/CP2102), and open_console() handles the V3's reset-on-open boot
+# wait. See scripts/station_serial.py for the why.
+from station_serial import usb_ports, open_console
+
 # --- station console (USB serial) --------------------------------------------
-BAUD = 115200
 NOMINAL_HZ = 905_000_000          # FREQ_MHZ in src/radio.cpp (×1e6)
-
-
-def ports() -> list[str]:
-    # usbmodem* = native-USB boards (Heltec V4, Cardputer, RAK, Wio).
-    # usbserial* = CP2102/CP210x UART bridges (Heltec V3 and future V3 units),
-    # which present as a plain USB-UART rather than native USB.
-    return sorted(glob.glob("/dev/cu.usbmodem*") + glob.glob("/dev/cu.usbserial*"))
-
-
-def open_console(port: str) -> serial.Serial:
-    """Open a station console and return it ready to accept commands.
-
-    Native-USB boards (usbmodem*) enumerate without resetting and respond
-    immediately. CP2102/CP210x UART bridges (usbserial*, e.g. the Heltec V3)
-    wire DTR/RTS to the ESP32 auto-reset circuit, so the default open reboots
-    the board — and, counter-intuitively, that reboot is REQUIRED: opened
-    WITHOUT it the V3's console comes up silent. So we let the default open
-    assert DTR/RTS and simply wait out the firmware boot before the first
-    command. The reset always lands here, before any carrier is keyed, so it
-    never disturbs a measurement already in flight.
-    """
-    s = serial.Serial(port, BAUD, timeout=0.2)
-    # usbserial* bridges reboot on open (radio + BLE init takes a few seconds);
-    # native-USB boards do not, so they only need a brief settle.
-    time.sleep(3.5 if "usbserial" in port else 0.3)
-    s.reset_input_buffer()
-    return s
 
 
 def cmd(s: serial.Serial, line: str, read_t: float = 1.2) -> str:
@@ -100,9 +76,9 @@ def cmd(s: serial.Serial, line: str, read_t: float = 1.2) -> str:
 def identify() -> dict[int, str]:
     """Map station id -> USB port via the reset-free `show` command."""
     m: dict[int, str] = {}
-    for p in ports():
+    for p in usb_ports():
         try:
-            s = open_console(p)   # deasserts DTR/RTS so CP2102 boards don't reset
+            s = open_console(p, timeout=0.2)
         except Exception:
             continue
         try:
@@ -328,7 +304,7 @@ def main() -> int:
             print(f"! Instructor id {args.via} not found on USB", file=sys.stderr)
             rtl.close()
             return 1
-        instr_console = open_console(portmap[args.via])
+        instr_console = open_console(portmap[args.via], timeout=0.2)
         print(f"# relaying via Instructor {args.via} on {portmap[args.via]}")
 
     print(f"# keying txcw {args.secs}s, {args.repeat}x each\n")
@@ -337,7 +313,7 @@ def main() -> int:
         if args.via is not None:
             console, prefix = instr_console, f"relay {sid} "
         elif sid in portmap:
-            console = open_console(portmap[sid])
+            console = open_console(portmap[sid], timeout=0.2)
             prefix = ""
         else:
             print(f"  {sid:>10}   ! not on USB and no --via", file=sys.stderr)
