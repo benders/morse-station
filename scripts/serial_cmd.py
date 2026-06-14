@@ -17,19 +17,22 @@ def main():
     port = a.pop(0)
     settle = 12.0
     read_secs = None
+    dtr = False
     cmds = []
     while a:
         t = a.pop(0)
         if t == "--settle":   settle = float(a.pop(0))
         elif t == "--read":   read_secs = float(a.pop(0))
+        elif t == "--dtr":    dtr = True   # nRF52 TinyUSB CDC only flushes TX with DTR asserted
         else:                 cmds.append(t)
 
-    # Do NOT reset native-USB boards on open; CP2102 boards reset regardless.
+    # ESP32 native-USB / CP2102 boards reset on open regardless; the nRF52 (Wio/
+    # RAK) does not reset on DTR, but its USB-CDC needs DTR asserted to send.
     s = serial.Serial()
     s.port = port
     s.baudrate = 115200
     s.timeout = 0.2
-    s.dtr = False
+    s.dtr = dtr
     s.rts = False
     s.open()
 
