@@ -1,11 +1,66 @@
 #include "sidetone.h"
 #if defined(DEVICE_HELTEC_V4) || defined(DEVICE_HELTEC_V3)
+#include <Arduino.h>
+#include "pins.h"
+
+#if defined(SIDETONE_BUZZER)
+// ---------------------------------------------------------------------------
+// Sidetone generator (passive piezo buzzer on a single PWM pin).
+//
+// Selected by -DSIDETONE_BUZZER (the ESP32 sibling of the nRF52 Wio buzzer path
+// in sidetone_nrf52.cpp). Instead of the MAX98357A/I2S amp, drive a passive
+// piezo buzzer directly from one GPIO (PIN_SIDETONE = PIN_SIDETONE_PWM, GPIO4)
+// using LEDC, the ESP32 hardware PWM. A passive piezo makes no sound from a DC
+// level — it needs an AC drive at the tone frequency, which a 50%-duty square
+// wave at freq_hz provides. on/off just gates the duty, so key-down/up has no
+// retune latency (same contract as the I2S path).
+//
+// Loudness control on a two-level square is crude: the element is loudest at
+// 50% duty and quieter as the duty moves away from 50% (shorter pulses deliver
+// less energy). We approximate volume that way; it is far less linear than the
+// I2S path's true amplitude scaling, but adequate for a monitor/practice tone.
+// ---------------------------------------------------------------------------
+
+static constexpr int     LEDC_CH    = 0;            // free (no other LEDC users)
+static constexpr uint8_t LEDC_BITS  = 10;           // duty range 0..1023
+static constexpr uint32_t FULL_DUTY = (1u << LEDC_BITS) / 2;  // 50% = loudest
+
+static volatile bool s_on    = false;
+static volatile bool s_muted = false;
+static uint32_t      s_duty  = FULL_DUTY;           // duty applied while "on"
+
+static inline void apply() {
+    ledcWrite(LEDC_CH, (s_on && !s_muted) ? s_duty : 0);
+}
+
+void sidetone_init(int /*gpio*/, uint32_t freq_hz) {
+    ledcSetup(LEDC_CH, freq_hz, LEDC_BITS);
+    ledcAttachPin(PIN_SIDETONE, LEDC_CH);
+    ledcWrite(LEDC_CH, 0);                           // start silent
+}
+
+void sidetone_set_volume(uint8_t vol) {
+    // Map 0..255 onto a faint floor .. 50% duty (loudest for a square drive).
+    s_duty = (uint32_t)FULL_DUTY * (vol + 1) / 256;
+    apply();
+}
+
+void sidetone_set_level(uint8_t units) {
+    if (units < 1)  units = 1;
+    if (units > 32) units = 32;
+    s_duty = (uint32_t)FULL_DUTY * units / 32;       // 32 -> full 50% duty
+    apply();
+}
+
+void sidetone_set_mute(bool m) { s_muted = m; apply(); }
+void sidetone_on()  { s_on = true;  apply(); }
+void sidetone_off() { s_on = false; apply(); }
+
+#else  // !SIDETONE_BUZZER
 // Heltec V4 / V3 path: an I2S stream into a MAX98357A class-D amp. The
 // Cardputer ADV instead routes sidetone through its on-board ES8311 codec; see
 // sidetone_cardputer.cpp.
-#include <Arduino.h>
 #include <math.h>
-#include "pins.h"
 #include "driver/i2s.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -142,4 +197,5 @@ void sidetone_set_mute(bool m) { s_muted = m; }     // feeder writes silence whi
 void sidetone_on()  { s_on = true; }   // the envelope ramp gives the clickless edge
 void sidetone_off() { s_on = false; }
 
+#endif // SIDETONE_BUZZER
 #endif // DEVICE_HELTEC_V4 || DEVICE_HELTEC_V3

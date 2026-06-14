@@ -86,9 +86,20 @@ static constexpr int PIN_VBAT_CTRL = 37;
 #ifndef PIN_I2S_DIN
 #define PIN_I2S_DIN 47                      // -> MAX98357A DIN  (serial data)
 #endif
+#if defined(SIDETONE_BUZZER)
+// Single-pin PWM square wave straight into a passive piezo buzzer (no amp).
+// The buzzer I/O line is PIN_SIDETONE_PWM (authoritative value in platformio.ini
+// -DPIN_SIDETONE_PWM; this #ifndef just mirrors it). The I2S trio above is
+// unused in this build. See sidetone.cpp (LEDC path).
+#ifndef PIN_SIDETONE_PWM
+#define PIN_SIDETONE_PWM 4
+#endif
+static constexpr int PIN_SIDETONE = PIN_SIDETONE_PWM;
+#else
 static constexpr int PIN_SIDETONE = PIN_I2S_DIN;  // back-compat alias; the I2S
                                            // path uses the PIN_I2S_* trio above
                                            // and ignores the value passed in.
+#endif
 static constexpr int PIN_KEY      = 6;     // telegraph key -> GND, INPUT_PULLUP
                                            // (was GPIO 5: that pin is FEM ctrl
                                            //  on V4.3 — pull-up wouldn't hold)
