@@ -331,11 +331,16 @@ class CapturePrint : public Print {
     bool   done_ = false;
 };
 
+static void hibernate();   // defined below; reached from the `hibernate` command
+
 // Dispatch one provisioning command line, writing responses to `out`. Pure of
 // any transport: `out` is a Print& so the serial REPL (Serial) and a future
 // BLE-UART session can share this parser. Returns true when the session should
 // end (the "done"/"exit" command). See docs/commands.md.
 static bool handle_setup_command(const char* line, Print& out) {
+    // Any console command — over serial, BLE, or an instructor relay — counts as
+    // activity and wakes a blanked panel (display.h idle-blanking).
+    display::activity();
     if (!strncmp(line, "call ", 5)) {
         config::set_callsign(line + 5);
         out.printf("  callsign = %s\n", config::callsign());
@@ -628,6 +633,10 @@ static bool handle_setup_command(const char* line, Print& out) {
         out.printf("  model    = %s  chip=%s  soc=%s\n",
                    board_model_str(), platform::chip_id_str(), platform::soc_str());
         out.printf("  build    = %s\n", GIT_REV);
+        out.printf("  cpu      = %lu MHz  cores=%d\n",
+                   (unsigned long)platform::cpu_freq_mhz(), platform::cpu_cores());
+        out.printf("  screen   = %s (idle-blank 60s)\n",
+                   display::blanked() ? "BLANKED" : "on");
         out.printf("  debug    = %s\n", g_debug ? "on" : "off");
         out.printf("  rxbw     = %.1f kHz\n", radio::rx_bw_khz());
         if (radio::has_fem()) {
@@ -641,6 +650,49 @@ static bool handle_setup_command(const char* line, Print& out) {
         int pct = battery::percent();
         out.printf("  batt %d mV  %d%%  charging=%s\n",
                    mv, pct, battery::charging() ? "yes" : "no");
+    } else if (!strcmp(line, "screen") || !strncmp(line, "screen ", 7)) {
+        // Idle display-blanking (battery saver). Bare "screen" / "screen show"
+        // reports state; "screen on" forces the panel awake and resets the idle
+        // timer; "screen off" blanks it now. The panel also blanks on its own
+        // after 60 s with no activity and wakes on any button/serial/BLE command
+        // (and inbound keying on a hunter). The reported idle_ms / blanked let an
+        // unattended test confirm blank+wake over the console (no human at the glass).
+        const char* arg = line + 6;
+        while (*arg == ' ') arg++;
+        if (!*arg || !strcmp(arg, "show")) {
+            // report only
+        } else if (!strcmp(arg, "on") || !strcmp(arg, "1")) {
+            display::activity();
+        } else if (!strcmp(arg, "off") || !strcmp(arg, "0")) {
+            display::blank_now();
+        } else {
+            out.println("  ? screen <on|off>");
+            return false;
+        }
+        out.printf("  screen   = %s  idle %lu ms / 60000 ms\n",
+                   display::blanked() ? "BLANKED" : "on",
+                   (unsigned long)display::idle_ms());
+    } else if (!strcmp(line, "hibernate")) {
+        // Remote power-down: puts the SX1262 to sleep then enters MCU deep sleep
+        // (the same path as the boot-menu Hibernate item, which otherwise needs
+        // the physical button). Only a hardware RST — or, on the dev bench, a
+        // serial reconnect that pulses the auto-reset line — brings the node back.
+        // The radio-sleep result is logged for verification (see hibernate()).
+        out.println("# hibernating: SX1262 sleep + MCU deep sleep — RST/reconnect to wake");
+        delay(150);             // let the reply flush over BLE/serial first
+        hibernate();            // does not return
+    } else if (!strcmp(line, "power")) {
+        // Power/clock state (battery saver verification). Reports the running CPU
+        // clock and the physical core count so an unattended test can confirm the
+        // 80 MHz low-power clock took effect. On the ESP32-S3 both cores are in
+        // use (core 1 runs the Arduino app loop, core 0 hosts the always-on BLE
+        // stack) — there is no idle/unused core to shut down; on the nRF52840 the
+        // single Cortex-M4 runs both the app and the SoftDevice BLE stack.
+        out.printf("  cpu      = %lu MHz  cores=%d\n",
+                   (unsigned long)platform::cpu_freq_mhz(), platform::cpu_cores());
+        out.printf("  screen   = %s  idle %lu ms / 60000 ms\n",
+                   display::blanked() ? "BLANKED" : "on",
+                   (unsigned long)display::idle_ms());
     } else if (!strcmp(line, "bootlog")) {
         // Dump the boot/crash reason ring — diagnoses crashes after the fact when
         // no serial was attached at reset time (e.g. the native-USB panic loop).
@@ -686,8 +738,8 @@ static bool handle_setup_command(const char* line, Print& out) {
                     "farns <n> | pwr <0..3> | pa <on|off> | lna <on|off> | "
                     "rxbw <khz> | mode <0..2> | "
                     "vol <1..32> | mute [on|off] | keymode <compat|edge> | "
-                    "model | debug [on|off] | show | "
-                    "bootlog [clear] | stall [secs] | reboot | done");
+                    "model | debug [on|off] | show | screen [on|off] | power | "
+                    "bootlog [clear] | stall [secs] | reboot | hibernate | done");
     }
     return false;
 }
@@ -772,6 +824,20 @@ static void hibernate() {
     display::status("Hibernating", "Press RST to wake", nullptr);
     delay(1500);
     sidetone_off();
+    // Put the SX1262 to sleep before we power the MCU down: the hibernate path
+    // never reaches radio::init() in the normal run flow, so the radio would
+    // otherwise sit in its post-reset standby (~1.5 mA) for the whole hibernate.
+    // init() brings it up just far enough to issue SetSleep over SPI; we log the
+    // result so the power-down is verifiable from the serial log alone (no meter).
+    {
+        int rerr;
+        if (radio::init(rerr)) {
+            int rc = radio::sleep();
+            Serial.printf("# hibernate: radio init ok, SX1262 sleep rc=%d (0=ok)\n", rc);
+        } else {
+            Serial.printf("# hibernate: radio init failed (code=%d); radio left in reset\n", rerr);
+        }
+    }
 #ifdef HAS_FEM
     pinMode(PIN_FEM_VFEM, OUTPUT);  digitalWrite(PIN_FEM_VFEM, LOW);   // FEM off
     pinMode(PIN_VEXT_CTRL, OUTPUT); digitalWrite(PIN_VEXT_CTRL, HIGH); // peripheral rail off
@@ -784,6 +850,11 @@ void setup() {
     Serial.begin(115200);
     uint32_t t0 = millis();
     while (!Serial && (millis() - t0) < 500) { delay(10); }
+
+    // Battery saver: drop to the low-power core clock before anything else runs
+    // (80 MHz on ESP32-S3, no-op on nRF52). arduino-esp32 retracks the UART so
+    // the 115200 console above keeps working across the change.
+    platform::set_cpu_low_power();
 
 #ifndef GIT_REV
 #define GIT_REV "unknown"
@@ -1034,7 +1105,7 @@ static bool prg_tapped(uint32_t now) {
     static uint32_t last = 0;
     bool down = (digitalRead(PIN_MODE_BTN) == LOW);
     bool edge = down && !was_down && (now - last > 200);
-    if (edge) last = now;
+    if (edge) { last = now; display::activity(); }   // a button press wakes the panel
     was_down = down;
     return edge;
 }
@@ -1142,6 +1213,7 @@ static void loop_fox(uint32_t now) {
 static void loop_livekey(uint32_t now) {
     key.update();
     bool down = key.down();
+    if (down) display::activity();   // active keying = operator present; keep panel awake
     set_tone(down);
     if (g_keymode == KEYMODE_EDGE) tx_edge(now, down);
     else                           tx_keystate(now, down);
@@ -1223,6 +1295,7 @@ static void loop_hunter(uint32_t now) {
             rx_station_id = ks.station_id;
             last_rx = now;
             last_signal = now;
+            display::activity();   // inbound keying keeps the hunter's panel awake
             rssi = r;
             rssi_valid = true;
             // RSSI no longer modulates loudness — always play the pure tone at
@@ -1259,6 +1332,7 @@ static void loop_hunter(uint32_t now) {
             rx_down = level_down;
             last_rx = now;
             last_signal = now;
+            display::activity();   // inbound keying keeps the hunter's panel awake
             rssi = r;
             rssi_valid = true;
             rx_station_id = ev.station_id;
@@ -1529,10 +1603,13 @@ void loop() {
     // is the local "quiet it now" control for a node sitting near people. The
     // keyboard was brought up in config_ui::run() at boot.
     char kc;
-    if (keyboard::read_char(kc) && (kc == 'm' || kc == 'M')) {
-        bool m = !config::muted();
-        apply_mute(m);
-        Serial.printf("# mute %s (key)\n", m ? "on" : "off");
+    if (keyboard::read_char(kc)) {
+        display::activity();   // any keyboard press wakes the panel
+        if (kc == 'm' || kc == 'M') {
+            bool m = !config::muted();
+            apply_mute(m);
+            Serial.printf("# mute %s (key)\n", m ? "on" : "off");
+        }
     }
 #endif
     switch (mode) {
@@ -1542,4 +1619,8 @@ void loop() {
         case MODE_INSTRUCTOR: loop_instructor(now); break;
         case MODE_HIBERNATE:  break;   // never reached (slept in setup)
     }
+    // Battery saver: power the panel down after the idle timeout. Wake sources
+    // (button, serial/BLE command, hunter RX keying) call display::activity();
+    // this only acts once the timeout elapses with none of them firing.
+    display::tick(now);
 }

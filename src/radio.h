@@ -79,6 +79,15 @@ bool tx_cw(bool on);
 // Put the radio into continuous receive. Call once after init() on RX nodes.
 void start_receive();
 
+// Put the SX1262 into its lowest-power sleep (SetSleep) — used on the hibernate
+// path so the radio isn't left in standby (~1.5 mA) drawing current while the
+// rest of the node is powered down. On the RAK4631 the SX1262 LDO is also gated
+// off (SX126X_POWER_EN LOW) for a fully unpowered radio; the Heltec/Wio have an
+// always-on radio rail, so SetSleep (~1.2 µA) is the floor there. The radio must
+// have been init()'d first (the command travels over SPI). Returns the RadioLib
+// status (0 = RADIOLIB_ERR_NONE) so the caller can log it for verification.
+int sleep();
+
 // Non-blocking: if a packet arrived since the last call, copy up to max_len
 // bytes into out, set out_len and rssi_dbm, and return true. Re-arms receive.
 bool poll(uint8_t* out, size_t max_len, size_t& out_len, float& rssi_dbm);

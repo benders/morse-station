@@ -49,6 +49,18 @@ void restart() {
     esp_restart();
 }
 
+// Drop the ESP32-S3 core clock to 80 MHz (from the 240 MHz arduino-esp32
+// default). Morse keying is millisecond-scale and the SX1262 does the RF work,
+// so 80 MHz is ample; the lower clock cuts active-mode current materially. The
+// APB/peripheral clocks (UART, I2C, SPI) track the change transparently in
+// arduino-esp32, so the serial console, OLED and radio SPI keep working.
+void set_cpu_low_power() {
+    setCpuFrequencyMhz(80);
+}
+
+uint32_t cpu_freq_mhz() { return getCpuFrequencyMhz(); }
+int      cpu_cores()    { return ESP.getChipCores(); }
+
 // Enter deep sleep with no wake source configured.  Only a hardware RST (or
 // power cycle) brings the node back; on-return is impossible, but the compiler
 // does not know that, so the function falls off the end harmlessly.

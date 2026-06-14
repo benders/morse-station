@@ -98,6 +98,53 @@ void header(const char* left, const char* right) {
 
 namespace display {
 
+// --- Idle-blanking state (see display.h) -----------------------------------
+// On the Cardputer the LCD backlight is the single largest idle load, so blank
+// = backlight off (setBrightness(0)); wake restores the boot brightness. The
+// off-screen canvas still blits while blanked (harmless — backlight is off), so
+// the periodic draws short-circuit to skip that cost.
+static constexpr uint32_t IDLE_BLANK_MS = 60000;   // 1 minute
+static uint32_t s_last_activity = 0;
+static bool     s_blanked       = false;
+static uint8_t  s_on_brightness = 255;
+
+static void panel_power(bool on) {
+    M5.Display.setBrightness(on ? s_on_brightness : 0);
+}
+
+void activity() {
+    s_last_activity = millis();
+    if (s_blanked) {
+        s_blanked = false;
+        panel_power(true);
+        Serial.println("# screen: woke");   // transition only — observable, not spammy
+    }
+}
+
+void tick(uint32_t /*now*/) {
+    // Use millis() directly (not the loop's captured `now`): activity() stamps
+    // s_last_activity from a fresh millis() later in the same loop pass, so a
+    // stale `now` here can be < s_last_activity and the unsigned diff would wrap
+    // to a huge value, blanking every pass. millis() is monotonic >= the stamp.
+    if (s_blanked) return;
+    if ((uint32_t)(millis() - s_last_activity) >= IDLE_BLANK_MS) {
+        s_blanked = true;
+        panel_power(false);
+        Serial.println("# screen: blanked (60s idle)");
+    }
+}
+
+void blank_now() {
+    if (!s_blanked) {
+        s_blanked = true;
+        panel_power(false);
+        Serial.println("# screen: blanked (forced)");
+    }
+}
+
+bool     blanked() { return s_blanked; }
+uint32_t idle_ms() { return (uint32_t)(millis() - s_last_activity); }
+
 void begin() {
     cardputer_m5_begin();
     M5.Display.setRotation(1);              // 240x135 landscape
@@ -106,6 +153,9 @@ void begin() {
     cv_ok = cv.createSprite(W, H);
     gfx().setTextColor(TFT_GREEN, TFT_BLACK);
     gfx().setTextSize(2);
+    s_on_brightness = M5.Display.getBrightness();   // restore-to level on wake
+    if (s_on_brightness == 0) s_on_brightness = 255;
+    s_last_activity = millis();                     // arm the idle timer
 }
 
 void menu(const char* const* items, int n, int sel) {
@@ -131,6 +181,7 @@ void menu(const char* const* items, int n, int sel) {
 }
 
 void fox(uint16_t seq, const char* msg, bool tone_on, const char* pwr) {
+    if (s_blanked) return;
     auto& d = gfx();
     d.fillScreen(TFT_BLACK);
     char pbuf[12];
@@ -160,6 +211,7 @@ void fox(uint16_t seq, const char* msg, bool tone_on, const char* pwr) {
 
 void hunter(const char* text, float freq_mhz, int station_id, bool ditdah,
             float rssi_dbm, bool rssi_valid, bool tone_on) {
+    if (s_blanked) return;
     auto& d = gfx();
     d.fillScreen(TFT_BLACK);
 
@@ -205,6 +257,7 @@ void hunter(const char* text, float freq_mhz, int station_id, bool ditdah,
 }
 
 void livekey(uint16_t seq, bool tone_on) {
+    if (s_blanked) return;
     auto& d = gfx();
     d.fillScreen(TFT_BLACK);
     header(tone_on ? "LIVE KEY *" : "LIVE KEY", "");

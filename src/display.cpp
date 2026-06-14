@@ -99,6 +99,53 @@ int draw_battery() {
 
 namespace display {
 
+// --- Idle-blanking state (see display.h) -----------------------------------
+// The OLED is powered down via U8g2 setPowerSave(1) (display-off / charge-pump
+// off) after IDLE_BLANK_MS without activity, and brought back with
+// setPowerSave(0). setPowerSave persists across sendBuffer (writing RAM does
+// not re-light the panel), so the periodic draws below also short-circuit while
+// blanked to skip needless I2C traffic.
+static constexpr uint32_t IDLE_BLANK_MS = 60000;   // 1 minute
+static uint32_t s_last_activity = 0;
+static bool     s_blanked       = false;
+
+static void panel_power(bool on) {
+    if (g_oled_ok) oled.setPowerSave(on ? 0 : 1);
+}
+
+void activity() {
+    s_last_activity = millis();
+    if (s_blanked) {
+        s_blanked = false;
+        panel_power(true);
+        Serial.println("# screen: woke");   // transition only — observable, not spammy
+    }
+}
+
+void tick(uint32_t /*now*/) {
+    // Use millis() directly (not the loop's captured `now`): activity() stamps
+    // s_last_activity from a fresh millis() later in the same loop pass, so a
+    // stale `now` here can be < s_last_activity and the unsigned diff would wrap
+    // to a huge value, blanking every pass. millis() is monotonic >= the stamp.
+    if (s_blanked) return;
+    if ((uint32_t)(millis() - s_last_activity) >= IDLE_BLANK_MS) {
+        s_blanked = true;
+        panel_power(false);
+        Serial.println("# screen: blanked (60s idle)");
+    }
+}
+
+void blank_now() {
+    if (!s_blanked) {
+        s_blanked = true;
+        panel_power(false);
+        Serial.println("# screen: blanked (forced)");
+    }
+}
+
+bool     blanked() { return s_blanked; }
+uint32_t idle_ms() { return (uint32_t)(millis() - s_last_activity); }
+
 void begin() {
 #if defined(DEVICE_RAK4631) || defined(DEVICE_WIO_TRACKER_L1)
     // Recover a possibly-stuck I2C bus before letting U8g2 (and the no-timeout
@@ -134,6 +181,7 @@ void begin() {
 #endif
     oled.begin();
     oled.setFont(u8g2_font_6x12_tr);
+    s_last_activity = millis();   // arm the idle timer from first boot draw
 }
 
 void menu(const char* const* items, int n, int sel) {
@@ -157,7 +205,7 @@ void menu(const char* const* items, int n, int sel) {
 }
 
 void fox(uint16_t seq, const char* msg, bool tone_on, const char* pwr) {
-    if (!g_oled_ok) return;
+    if (!g_oled_ok || s_blanked) return;
     oled.clearBuffer();
     oled.setFont(u8g2_font_6x12_tr);
     oled.drawStr(0, 11, tone_on ? "FOX TX  *" : "FOX TX");
@@ -181,7 +229,7 @@ void fox(uint16_t seq, const char* msg, bool tone_on, const char* pwr) {
 
 void hunter(const char* text, float freq_mhz, int station_id, bool ditdah,
             float rssi_dbm, bool rssi_valid, bool tone_on) {
-    if (!g_oled_ok) return;
+    if (!g_oled_ok || s_blanked) return;
     oled.clearBuffer();
     oled.setFont(u8g2_font_6x12_tr);
 
@@ -220,7 +268,7 @@ void hunter(const char* text, float freq_mhz, int station_id, bool ditdah,
 }
 
 void livekey(uint16_t seq, bool tone_on) {
-    if (!g_oled_ok) return;
+    if (!g_oled_ok || s_blanked) return;
     oled.clearBuffer();
     oled.setFont(u8g2_font_6x12_tr);
     oled.drawStr(0, 11, tone_on ? "LIVE KEY  *" : "LIVE KEY");

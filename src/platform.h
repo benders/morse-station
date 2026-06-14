@@ -90,4 +90,14 @@ int reset_code_soft();        // intentional restart() / soft reset  -> "SOFT"
 int reset_code_off();         // wake from system_off() / hibernate  -> "OFF_WAKE"/"DEEPSLEEP"
 int reset_code_watchdog();    // unexpected reset (watchdog / crash)  -> "WATCHDOG"/"TASK_WDT"
 
+// Low-power CPU clock (battery saver). set_cpu_low_power() drops the core to the
+// lowest clock that still keeps the radio + Morse-keying timing correct: 80 MHz
+// on the ESP32-S3 (down from the 240 MHz arduino-esp32 default — saves tens of
+// mA), a no-op on the nRF52840 (fixed 64 MHz). Call once early in setup().
+// cpu_freq_mhz() reports the running clock and cpu_cores() the physical core
+// count, surfaced by the `power` console command for unattended verification.
+void     set_cpu_low_power();
+uint32_t cpu_freq_mhz();
+int      cpu_cores();
+
 } // namespace platform

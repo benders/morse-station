@@ -31,4 +31,18 @@ void livekey(uint16_t seq, bool tone_on);
 // an unused body line. Used by bring-up/test sketches. */
 void status(const char* title, const char* line1, const char* line2);
 
+// Idle-blanking (battery saver). The panel is the largest idle load on these
+// boards (an OLED left on draws ~tens of mA; the Cardputer backlight more), so
+// after IDLE_BLANK_MS with no activity tick() powers the panel down. Every wake
+// source — button, serial/BLE command, hunter RX keying — calls activity(),
+// which records the time and re-powers a blanked panel. tick() is called once
+// per main-loop pass. blanked() exposes the state so the `screen` console
+// command can verify it without a human watching the glass. Wake sources are
+// wired in main.cpp's loop()/handlers.
+void activity();           // note a wake event (re-powers the panel if blanked)
+void tick(uint32_t now);   // per-loop: blank the panel after the idle timeout
+void blank_now();          // force the panel off immediately (`screen off` test)
+bool blanked();            // true while the panel is powered down (for `screen`)
+uint32_t idle_ms();        // ms since the last activity() (for `screen`)
+
 } // namespace display

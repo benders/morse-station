@@ -247,6 +247,20 @@ bool tx_cw(bool on) {
     return true;
 }
 
+int sleep() {
+    // SX126x SetSleep (warm-start; config retention is irrelevant — the MCU is
+    // about to power off too). Drops the transceiver from standby (~1.5 mA) to
+    // ~1.2 µA. fem_off would also help on the V4, but hibernate() handles the
+    // FEM/Vext rails; here we only command the SX1262 itself.
+    int state = chip.sleep();
+#if defined(DEVICE_RAK4631)
+    // The RAK4631 gates the SX1262 LDO behind SX126X_POWER_EN — cut it for a
+    // truly unpowered radio (no such gate on Heltec/Wio: always-on rail).
+    digitalWrite(SX126X_POWER_EN, LOW);
+#endif
+    return state;
+}
+
 bool has_fem() {
 #ifdef HAS_FEM
     return true;

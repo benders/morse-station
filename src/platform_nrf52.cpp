@@ -48,6 +48,14 @@ void restart() {
     NVIC_SystemReset();
 }
 
+// The nRF52840 runs a fixed 64 MHz core clock with no software scaling, so the
+// low-power-clock seam is a no-op here; cpu_freq_mhz() reports the constant and
+// cpu_cores() the single Cortex-M4 core (the BLE stack runs on the same core via
+// the SoftDevice, so there is no second core to idle).
+void     set_cpu_low_power() { /* nRF52840: fixed 64 MHz, nothing to scale */ }
+uint32_t cpu_freq_mhz()      { return 64; }
+int      cpu_cores()         { return 1; }
+
 // Enter the lowest-power "System OFF" state with no wake source configured —
 // only a RESET pin pulse (or, on some boards, a configured GPIO wake) brings
 // the unit back, which re-runs the whole sketch from the top (matching the
