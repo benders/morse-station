@@ -48,6 +48,40 @@ struct __attribute__((packed)) Ident {
 
 constexpr size_t IDENT_LEN = sizeof(Ident);   // 14 bytes
 
+// Listen beacon (instructor handshake): a fox transmits this once, the instant
+// it opens its inter-message RX window, to announce "I am listening NOW for
+// window_ms". It replaces the instructor's silence-inference (waiting out
+// CTRL_SILENCE_MS to guess the window) with an explicit trigger, so the burst
+// fires immediately and the whole window is usable. Silence-sync remains the
+// fallback when the beacon is lost. Distinguished by MAGIC_LISTEN so hunters
+// (which only match MAGIC/MAGIC_IDENT/MAGIC_EDGE) ignore it. window_ms lets the
+// instructor bound the burst to the announced deadline.
+constexpr uint8_t MAGIC_LISTEN = 0x4C;   // 'L' — fox -> "entering RX window now"
+
+struct __attribute__((packed)) Listen {
+    uint8_t  magic;        // MAGIC_LISTEN
+    uint8_t  station_id;   // the fox opening its window
+    uint16_t window_ms;    // how long the window stays open from this packet
+};
+
+constexpr size_t LISTEN_LEN = sizeof(Listen);   // 4 bytes
+
+inline size_t encode_listen(uint8_t station_id, uint16_t window_ms, uint8_t* buf) {
+    buf[0] = MAGIC_LISTEN;
+    buf[1] = station_id;
+    buf[2] = (uint8_t)(window_ms & 0xFF);
+    buf[3] = (uint8_t)(window_ms >> 8);
+    return LISTEN_LEN;
+}
+
+inline bool decode_listen(const uint8_t* buf, size_t len, Listen& l) {
+    if (len < LISTEN_LEN || buf[0] != MAGIC_LISTEN) return false;
+    l.magic      = buf[0];
+    l.station_id = buf[1];
+    l.window_ms  = (uint16_t)buf[2] | ((uint16_t)buf[3] << 8);
+    return true;
+}
+
 // Edge-event keying (docs/edge-events.md): instead of sampling key state every
 // TX_INTERVAL_MS, the transmitter sends a packet only when the key *changes*,
 // carrying the TX-measured duration of the segment that just ended. The

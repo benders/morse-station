@@ -336,6 +336,12 @@ static uint8_t     g_ctrl_seq = 0;   // monotonic command id (wraps mod 256)
 // when the target fox was last heard transmitting).
 static bool        g_fox_heard      = false;
 static uint32_t    g_fox_last_heard = 0;
+// Explicit-window state: set when the target fox's Listen beacon is decoded.
+// While g_fox_listen_until is in the future the instructor bursts immediately,
+// short-circuiting the CTRL_SILENCE_MS inference. Silence-sync still runs as the
+// fallback for a lost beacon.
+static bool        g_fox_listening    = false;
+static uint32_t    g_fox_listen_until = 0;
 
 // A Print sink that captures the FIRST line of a command's reply into a small
 // buffer, so a station can return a short confirmation in its ack packet. The
@@ -1138,6 +1144,15 @@ static void send_ident(uint32_t now) {
     radio::send(buf, proto::IDENT_LEN);
 }
 
+// Announce the RX window as the fox opens it, so an instructor bursts at once
+// instead of waiting out CTRL_SILENCE_MS of inferred silence (see protocol.h
+// Listen). Sent once per window, immediately before switching to receive.
+static void send_listen(uint16_t window_ms) {
+    uint8_t buf[proto::LISTEN_LEN];
+    proto::encode_listen(config::station_id(), window_ms, buf);
+    radio::send(buf, proto::LISTEN_LEN);
+}
+
 // Transmit the station-ID packet on the IDENT cadence (well under the Part 97
 // 10-minute limit). Sent once at fox start, then every IDENT_INTERVAL_MS — plus
 // the fox forces one at the top of each message loop (see loop_fox) so a hunter
@@ -1233,7 +1248,13 @@ static void loop_fox(uint32_t now) {
     bool rx_window = player.finished() && pause_until != 0 &&
                      now < pause_until && (now + CTRL_RX_WINDOW_MS >= pause_until);
     if (rx_window) {
-        if (!rx_armed) { radio::start_receive(); rx_armed = true; }
+        if (!rx_armed) {
+            // Beacon the window open, then switch to RX (half-duplex: TX first).
+            // window_ms = the remaining pause = how long we'll listen.
+            send_listen((uint16_t)(pause_until - now));
+            radio::start_receive();
+            rx_armed = true;
+        }
         uint8_t cbuf[128];
         size_t cn; float cr;
         if (radio::poll(cbuf, sizeof(cbuf), cn, cr)) control_rx_try(cbuf, cn, now);
@@ -1535,6 +1556,7 @@ static bool instructor_service_rx(uint32_t now) {
     size_t n; float r;
     if (!radio::poll(buf, sizeof(buf), n, r)) return false;
     proto::ControlAck a;
+    proto::Listen     l;
     if (proto::decode_ack(buf, n, a) && a.target_id == proto::INSTRUCTOR_ID) {
         Serial.printf("ACK %u seq=%u: %s\n", a.src_id, a.seq, a.status);
         char l1[24], l2[24];
@@ -1554,6 +1576,14 @@ static bool instructor_service_rx(uint32_t now) {
                 g_ctrl.active = false;     // unicast done
             }
         }
+    } else if (g_ctrl.active && proto::decode_listen(buf, n, l) &&
+               l.station_id == g_ctrl.target_id) {
+        // The target fox explicitly announced its RX window — burst NOW, no
+        // CTRL_SILENCE_MS wait. g_fox_heard so the sync path is taken even if we
+        // caught the beacon before any heartbeat.
+        g_fox_heard        = true;
+        g_fox_listening    = true;
+        g_fox_listen_until = now + l.window_ms;
     } else if (g_ctrl.active && n >= 2 && buf[1] == g_ctrl.target_id &&
                (buf[0] == proto::MAGIC || buf[0] == proto::MAGIC_IDENT ||
                 buf[0] == proto::MAGIC_EDGE)) {
@@ -1579,6 +1609,7 @@ static void loop_instructor(uint32_t now) {
     if (g_ctrl.active && synced_seq != (int)g_ctrl.seq) {
         synced_seq = g_ctrl.seq;
         g_fox_heard = false;
+        g_fox_listening = false;
     }
 
     // Always service inbound packets: acks (our confirmation) and the target fox's
@@ -1609,9 +1640,14 @@ static void loop_instructor(uint32_t now) {
     // Otherwise (broadcast, or target not yet heard): a sparse periodic probe that
     // keeps the channel mostly clear so we can still detect the fox / reach all.
     bool sync = g_ctrl.target_id != proto::BROADCAST_ID && g_fox_heard;
+    // Explicit window: the fox's Listen beacon said it is listening until
+    // g_fox_listen_until. Signed compare so it reads false once that passes.
+    bool listening = g_fox_listening && (int32_t)(g_fox_listen_until - now) > 0;
     bool burst_now;
     if (sync) {
-        burst_now = (now - g_fox_last_heard >= CTRL_SILENCE_MS) &&
+        // Beacon present → burst at once; else fall back to inferring the window
+        // from CTRL_SILENCE_MS of silence. Both still rate-limited per burst.
+        burst_now = (listening || (now - g_fox_last_heard >= CTRL_SILENCE_MS)) &&
                     (now - g_ctrl.last_tx >= CTRL_BURST_INTERVAL);
     } else {
         burst_now = (now - g_ctrl.last_tx >= CTRL_PROBE_INTERVAL);
