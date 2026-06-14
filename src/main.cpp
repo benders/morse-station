@@ -86,6 +86,12 @@ static int       pwr_idx = 0;   // LO (-9 dBm)
 // boards. The `pa` console command is a runtime override on top of this default.
 static bool g_pa_on = false;
 
+// BLE-UART provisioning is brought up in setup() and left advertising. The `ble`
+// console command lets a deployed Fox shut the 2.4 GHz core down at runtime to
+// reclaim its idle current (the instructor control path is over GFSK, not BLE),
+// and bring it back on demand. Mirrors the boot state so `show` can report it.
+static bool g_ble_on = true;
+
 // Effective board model for `show`/`model`. The Heltec V4 sub-revision is
 // auto-detected from the FEM strap at radio::init() (V4.2 GC1109 vs V4.3
 // KCT8103L); every other board has the single fixed compile-time model. Requires
@@ -150,6 +156,26 @@ static void apply_mute(bool m) {
     config::set_muted(m);
     sidetone_set_mute(m);
     last_draw = 0;   // refresh any on-screen state on the next draw
+}
+
+static bool handle_setup_command(const char* line, Print& out);  // fwd: BLE re-begin
+
+// Bring the BLE-UART core up or down. Tearing it down (NimBLEDevice::deinit via
+// ble_provision::stop) reclaims ~70 mA on the V4 — the single largest idle draw,
+// the NimBLE host+controller on core 0. begin() re-advertises. Idempotent; a
+// re-begin after a stop leaks the prior NimBLE C++ objects (deinit(false) does
+// not walk them), so this is fine to toggle occasionally but not to thrash.
+// Driven both by the `ble` console command and by the panel coupling in loop().
+static void apply_ble(bool on) {
+    if (on == g_ble_on) return;
+    if (on) {
+        char adv_name[24];
+        snprintf(adv_name, sizeof(adv_name), "MorseStn-%u", config::station_id());
+        ble_provision::begin(adv_name, handle_setup_command);
+    } else {
+        ble_provision::stop();
+    }
+    g_ble_on = on;
 }
 
 // Append n bytes to a rolling, NUL-terminated buffer. When it would overflow,
@@ -404,6 +430,28 @@ static bool handle_setup_command(const char* line, Print& out) {
             out.printf("  pa       = %s (FEM CPS; +~6 dB on V4.2; auto-on in Fox/Livekey)\n",
                        g_pa_on ? "on" : "off");
         }
+    } else if (!strcmp(line, "ble") || !strncmp(line, "ble ", 4)) {
+        // Runtime BLE-UART power control. A deployed Fox is driven over GFSK
+        // (instructor `relay`) and via USB, so the always-advertising NimBLE core
+        // is pure idle-current overhead in the field; `ble off` tears it down
+        // (NimBLEDevice::deinit(false)) and `ble on` re-advertises. NOT persisted
+        // — boot brings BLE up so a fresh node is always reachable over the air.
+        // Re-begin after a stop leaks the prior NimBLE C++ objects (deinit(false)
+        // doesn't walk them — see ble_provision::stop), so toggling is a bench/A-B
+        // affordance, not something to script in a tight loop.
+        const char* arg = line + 3;
+        while (*arg == ' ') arg++;
+        if (!*arg || !strcmp(arg, "show")) {
+            // report only
+        } else if (!strcmp(arg, "on") || !strcmp(arg, "1")) {
+            apply_ble(true);
+        } else if (!strcmp(arg, "off") || !strcmp(arg, "0")) {
+            apply_ble(false);
+        } else {
+            out.println("  ? ble <on|off>");
+            return false;
+        }
+        out.printf("  ble      = %s\n", g_ble_on ? "on (advertising)" : "off");
     } else if (!strcmp(line, "lna") || !strncmp(line, "lna ", 4)) {
         // Runtime RX LNA select for the V4.3 FEM (KCT8103L). `lna on` keeps the
         // FEM enabled in receive so its LNA is in the path (boot default); `lna
@@ -638,6 +686,7 @@ static bool handle_setup_command(const char* line, Print& out) {
         out.printf("  screen   = %s (idle-blank 60s)\n",
                    display::blanked() ? "BLANKED" : "on");
         out.printf("  debug    = %s\n", g_debug ? "on" : "off");
+        out.printf("  ble      = %s\n", g_ble_on ? "on (advertising)" : "off");
         out.printf("  rxbw     = %.1f kHz\n", radio::rx_bw_khz());
         if (radio::has_fem()) {
             out.printf("  fem      = %s  pa %s  lna %s\n", radio::fem_name(),
@@ -1635,4 +1684,19 @@ void loop() {
     // (button, serial/BLE command, hunter RX keying) call display::activity();
     // this only acts once the timeout elapses with none of them firing.
     display::tick(now);
+
+    // Couple the BLE-UART core to the panel: a node whose screen is lit is one
+    // someone is interacting with (button, console command, hunter RX keying all
+    // call display::activity), so keep it reachable over the air; once the panel
+    // idle-blanks, drop the 2.4 GHz core too — ~70 mA on the V4, the dominant
+    // idle draw. Re-wake needs no BLE: any source that relights the panel brings
+    // BLE back (an instructor `relay <id> ble on`/any cmd over GFSK relights it).
+    // Edge-triggered on the blank transition so a manual `ble on/off` for a bench
+    // A/B holds until the next genuine panel transition. apply_ble is idempotent.
+    static bool s_ble_panel_blanked = false;
+    bool blanked_now = display::blanked();
+    if (blanked_now != s_ble_panel_blanked) {
+        s_ble_panel_blanked = blanked_now;
+        apply_ble(!blanked_now);   // lit -> BLE on, blanked -> BLE off
+    }
 }
