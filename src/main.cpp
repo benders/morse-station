@@ -1105,7 +1105,16 @@ static bool prg_tapped(uint32_t now) {
     static uint32_t last = 0;
     bool down = (digitalRead(PIN_MODE_BTN) == LOW);
     bool edge = down && !was_down && (now - last > 200);
-    if (edge) { last = now; display::activity(); }   // a button press wakes the panel
+    if (edge) {
+        last = now;
+        // A press while the panel is blanked is a "wake" press only: it lights
+        // the screen and is swallowed so it doesn't also trigger this mode's
+        // button action (TX-power cycle / ditdah toggle). When the panel is
+        // already on, wake (refresh the idle timer) and let the edge through.
+        bool was_blanked = display::blanked();
+        display::activity();
+        if (was_blanked) edge = false;
+    }
     was_down = down;
     return edge;
 }
@@ -1604,8 +1613,11 @@ void loop() {
     // keyboard was brought up in config_ui::run() at boot.
     char kc;
     if (keyboard::read_char(kc)) {
+        // A press while blanked is a wake-only press: light the panel and
+        // swallow it so it doesn't also toggle mute. (See prg_tapped().)
+        bool was_blanked = display::blanked();
         display::activity();   // any keyboard press wakes the panel
-        if (kc == 'm' || kc == 'M') {
+        if (!was_blanked && (kc == 'm' || kc == 'M')) {
             bool m = !config::muted();
             apply_mute(m);
             Serial.printf("# mute %s (key)\n", m ? "on" : "off");
