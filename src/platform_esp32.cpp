@@ -55,7 +55,17 @@ void restart() {
 // APB/peripheral clocks (UART, I2C, SPI) track the change transparently in
 // arduino-esp32, so the serial console, OLED and radio SPI keep working.
 void set_cpu_low_power() {
+#if defined(DEVICE_CARDPUTER_ADV)
+    // The Cardputer's M5Unified stack registers an APB-frequency-change callback
+    // for its I2S/peripheral clocks. Dropping the core to 80 MHz re-enters that
+    // registration (addApbChangeCallback "duplicate func") and trips a
+    // stack-canary panic in the IPC task — the board boot-loops ~10 s in. Keep
+    // the M5 board at its 240 MHz default; its idle floor is dominated by the
+    // LCD/codec, not the core clock, so 80 MHz buys little here anyway. The
+    // Heltec V3/V4 have no such stack and run fine at 80 MHz.
+#else
     setCpuFrequencyMhz(80);
+#endif
 }
 
 uint32_t cpu_freq_mhz() { return getCpuFrequencyMhz(); }
