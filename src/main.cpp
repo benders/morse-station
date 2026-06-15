@@ -1130,6 +1130,24 @@ void setup() {
             break;   // handled before radio init; never reached
     }
 
+    // BLE power policy, decided once the run mode is known (single source of
+    // truth). An instructor sits on a blanked "ready" screen but must stay
+    // reachable from the companion app/phone over BLE at all times, so it must
+    // never let the AUTO panel-follow coupling drop the NimBLE core. Pin BLE ON
+    // for instructors; every other mode keeps the default AUTO (panel-follow,
+    // ~70 mA idle saving). `mode` is fixed for the life of this boot — the only
+    // way to change it is the `mode <n>` command, which writes NVS and takes
+    // effect on the next reboot, re-running this setup() — so this decision needs
+    // no runtime re-evaluation. A manual `ble off`/`ble auto` later is still a
+    // deliberate operator override and works (it just reassigns g_ble_mode).
+    if (mode == MODE_INSTRUCTOR) {
+        g_ble_mode = BLE_ON;
+        apply_ble(true);
+        Serial.println("# ble: instructor -> pinned ON (panel-follow disabled)");
+    } else {
+        Serial.println("# ble: AUTO (follows panel; blank drops the core)");
+    }
+
     // Radio and run mode are up — let BLE provisioning apply changes live.
     g_live_apply = true;
 
@@ -1853,5 +1871,15 @@ void loop() {
     // brings BLE back. apply_ble is idempotent, so this level-follow is cheap and
     // self-syncs the moment the policy returns to AUTO. ON/OFF pin the core and
     // skip this entirely (use `ble on` to reach an idle, blanked node).
-    if (g_ble_mode == BLE_AUTO) apply_ble(!display::blanked());
+    //
+    // Instructors are pinned BLE_ON in setup() so this AUTO branch never runs for
+    // them; the explicit mode guard is belt-and-suspenders making that intent
+    // local and obvious here — an instructor must stay reachable through a blank.
+    if (g_ble_mode == BLE_AUTO && mode != MODE_INSTRUCTOR) {
+        bool want = !display::blanked();
+        if (g_debug && want != g_ble_on)
+            Serial.printf("# ble: AUTO panel %s -> %s\n",
+                          want ? "lit" : "blanked", want ? "up" : "down");
+        apply_ble(want);
+    }
 }
