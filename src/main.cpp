@@ -156,6 +156,21 @@ static bool g_tx_halted = false;
 static uint32_t pause_until = 0;
 static uint32_t last_draw = 0;
 
+// Cycle the SX1262 TX power to the next level and persist it. This is the single
+// button-driven power action shared by every mode that exposes it on the PRG
+// button (Fox and Instructor) — keep it here so there's exactly one place that
+// advances pwr_idx, applies the chip power, and saves it. The debug line prints
+// the new index/value on every button-driven change so an unattended test can
+// assert the path was reached (the button is physical and can't be scripted).
+static void cycle_tx_power(void) {
+    pwr_idx = (pwr_idx + 1) % N_PWR;
+    radio::set_tx_power(PWR_LEVELS[pwr_idx].dbm);
+    config::set_fox_pwr_idx((uint8_t)pwr_idx);
+    last_draw = 0;   // force an immediate redraw of the new level
+    Serial.printf("BTN pwr: idx=%d level=%s dbm=%d\n",
+                  pwr_idx, PWR_LEVELS[pwr_idx].label, PWR_LEVELS[pwr_idx].dbm);
+}
+
 // Rolling decoded-text buffer for the hunter view.
 static char text_buf[128];
 static size_t text_len = 0;
@@ -854,6 +869,19 @@ static bool handle_setup_command(const char* line, Print& out) {
     } else if (!strcmp(line, "bootlog clear")) {
         bootlog_clear();
         out.println("# bootlog cleared");
+    } else if (!strcmp(line, "btn")) {
+        // Test hook: inject a PRG-button "power cycle" event. The physical button
+        // can't be pressed by a script, so this drives the SAME cycle_tx_power()
+        // path the button does, proving the handler is reached in the current mode
+        // (notably Instructor, which now shares the Fox button-to-power behavior).
+        // Kept in as a permanent, harmless test/diagnostic command.
+        if (mode == MODE_FOX || mode == MODE_INSTRUCTOR) {
+            cycle_tx_power();
+            out.printf("  btn: pwr idx=%d (%s, %d dBm)\n",
+                       pwr_idx, PWR_LEVELS[pwr_idx].label, PWR_LEVELS[pwr_idx].dbm);
+        } else {
+            out.println("  btn: no power action in this mode");
+        }
     } else if (!strcmp(line, "stall") || !strncmp(line, "stall ", 6)) {
         // Resiliency test: deliberately wedge loop() by spinning WITHOUT feeding
         // the watchdog, to prove the hardware watchdog actually reboots a hung
@@ -894,7 +922,7 @@ static bool handle_setup_command(const char* line, Print& out) {
                     "vol <1..32> | mute [on|off] | showtext [on|off] | "
                     "keymode <compat|edge> | "
                     "model | debug [on|off] | show | screen [on|off] | power | "
-                    "bootlog [clear] | stall [secs] | reboot | hibernate | done");
+                    "bootlog [clear] | btn | stall [secs] | reboot | hibernate | done");
     }
     return false;
 }
@@ -1357,12 +1385,7 @@ static bool control_rx_try(const uint8_t* buf, size_t n, uint32_t now) {
 }
 
 static void loop_fox(uint32_t now) {
-    if (prg_tapped(now)) {
-        pwr_idx = (pwr_idx + 1) % N_PWR;
-        radio::set_tx_power(PWR_LEVELS[pwr_idx].dbm);
-        config::set_fox_pwr_idx((uint8_t)pwr_idx);
-        last_draw = 0;   // force an immediate redraw of the new level
-    }
+    if (prg_tapped(now)) cycle_tx_power();
 
     // Remote-control RX window (instructor station): the fox is otherwise
     // TX-only, but it goes silent for the *tail* of its inter-message pause and
@@ -1745,6 +1768,10 @@ static void loop_instructor(uint32_t now) {
     // first pass → the burst window looks elapsed and the command gives up
     // instantly. A fresh sample keeps all the CTRL_* timers self-consistent.
     now = millis();
+    // The PRG button cycles TX power here exactly as it does in Fox mode — the
+    // instructor's own bursts use this chip power, so the operator needs the same
+    // one-button control. Shared handler (cycle_tx_power), not a copy.
+    if (prg_tapped(now)) cycle_tx_power();
     // Reset silence-sync when a new command (seq) starts; g_fox_heard/_last_heard
     // are file scope (see above) so the post-burst listener shares them.
     static int synced_seq = -1;
