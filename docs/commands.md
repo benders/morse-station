@@ -17,6 +17,7 @@ command line terminated by CR or LF and read the echoed result.
 | `wpm <n>` | Overall (effective) keying speed, clamped **5..40**. Default 15. Raising it above `char_wpm` also raises `char_wpm` to match. | yes | fox only: re-arms the player at the next message loop |
 | `farns <n>` | Farnsworth **character** speed, clamped **wpm..40**. Default 18. Equal to `wpm` ⇒ plain timing. | yes | fox only: re-arms the player at the next message loop |
 | `pwr <0..3>` | Fox TX power: `0`=LO(−9) `1`=MED(+2) `2`=HI(+14) `3`=MAX(+22 dBm chip). Out-of-range prints the legend. | yes | fox only: retunes the SX1262 immediately |
+| `ipwr <0..3>` | **Instructor mode only.** Runtime TX power override (same level scale as `pwr`). Instructor always boots at MAX; use this to drop power on the bench. **Not persisted** — next boot resets to MAX. | no (RAM) | yes — retunes SX1262 immediately |
 | `mode <0..3>` | Set the **boot** mode: `0`=Hunter `1`=Fox `2`=Livekey `3`=Instructor. (Hibernate is not selectable here.) Takes effect on next boot — pair with `reboot`. | yes | no (boot-time) |
 | `relay <id\|255> <cmd...>` | **Instructor mode only.** Send any command above to a *distant* station over the GFSK radio (not just short-range BLE). `id` is the target station, or `255` to broadcast to all. The target runs `<cmd>` through this same parser and returns an ack, shown on the instructor's screen/serial as `ACK <id>: <reply>`. Alias: `fox <id> <cmd>`. See "Instructor (remote control)" below. | n/a (the *target's* command persists per its own rule) | n/a |
 | `vol <1..32>` | Sidetone volume in `GAIN_Q15/1024` units (`8`→gain 8192, `32`→full swing 32768), clamped **1..32**. Default 8. Bare `vol` reports the current level. On the Heltec this scales the I2S sample amplitude; on the Cardputer it maps onto M5.Speaker 0..255. | yes | yes — applied immediately |
@@ -99,6 +100,12 @@ In the field the fox may sit far from the operator — beyond BLE range. The
 (typically the Cardputer) into a remote that pushes the commands above to a
 distant station over the **GFSK radio**, so an exercise leader can re-tune a fox
 live (new clue text, faster speed, more power) without walking to it.
+
+**TX power.** The instructor always starts at MAX so every fox in the field
+hears the command bursts. The PRG button wakes the display only (no power
+cycling). Use `ipwr <0..3>` to lower power for bench work; it is not persisted
+and resets to MAX on the next boot. The OLED always shows the current TX level
+and battery state in the header.
 
 **How it's driven.** The instructor is itself reachable over its own BLE/serial
 console; you type `relay <id> <cmd>` there and it relays `<cmd>` on-air:
