@@ -34,9 +34,11 @@ Modes:
   = stronger signal, a warmer/colder hint). The sidetone **volume tracks signal
   strength** (dB-linear, so it sounds like a classic "tune for max volume"
   meter) — run the fox at LO power so the signal actually falls off with distance
-  and the gradient is audible as you close in. A **short PRG tap toggles the copy
-  line** between decoded letters (default) and raw dit/dah elements (a learning
-  aid).
+  and the gradient is audible as you close in. A **short PRG tap cycles the
+  sidetone volume** MUTE / LOW / MED / HIGH (remembered across power cycles;
+  buzzer/PAM8403 boards toggle mute only). The copy line shows raw dit/dah
+  elements by default; switch it to decoded letters with the `showtext on`
+  console command (see `docs/commands.md`).
 - **Fox (TX loop)** — repeats the canned location message on the air. A **short
   PRG tap cycles TX power** LO / MED / HI / MAX (shown as "PWR x" on the OLED).
   The level is **remembered across power cycles** (boots LO the first time) —

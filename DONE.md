@@ -131,6 +131,15 @@ identically). See `docs/protocol.md`.
       divider on GPIO1, gate GPIO37 active-HIGH; Cardputer via
       `M5.Power.getBatteryLevel()`) rendered in the Hunter/Fox/Live-key headers on
       both platforms. (commit dc5c429)
+- [x] **Hunter button cycles volume** (was a view toggle) — PRG/USER cycles
+      MUTE → LOW → MED → HIGH (I2S levels `{4,11,32}`), persisted; buzzer/PAM8403
+      boards toggle mute only. dit/dah is the default copy view; the new
+      `showtext on|off` console command (serial/BLE/relay) switches to decoded
+      text, replacing the old button view-toggle. (commits 216ea97/718bca9)
+- [x] **Fox `stop`/`start` TX commands** — runtime `g_tx_halted` flag in the
+      shared Fox/Live-Key emission path halts/resumes all air output (keystate/edge
+      + Ident); works over serial/BLE/relay, `show` reports `tx=running|halted`.
+      Runtime-only (reboot comes up transmitting). HW-validated stn38. (commit 0367463)
 
 ## Stage 7 — Range & polish
 
@@ -188,6 +197,36 @@ identically). See `docs/protocol.md`.
       the Wio Tracker L1 (nRF52 `NRF_WDT`: `stall 12` → reset at 8.3 s → next boot
       `reason=2(WATCHDOG)`). (`src/platform_esp32.cpp` / `src/platform_nrf52.cpp`
       `watchdog_begin`/`watchdog_feed`; `src/main.cpp`; `docs/commands.md`.)
+
+## Instructor (remote control over GFSK)
+
+- [x] **Instructor mode** (`MODE_INSTRUCTOR`, `mode 3`) — relays the full console
+      command set to a distant fox/hunter over GFSK control packets
+      (`MAGIC_CTRL`/`CACK`, instructor = reserved id 0), so an exercise leader can
+      re-tune a fox beyond BLE range. `relay <id|255> <cmd>` bursts in the fox's
+      silent inter-message window (silence-synced to a unicast target) and shows
+      `ACK <id>: <reply>`. End-of-message `Listen` beacon (`MAGIC_LISTEN`) lets the
+      instructor burst immediately instead of waiting out `CTRL_SILENCE_MS`.
+      HW-validated 2026-06-10 (stn73 Cardputer → fox42/hunter43). Full mechanics in
+      `docs/commands.md`. (commits f4a2381 / 0abff75 / 2516351)
+- [x] **Instructor display + power policy** — OLED header always shows battery and
+      the current TX level; instructor boots at MAX so every field fox hears the
+      bursts, with a non-persisted `ipwr <0..3>` runtime override for the bench. The
+      PRG button wakes the display only (no power cycling), and BLE is pinned ON
+      even when the panel blanks so the instructor stays reachable.
+      (commits f5107c4 / 9718a22)
+
+## Power saving
+
+- [x] **Idle power saving** (`docs/commands.md` — `screen`/`power`/`hibernate`).
+      60 s idle blanks the OLED (`display::tick`/`activity`; `screen` reports/forces
+      state), the ESP32-S3 idles at **80 MHz** (`platform::set_cpu_low_power` at
+      setup; `power` reports the running clock), and `hibernate` now also puts the
+      SX1262 to sleep (`SetSleep`). BLE-UART follows panel state (~70 mA idle saving
+      on V4) and the wake press is swallowed so waking a blanked panel doesn't fire
+      the button. The Cardputer stays at 240 MHz (80 MHz crashes M5Unified).
+      HW-validated on V3 (stn38 Fox) and V4 (stn43 Hunter).
+      (commits 63d9dc9 / 5781fa6 / ece1e14 / 30f3ac2)
 
 ---
 
