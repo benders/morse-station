@@ -24,6 +24,11 @@ void fox(uint16_t seq, const char* msg, bool tone_on, const char* pwr);
 void hunter(const char* text, float freq_mhz, int station_id, bool ditdah,
             float rssi_dbm, bool rssi_valid, bool tone_on);
 
+// Instructor control view. pwr is a short power-level label; tx_active true
+// while a burst is in flight.
+void instructor(const char* pwr, const char* line1, const char* line2,
+                bool tx_active = false);
+
 // Live-key transmit view.
 void livekey(uint16_t seq, bool tone_on);
 

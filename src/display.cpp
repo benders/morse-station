@@ -227,6 +227,21 @@ void fox(uint16_t seq, const char* msg, bool tone_on, const char* pwr) {
     oled.sendBuffer();
 }
 
+void instructor(const char* pwr, const char* line1, const char* line2,
+                bool tx_active) {
+    if (!g_oled_ok || s_blanked) return;
+    oled.clearBuffer();
+    oled.setFont(u8g2_font_6x12_tr);
+    oled.drawStr(0, 11, tx_active ? "INSTRUCTOR TX" : "INSTRUCTOR");
+    int bx = draw_battery();
+    char pbuf[12];
+    snprintf(pbuf, sizeof(pbuf), "PWR %s", pwr);
+    oled.drawStr(bx - 4 - (int)strlen(pbuf) * 6, 11, pbuf);
+    if (line1) oled.drawStr(0, 36, line1);
+    if (line2) oled.drawStr(0, 54, line2);
+    oled.sendBuffer();
+}
+
 void hunter(const char* text, float freq_mhz, int station_id, bool ditdah,
             float rssi_dbm, bool rssi_valid, bool tone_on) {
     if (!g_oled_ok || s_blanked) return;

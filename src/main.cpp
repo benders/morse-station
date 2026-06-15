@@ -498,6 +498,23 @@ static bool handle_setup_command(const char* line, Print& out) {
             out.printf("  tx pwr   = %d (%s, %d dBm)\n", pwr_idx,
                        PWR_LEVELS[pwr_idx].label, PWR_LEVELS[pwr_idx].dbm);
         }
+    } else if (!strncmp(line, "ipwr ", 5)) {
+        // Instructor TX power override. Boots at MAX; use this to drop for
+        // bench work. Not persisted — next boot resets to MAX.
+        if (mode != MODE_INSTRUCTOR) {
+            out.println("  ? ipwr is only valid in Instructor mode");
+        } else {
+            int p = atoi(line + 5);
+            if (p < 0 || p >= N_PWR) {
+                out.println("  ? ipwr 0=LO 1=MED 2=HI 3=MAX");
+            } else {
+                pwr_idx = p;
+                radio::set_tx_power(PWR_LEVELS[pwr_idx].dbm);
+                last_draw = 0;
+                out.printf("  ipwr     = %d (%s, %d dBm)\n", pwr_idx,
+                           PWR_LEVELS[pwr_idx].label, PWR_LEVELS[pwr_idx].dbm);
+            }
+        }
     } else if (!strcmp(line, "pa") || !strncmp(line, "pa ", 3)) {
         // Runtime override of the V4 FEM power amplifier (CPS). The PA is engaged
         // automatically in the transmit run modes (Fox / Live Key) at boot; this
@@ -870,17 +887,16 @@ static bool handle_setup_command(const char* line, Print& out) {
         bootlog_clear();
         out.println("# bootlog cleared");
     } else if (!strcmp(line, "btn")) {
-        // Test hook: inject a PRG-button "power cycle" event. The physical button
-        // can't be pressed by a script, so this drives the SAME cycle_tx_power()
-        // path the button does, proving the handler is reached in the current mode
-        // (notably Instructor, which now shares the Fox button-to-power behavior).
-        // Kept in as a permanent, harmless test/diagnostic command.
-        if (mode == MODE_FOX || mode == MODE_INSTRUCTOR) {
+        // Test hook: inject a PRG-button press. In Fox mode this cycles TX power
+        // (the only button action Fox has). In all other modes it just wakes the
+        // screen, same as the physical button.
+        if (mode == MODE_FOX) {
             cycle_tx_power();
             out.printf("  btn: pwr idx=%d (%s, %d dBm)\n",
                        pwr_idx, PWR_LEVELS[pwr_idx].label, PWR_LEVELS[pwr_idx].dbm);
         } else {
-            out.println("  btn: no power action in this mode");
+            display::activity();
+            out.println("  btn: screen wake");
         }
     } else if (!strcmp(line, "stall") || !strncmp(line, "stall ", 6)) {
         // Resiliency test: deliberately wedge loop() by spinning WITHOUT feeding
@@ -917,7 +933,7 @@ static bool handle_setup_command(const char* line, Print& out) {
         return true;
     } else {
         out.println("  ? call <SIGN> | msg <text> | id <n> | wpm <n> | "
-                    "farns <n> | pwr <0..3> | pa <on|off> | lna <on|off> | "
+                    "farns <n> | pwr <0..3> | ipwr <0..3> | pa <on|off> | lna <on|off> | "
                     "rxbw <khz> | mode <0..2> | "
                     "vol <1..32> | mute [on|off] | showtext [on|off] | "
                     "keymode <compat|edge> | "
@@ -1147,9 +1163,9 @@ void setup() {
             radio::start_receive();
             break;
         case MODE_INSTRUCTOR:
-            // Remote control: TX commands at full reach (the fox is far) and sit
-            // in RX between bursts to hear acks. PA on for the command bursts.
-            pwr_idx = N_PWR - 1;                       // MAX — the fox is distant
+            // Remote control: always MAX so every fox in the field hears the
+            // command bursts. `ipwr` can override at runtime without reflash.
+            pwr_idx = N_PWR - 1;
             radio::set_tx_power(PWR_LEVELS[pwr_idx].dbm);
             radio::set_pa(true); g_pa_on = true;       // no-op w/o FEM
             radio::start_receive();
@@ -1727,7 +1743,7 @@ static bool instructor_service_rx(uint32_t now) {
         char l1[24], l2[24];
         snprintf(l1, sizeof(l1), "ACK id %u", a.src_id);
         snprintf(l2, sizeof(l2), "%s", a.status);
-        display::status("Instructor", l1, l2);
+        display::instructor(PWR_LEVELS[pwr_idx].label, l1, l2);
         last_draw = now;
         if (g_ctrl.active && a.seq == g_ctrl.seq) {
             // Tally the responder; stop a unicast burst once its target acks.
@@ -1768,10 +1784,8 @@ static void loop_instructor(uint32_t now) {
     // first pass → the burst window looks elapsed and the command gives up
     // instantly. A fresh sample keeps all the CTRL_* timers self-consistent.
     now = millis();
-    // The PRG button cycles TX power here exactly as it does in Fox mode — the
-    // instructor's own bursts use this chip power, so the operator needs the same
-    // one-button control. Shared handler (cycle_tx_power), not a copy.
-    if (prg_tapped(now)) cycle_tx_power();
+    // PRG button wakes the screen only (no power cycling in instructor mode).
+    if (prg_tapped(now)) display::activity();
     // Reset silence-sync when a new command (seq) starts; g_fox_heard/_last_heard
     // are file scope (see above) so the post-burst listener shares them.
     static int synced_seq = -1;
@@ -1788,7 +1802,7 @@ static void loop_instructor(uint32_t now) {
     if (!g_ctrl.active) {
         if (now - last_draw >= 1000) {         // idle status, occasional redraw
             last_draw = now;
-            display::status("Instructor", "ready", "relay <id> <cmd>");
+            display::instructor(PWR_LEVELS[pwr_idx].label, "ready", "relay <id> <cmd>");
         }
         return;
     }
@@ -1798,7 +1812,8 @@ static void loop_instructor(uint32_t now) {
         g_ctrl.active = false;
         char l2[24];
         snprintf(l2, sizeof(l2), "%u ack(s)", g_ctrl.n_acks);
-        display::status("Instructor", g_ctrl.n_acks ? "done" : "no response", l2);
+        display::instructor(PWR_LEVELS[pwr_idx].label,
+                            g_ctrl.n_acks ? "done" : "no response", l2);
         Serial.printf("# relay seq=%u finished: %u ack(s)\n",
                       g_ctrl.seq, g_ctrl.n_acks);
         return;
@@ -1844,7 +1859,7 @@ static void loop_instructor(uint32_t now) {
             snprintf(l1, sizeof(l1), "-> id %u seq %u", g_ctrl.target_id, g_ctrl.seq);
             snprintf(l2, sizeof(l2), "%us %u ack %s", (now - g_ctrl.start_ms) / 1000,
                      g_ctrl.n_acks, sync ? "sync" : "probe");
-            display::status("Instructor TX", l1, l2);
+            display::instructor(PWR_LEVELS[pwr_idx].label, l1, l2, true);
         }
     }
 }
