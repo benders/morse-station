@@ -21,7 +21,9 @@ namespace {
 
 Handler               g_handler   = nullptr;
 NimBLECharacteristic* g_tx_char   = nullptr;
-bool                  g_started   = false;
+NimBLEServer*         g_server    = nullptr;
+bool                  g_inited    = false;   // one-time NimBLE stack + GATT setup
+bool                  g_started   = false;   // advertising active
 volatile bool         g_connected = false;
 
 // Max line length, matching the generous serial line length in main.cpp.
@@ -70,8 +72,9 @@ private:
 };
 
 class RxCallbacks : public NimBLECharacteristicCallbacks {
-    void onWrite(NimBLECharacteristic* chr) override {
-        std::string val = chr->getValue();
+    // NimBLE-Arduino 2.x: onWrite gains a required NimBLEConnInfo& (peer info).
+    void onWrite(NimBLECharacteristic* chr, NimBLEConnInfo& /*connInfo*/) override {
+        std::string val = chr->getValue();  // NimBLEAttValue -> std::string
         for (char c : val) {
             if (c == '\r' || c == '\n') {
                 if (g_asm_len == 0) continue;        // skip blank/CRLF pairs
@@ -95,10 +98,17 @@ class RxCallbacks : public NimBLECharacteristicCallbacks {
 // Re-advertise on disconnect so the node stays reachable for the whole exercise
 // (NimBLE stops advertising once a central connects).
 class ServerCallbacks : public NimBLEServerCallbacks {
-    void onConnect(NimBLEServer*) override { g_connected = true; }
-    void onDisconnect(NimBLEServer*) override {
+    // NimBLE-Arduino 2.x: onConnect/onDisconnect gain a required NimBLEConnInfo&,
+    // and onDisconnect adds an int reason code.
+    void onConnect(NimBLEServer*, NimBLEConnInfo& /*connInfo*/) override {
+        g_connected = true;
+    }
+    void onDisconnect(NimBLEServer*, NimBLEConnInfo& /*connInfo*/,
+                      int /*reason*/) override {
         g_connected = false;
-        NimBLEDevice::startAdvertising();
+        // Re-advertise only while we're meant to be up — not after stop()
+        // intentionally pulled advertising (the BLE-off / panel-blank case).
+        if (g_started) NimBLEDevice::startAdvertising();
     }
 };
 
@@ -110,14 +120,24 @@ ServerCallbacks g_srv_cb;
 void begin(const char* adv_name, Handler handler) {
     if (g_started) return;
     g_handler = handler;
+
+    // SPIKE (NimBLE-Arduino 2.x): full stack + GATT teardown/rebuild on every
+    // begin()/stop() cycle. In 1.4.x this leaked the GATT singletons and the
+    // re-created NUS characteristic came back disconnected from the notify path
+    // (so we kept the stack alive and toggled only advertising). 2.x reworked
+    // object ownership so deinit(true) should free everything and a fresh
+    // createServer/createService/createCharacteristic should rebuild a working
+    // notify path — letting AUTO mode actually drop the BT controller (~70 mA)
+    // each time the panel blanks, not just stop advertising. This is what we're
+    // here to validate on the ESP32-S3.
     g_asm_len = 0;
     if (!g_queue) g_queue = xQueueCreate(QUEUE_DEPTH, sizeof(Line));
 
     NimBLEDevice::init(adv_name);
 
-    NimBLEServer* server = NimBLEDevice::createServer();
-    server->setCallbacks(&g_srv_cb);
-    NimBLEService* svc = server->createService(NUS_SERVICE_UUID);
+    g_server = NimBLEDevice::createServer();
+    g_server->setCallbacks(&g_srv_cb);
+    NimBLEService* svc = g_server->createService(NUS_SERVICE_UUID);
 
     g_tx_char = svc->createCharacteristic(NUS_TX_UUID, NIMBLE_PROPERTY::NOTIFY);
 
@@ -129,9 +149,10 @@ void begin(const char* adv_name, Handler handler) {
 
     NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
     adv->addServiceUUID(NUS_SERVICE_UUID);
-    adv->setScanResponse(true);
-    NimBLEDevice::startAdvertising();
+    adv->enableScanResponse(true);   // 2.x rename of setScanResponse(bool)
 
+    NimBLEDevice::startAdvertising();
+    g_inited  = true;
     g_started = true;
 }
 
@@ -148,16 +169,17 @@ bool connected() { return g_connected; }
 
 void stop() {
     if (!g_started) return;
-    // deinit(false): release the BLE host + controller (frees the radio core)
-    // but do NOT walk and delete the server/service/characteristic objects.
-    // The clearAll=true path double-frees in NimBLE-Arduino 1.4.x
-    // (heap_caps_free assert -> panic). We only call stop() right before deep
-    // sleep, so the leaked C++ objects are reclaimed by the imminent reset.
-    NimBLEDevice::deinit(false);
+    // SPIKE: full teardown. deinit(true) releases the BLE host + controller AND
+    // walks/frees the server/service/characteristic objects — powering down the
+    // 2.4 GHz core (the ~70 mA idle draw on the S3) rather than merely halting
+    // advertising. In 1.4.x this double-free-panicked; the spike is to confirm
+    // 2.x frees cleanly so begin() can rebuild on the next panel wake.
+    g_started = false;
+    g_inited  = false;
+    NimBLEDevice::deinit(true);
+    g_server    = nullptr;
     g_tx_char   = nullptr;
-    g_handler   = nullptr;
     g_connected = false;
-    g_started   = false;
 }
 
 }  // namespace ble_provision
