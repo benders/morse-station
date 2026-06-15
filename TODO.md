@@ -337,6 +337,20 @@ status board live in `wio-tracker-port.md`.
       small inter-notify yield / wait-for-txbuf so the stack drains. The nRF52
       Bluefruit `BleOut` (`ble_provision_nrf52.cpp`) likely needs the same. Purely
       a console-readability bug — does not affect provisioning or the MCU.
+- [ ] **Hunter button: cycle volume instead of toggling view.** Today the PRG
+      button in `loop_hunter` toggles the decoded-text vs dit/dah (`./-`) view
+      (`if (prg_tapped(now)) { hunter_ditdah = !hunter_ditdah; ... }`, ~`main.cpp`
+      L1414). Replace that with a volume cycle: **MUTE → LO → MED → HI → (wrap)**,
+      mapping LO/MED/HI to three `config::volume()` levels (1..32 GAIN_Q15 units;
+      pick sensible stops) and using `apply_mute()` for the MUTE step so it stays
+      in lockstep with the `mute` command and persists. On devices with no real
+      volume (buzzer backend — `SIDETONE_BUZZER`, e.g. Wio) the button should just
+      **toggle MUTE on/off** (skip the LO/MED/HI steps). Show the current step
+      briefly on the display. Since the button no longer switches view, expose the
+      TXT/dit-dah view switch over **Serial / BLE / Instructor** instead — add a
+      console command (e.g. `view txt|ditdah`) in `handle_setup_command` driving
+      `hunter_ditdah`, so it works locally and via `relay`. (`src/main.cpp`,
+      `config.{h,cpp}` if a view pref should persist.)
 - [ ] Field test at range; tune power and message cadence (hardware).
 - [ ] "RECV" station ID and signal strength bar should clear after timeout from
       last received packet.
