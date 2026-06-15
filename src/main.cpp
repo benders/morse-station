@@ -430,6 +430,37 @@ static uint32_t    g_fox_last_heard = 0;
 static bool        g_fox_listening    = false;
 static uint32_t    g_fox_listen_until = 0;
 
+// Instructor broadcast banner (docs/plan-instructor-broadcast.md). A short
+// plaintext message the instructor pushes to EVERY station's screen, distinct
+// from `relay` (which runs a console command silently). Fire-and-forget: no ack,
+// just a fixed small repeat count for delivery probability.
+static constexpr uint32_t BCAST_REPEATS   = 5;       // burst the same seq this many times
+static constexpr uint32_t BCAST_SHOW_MS   = 15000;   // how long a banner stays on the panel
+static constexpr uint32_t BCAST_INTERVAL  = CTRL_PROBE_INTERVAL;  // gap between repeats
+
+// Shared banner state: set by the RX handler (broadcast_rx_try) or locally when
+// the instructor stages its own send; consumed by each mode's draw via
+// banner_active(). g_banner_until is a millis() deadline (0 = no banner).
+static char     g_banner[proto::BCAST_TEXT_MAX + 1] = {0};
+static uint32_t g_banner_until = 0;
+
+// Pending broadcast campaign (the TX side), staged by the `bcast` verb and
+// driven by loop_instructor(). Mirrors CtrlPending but fire-and-forget.
+struct BcastPending {
+    bool     active       = false;
+    uint8_t  seq          = 0;
+    uint8_t  flags        = 0;
+    char     text[proto::BCAST_TEXT_MAX + 1] = {0};
+    uint32_t last_tx      = 0;       // last repeat send (for the inter-repeat gap)
+    uint8_t  repeats_left = 0;
+};
+static BcastPending g_bcast;
+
+// fwd: the broadcast banner helpers are defined far below (near the mode loops)
+// but referenced earlier — by the `bcast`/`show` console verbs and prg_tapped.
+static bool banner_active(uint32_t now);
+static void set_banner(const char* text, bool alert, uint32_t now);
+
 // A Print sink that captures the FIRST line of a command's reply into a small
 // buffer, so a station can return a short confirmation in its ack packet. The
 // console replies are like "  fox msg  = HELLO"; we keep the leading text up to
@@ -716,6 +747,44 @@ static bool handle_setup_command(const char* line, Print& out) {
                            tid, g_ctrl.seq, g_ctrl.cmd);
             }
         }
+    } else if (!strcmp(line, "bcast") || !strncmp(line, "bcast ", 6)) {
+        // Instructor broadcast banner (docs/plan-instructor-broadcast.md): push a
+        // short plaintext message to EVERY station's screen — distinct from
+        // `relay`, which runs a console command silently. `bcast <text>` shows an
+        // ordinary banner; `bcast -a <text>` (alert) force-wakes a blanked panel;
+        // `bcast clear` dismisses any showing banner everywhere. Fire-and-forget:
+        // no ack, just BCAST_REPEATS repeats from loop_instructor(). The actual
+        // bursting happens there; here we just stage it. Instructor-mode only.
+        const char* arg = line + 5;
+        while (*arg == ' ') arg++;
+        bool alert = false;
+        if (!strncmp(arg, "-a ", 3)) { alert = true; arg += 3; while (*arg == ' ') arg++; }
+        bool clear = !strcmp(arg, "clear");
+        if (clear) arg = "";              // empty text → receivers dismiss
+        if (mode != MODE_INSTRUCTOR) {
+            out.println("  bcast: only in Instructor mode");
+        } else if (!*arg && !clear) {
+            out.println("  ? bcast [-a] <text...> | bcast clear");
+        } else if (strlen(arg) > proto::BCAST_TEXT_MAX) {
+            out.printf("  bcast: text too long (max %u)\n",
+                       (unsigned)proto::BCAST_TEXT_MAX);
+        } else {
+            g_bcast.active       = true;
+            g_bcast.seq          = g_ctrl_seq++;
+            config::set_ctrl_seq(g_ctrl_seq);   // shared monotonic id, persisted
+            g_bcast.flags        = alert ? proto::BCAST_FLAG_ALERT : 0;
+            strncpy(g_bcast.text, arg, proto::BCAST_TEXT_MAX);
+            g_bcast.text[proto::BCAST_TEXT_MAX] = '\0';
+            g_bcast.last_tx      = 0;            // send the first repeat immediately
+            g_bcast.repeats_left = BCAST_REPEATS;
+            // The instructor sees its own banner (it does not RX its own send).
+            set_banner(arg, alert, millis());
+            if (clear)
+                out.printf("  bcast clear (seq %u)\n", g_bcast.seq);
+            else
+                out.printf("  bcasting%s (seq %u): %s\n", alert ? " ALERT" : "",
+                           g_bcast.seq, g_bcast.text);
+        }
     } else if (!strcmp(line, "mute") || !strncmp(line, "mute ", 5)) {
         // Bare "mute" toggles; "mute on|off" (or 1|0) sets explicitly. Persisted
         // and applied live so a node near people can be silenced over the air.
@@ -825,6 +894,8 @@ static bool handle_setup_command(const char* line, Print& out) {
         out.printf("  ble      = %s [%s]\n", g_ble_on ? "on (advertising)" : "off",
                    g_ble_mode == BLE_ON ? "on" : g_ble_mode == BLE_OFF ? "off" : "auto");
         out.printf("  rxbw     = %.1f kHz\n", radio::rx_bw_khz());
+        out.printf("  banner   = %s\n",
+                   banner_active(millis()) ? g_banner : "(none)");
         if (radio::has_fem()) {
             out.printf("  fem      = %s  pa %s  lna %s\n", radio::fem_name(),
                        g_pa_on ? "on" : "off", radio::lna_on() ? "on" : "off");
@@ -937,6 +1008,7 @@ static bool handle_setup_command(const char* line, Print& out) {
                     "rxbw <khz> | mode <0..2> | "
                     "vol <1..32> | mute [on|off] | showtext [on|off] | "
                     "keymode <compat|edge> | "
+                    "relay <id|255> <cmd> | bcast [-a] <text> | "
                     "model | debug [on|off] | show | screen [on|off] | power | "
                     "bootlog [clear] | btn | stall [secs] | reboot | hibernate | done");
     }
@@ -1350,6 +1422,12 @@ static bool prg_tapped(uint32_t now) {
         bool was_blanked = display::blanked();
         display::activity();
         if (was_blanked) edge = false;
+        else if (banner_active(now)) {
+            // A press while a banner is showing dismisses it instead of doing the
+            // mode's button action, and is swallowed (mirrors the wake-press rule).
+            g_banner_until = 0;
+            edge = false;
+        }
     }
     was_down = down;
     return edge;
@@ -1400,6 +1478,77 @@ static bool control_rx_try(const uint8_t* buf, size_t n, uint32_t now) {
     return true;
 }
 
+// True while an instructor broadcast banner should be shown (set by
+// broadcast_rx_try or a local instructor send; cleared by timeout/dismiss).
+static bool banner_active(uint32_t now) {
+    return g_banner_until != 0 && (int32_t)(g_banner_until - now) > 0;
+}
+
+// Arm the banner overlay from `text` for BCAST_SHOW_MS. `alert` force-wakes a
+// blanked panel (the "RETURN TO BASE" path); an ordinary banner respects the
+// operator's blank state. Used by both the RX handler and the local instructor
+// echo. An empty text clears any showing banner.
+static void set_banner(const char* text, bool alert, uint32_t now) {
+    if (!text || !text[0]) {            // `bcast clear` / empty → dismiss
+        g_banner[0] = '\0';
+        g_banner_until = 0;
+        return;
+    }
+    strncpy(g_banner, text, proto::BCAST_TEXT_MAX);
+    g_banner[proto::BCAST_TEXT_MAX] = '\0';
+    g_banner_until = now + BCAST_SHOW_MS;
+    if (alert) display::activity();     // force-wake a blanked panel
+}
+
+// Paint the active banner as a full-screen overlay (title + two body lines),
+// splitting g_banner at a word boundary near the panel width. Text past the two
+// lines is simply not shown (the draw truncates rather than assuming it fits).
+static void draw_banner() {
+    constexpr size_t LINE = 20;   // ~chars per body line on the 128px OLED (6x12)
+    char l1[proto::BCAST_TEXT_MAX + 1];
+    char l2[proto::BCAST_TEXT_MAX + 1] = {0};
+    size_t len = strlen(g_banner);
+    if (len <= LINE) {
+        strncpy(l1, g_banner, sizeof(l1));
+        l1[sizeof(l1) - 1] = '\0';
+    } else {
+        size_t brk = LINE;                       // hard-break point if no space
+        for (size_t i = LINE; i > 0; --i)        // prefer a space at/before LINE
+            if (g_banner[i] == ' ') { brk = i; break; }
+        memcpy(l1, g_banner, brk);
+        l1[brk] = '\0';
+        const char* rest = g_banner + brk;
+        while (*rest == ' ') rest++;
+        strncpy(l2, rest, sizeof(l2));
+        l2[sizeof(l2) - 1] = '\0';
+    }
+    display::status("INSTRUCTOR", l1, l2);
+}
+
+// Apply an inbound broadcast banner packet. Decodes, requires src_id ==
+// INSTRUCTOR_ID, dedups by seq (the instructor bursts the same seq repeatedly),
+// and on a fresh copy paints the banner. Fire-and-forget — no ack is sent.
+// Returns true if the buffer was a broadcast packet (handled), so the RX cascade
+// stops trying other decoders. Receivers ignore unknown flags bits (mask bit0).
+static bool broadcast_rx_try(const uint8_t* buf, size_t n, uint32_t now) {
+    proto::BroadcastMsg b;
+    if (!proto::decode_bcast(buf, n, b)) return false;
+    if (b.src_id != proto::INSTRUCTOR_ID) return true;   // only the instructor
+
+    static int  last_seq  = -1;
+    static bool have_last = false;
+    bool fresh = !(have_last && (int)b.seq == last_seq);
+    last_seq = b.seq; have_last = true;
+    if (fresh) {
+        bool alert = (b.flags & proto::BCAST_FLAG_ALERT) != 0;
+        set_banner(b.text, alert, now);
+        last_draw = 0;   // force an immediate redraw to show the banner
+        if (g_debug)
+            Serial.printf("RX B seq=%u flags=%u text=%s\n", b.seq, b.flags, b.text);
+    }
+    return true;
+}
+
 static void loop_fox(uint32_t now) {
     if (prg_tapped(now)) cycle_tx_power();
 
@@ -1424,7 +1573,9 @@ static void loop_fox(uint32_t now) {
         }
         uint8_t cbuf[128];
         size_t cn; float cr;
-        if (radio::poll(cbuf, sizeof(cbuf), cn, cr)) control_rx_try(cbuf, cn, now);
+        if (radio::poll(cbuf, sizeof(cbuf), cn, cr)) {
+            if (!broadcast_rx_try(cbuf, cn, now)) control_rx_try(cbuf, cn, now);
+        }
     } else {
         rx_armed = false;
     }
@@ -1463,7 +1614,8 @@ static void loop_fox(uint32_t now) {
 
     if (now - last_draw >= 100) {
         last_draw = now;
-        display::fox(seq, config::fox_message(), down, PWR_LEVELS[pwr_idx].label);
+        if (banner_active(now)) draw_banner();   // instructor banner borrows the panel
+        else display::fox(seq, config::fox_message(), down, PWR_LEVELS[pwr_idx].label);
     }
 }
 
@@ -1477,7 +1629,11 @@ static void loop_livekey(uint32_t now) {
         else                           tx_keystate(now, down);
     }
 
-    if (now - last_draw >= 100) { last_draw = now; display::livekey(seq, down); }
+    if (now - last_draw >= 100) {
+        last_draw = now;
+        if (banner_active(now)) draw_banner();
+        else display::livekey(seq, down);
+    }
 }
 
 static void loop_hunter(uint32_t now) {
@@ -1541,7 +1697,12 @@ static void loop_hunter(uint32_t now) {
         proto::KeyState  ks;
         proto::Ident     id;
         proto::EdgeEvent ev;
-        if (control_rx_try(buf, n, now)) {
+        if (broadcast_rx_try(buf, n, now)) {
+            // Instructor broadcast banner: painted inside broadcast_rx_try. Count
+            // it as signal so the presence bar doesn't blink. No ack/re-arm needed
+            // (fire-and-forget); the radio stays in RX.
+            last_signal = now;
+        } else if (control_rx_try(buf, n, now)) {
             // Instructor remote control: applied + acked inside control_rx_try.
             // Count it as signal so the presence bar doesn't blink during a
             // run of control packets. The radio is re-armed by control_rx_try.
@@ -1718,9 +1879,13 @@ static void loop_hunter(uint32_t now) {
 
     if (now - last_draw >= 100) {
         last_draw = now;
-        const char* copy = g_showtext ? text_buf : ditdah_buf;
-        display::hunter(copy, radio::frequency_mhz(), rx_station_id, !g_showtext,
-                        rssi, rssi_valid, rx_down);
+        if (banner_active(now)) {
+            draw_banner();   // banner borrows the glass; copy continues underneath
+        } else {
+            const char* copy = g_showtext ? text_buf : ditdah_buf;
+            display::hunter(copy, radio::frequency_mhz(), rx_station_id, !g_showtext,
+                            rssi, rssi_valid, rx_down);
+        }
     }
 }
 
@@ -1799,10 +1964,37 @@ static void loop_instructor(uint32_t now) {
     // own traffic (silence tracking).
     instructor_service_rx(now);
 
+    // Broadcast banner campaign (docs/plan-instructor-broadcast.md): fire-and-
+    // forget, independent of the relay/ack path. Burst the same seq BCAST_REPEATS
+    // times, BCAST_INTERVAL apart, then stop — no acks to wait for. Takes priority
+    // over the relay/idle draw while active (the campaign is short, ~7.5 s).
+    if (g_bcast.active) {
+        if (now - g_bcast.last_tx >= BCAST_INTERVAL) {
+            g_bcast.last_tx = now;
+            uint8_t bbuf[proto::BCAST_HDR_LEN + proto::BCAST_TEXT_MAX];
+            size_t  blen = proto::encode_bcast(proto::INSTRUCTOR_ID, g_bcast.seq,
+                                               g_bcast.flags, g_bcast.text, bbuf);
+            radio::send(bbuf, blen);
+            radio::start_receive();
+            if (g_bcast.repeats_left) g_bcast.repeats_left--;
+            if (g_bcast.repeats_left == 0) g_bcast.active = false;
+            char l1[24];
+            snprintf(l1, sizeof(l1), "BCAST seq %u", g_bcast.seq);
+            display::instructor(PWR_LEVELS[pwr_idx].label, l1, g_bcast.text, true);
+            last_draw = now;
+            if (g_debug)
+                Serial.printf("TX B seq=%u left=%u text=%s\n",
+                              g_bcast.seq, g_bcast.repeats_left, g_bcast.text);
+        }
+        return;
+    }
+
     if (!g_ctrl.active) {
         if (now - last_draw >= 1000) {         // idle status, occasional redraw
             last_draw = now;
-            display::instructor(PWR_LEVELS[pwr_idx].label, "ready", "relay <id> <cmd>");
+            if (banner_active(now)) draw_banner();   // its own banner echo still up
+            else display::instructor(PWR_LEVELS[pwr_idx].label, "ready",
+                                     "relay <id> <cmd>");
         }
         return;
     }
@@ -1886,7 +2078,9 @@ void loop() {
         // swallow it so it doesn't also toggle mute. (See prg_tapped().)
         bool was_blanked = display::blanked();
         display::activity();   // any keyboard press wakes the panel
-        if (!was_blanked && (kc == 'm' || kc == 'M')) {
+        if (!was_blanked && banner_active(now)) {
+            g_banner_until = 0;   // dismiss the banner; swallow the key
+        } else if (!was_blanked && (kc == 'm' || kc == 'M')) {
             bool m = !config::muted();
             apply_mute(m);
             Serial.printf("# mute %s (key)\n", m ? "on" : "off");

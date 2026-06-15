@@ -261,4 +261,53 @@ inline bool decode_ack(const uint8_t* buf, size_t len, ControlAck& a) {
     return true;
 }
 
+// Instructor broadcast banner (docs/plan-instructor-broadcast.md). A human-
+// readable message the instructor pushes to the screen of EVERY station —
+// "RETURN TO BASE", "FOX QSY", a hint or safety call — regardless of mode. This
+// is distinct from MAGIC_CTRL: that carries a console command line a station
+// runs silently through handle_setup_command(); this carries display text shown
+// verbatim on the panel. It is always all-stations (no target_id), fire-and-
+// forget (no ack — acking from every node would flood the channel), and made
+// reliable by repeating the same seq a few times (see BCAST_REPEATS in main.cpp).
+// Only src_id == INSTRUCTOR_ID is honoured (same threat model as MAGIC_CTRL).
+// Distinguished by MAGIC_BCAST so every other parser drops it; an older node
+// that predates it ignores it for free (each decode_* is magic-gated).
+constexpr uint8_t MAGIC_BCAST     = 0x42;   // 'B' — instructor broadcast banner
+constexpr size_t  BCAST_HDR_LEN   = 4;      // magic, src, seq, flags
+constexpr size_t  BCAST_TEXT_MAX  = 40;     // two short OLED lines; airtime budget
+constexpr uint8_t BCAST_FLAG_ALERT = 0x01;  // bit0: force-wake a blanked panel
+
+struct BroadcastMsg {
+    uint8_t src_id;                       // must be INSTRUCTOR_ID (0) to be honoured
+    uint8_t seq;                          // wraps; for dedup (no ack)
+    uint8_t flags;                        // BCAST_FLAG_*; unknown bits ignored
+    char    text[BCAST_TEXT_MAX + 1];     // NUL-terminated ASCII
+};
+
+// Encode a broadcast. Writes BCAST_HDR_LEN + strlen(text) bytes (text truncated
+// to BCAST_TEXT_MAX). Returns the byte count written.
+inline size_t encode_bcast(uint8_t src_id, uint8_t seq, uint8_t flags,
+                           const char* text, uint8_t* buf) {
+    buf[0] = MAGIC_BCAST;
+    buf[1] = src_id;
+    buf[2] = seq;
+    buf[3] = flags;
+    size_t i = 0;
+    for (; text && text[i] && i < BCAST_TEXT_MAX; ++i)
+        buf[BCAST_HDR_LEN + i] = (uint8_t)text[i];
+    return BCAST_HDR_LEN + i;
+}
+
+inline bool decode_bcast(const uint8_t* buf, size_t len, BroadcastMsg& b) {
+    if (len < BCAST_HDR_LEN || buf[0] != MAGIC_BCAST) return false;
+    b.src_id = buf[1];
+    b.seq    = buf[2];
+    b.flags  = buf[3];
+    size_t body = len - BCAST_HDR_LEN;
+    if (body > BCAST_TEXT_MAX) body = BCAST_TEXT_MAX;
+    for (size_t i = 0; i < body; ++i) b.text[i] = (char)buf[BCAST_HDR_LEN + i];
+    b.text[body] = '\0';
+    return true;
+}
+
 } // namespace proto

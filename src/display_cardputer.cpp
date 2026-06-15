@@ -284,6 +284,32 @@ void status(const char* title, const char* line1, const char* line2) {
     push();
 }
 
+// Instructor control view — the Cardputer is the instructor station, so this is
+// its primary screen (relay/broadcast status). Mirrors the Heltec layout via the
+// generic status() frame: a green title, then two white body lines.
+void instructor(const char* pwr, const char* line1, const char* line2,
+                bool tx_active) {
+    if (s_blanked) return;
+    auto& d = gfx();
+    d.fillScreen(TFT_BLACK);
+    d.setTextSize(2);
+    d.setTextColor(TFT_GREEN, TFT_BLACK);
+    d.setCursor(0, 8);
+    d.print(tx_active ? "INSTRUCTOR TX" : "INSTRUCTOR");
+    d.setTextSize(1);
+    if (pwr) {
+        char pbuf[12];
+        snprintf(pbuf, sizeof(pbuf), "PWR %s", pwr);
+        d.setCursor(0, 28);
+        d.print(pbuf);
+    }
+    d.setTextSize(2);
+    d.setTextColor(TFT_WHITE, TFT_BLACK);
+    if (line1) { d.setCursor(0, 50); d.print(line1); }
+    if (line2) { d.setCursor(0, 80); d.print(line2); }
+    push();
+}
+
 } // namespace display
 
 #endif // DEVICE_CARDPUTER_ADV

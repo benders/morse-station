@@ -1,6 +1,10 @@
 # Plan: Instructor Broadcast Message
 
-Status: DESIGN ONLY — no firmware written. Branch `plan/instructor-broadcast` off `main`.
+Status: IMPLEMENTED on branch `feat/instructor-broadcast` (B1–B7). Firmware: the
+`MAGIC_BCAST` packet in `src/protocol.h`, the `bcast [-a] <text>` / `bcast clear`
+console verb, the TX campaign in `loop_instructor()`, and the banner overlay in
+every mode's draw (`src/main.cpp`). B8 (Listen-beacon latency) remains deferred
+until `MAGIC_LISTEN` is on `main`. Built clean on all five board envs.
 
 ## 1. Goal
 
