@@ -140,6 +140,19 @@ static uint32_t last_ident = 0;
 // to Serial so a harness can assert on decoded text without sidetone/display.
 // Off by default — keeps normal operation quiet. Runtime-only (not persisted).
 static bool g_debug = false;
+
+// Fox TX halt (`stop`/`start` console commands). When set, the Fox suppresses
+// ALL radio output — keystate/edge streams AND the periodic Ident/station-ID
+// packets — so the transmitter goes completely silent until `start` is sent.
+// Semantics: the halt takes effect IMMEDIATELY at the TX-emission point; we do
+// NOT wait for the current element or message to finish. The message player
+// keeps running internally (cheap, no air output) so `start` resumes mid-stream
+// cleanly without re-initialising it. Runtime-only (not persisted) — a reboot
+// always comes up transmitting. Honored by Fox and Live Key (shared TX path);
+// works over serial, BLE, and the instructor relay since it is a normal
+// handle_setup_command entry. Does not affect Hunter (RX) or Instructor bursts.
+static bool g_tx_halted = false;
+
 static uint32_t pause_until = 0;
 static uint32_t last_draw = 0;
 
@@ -683,17 +696,29 @@ static bool handle_setup_command(const char* line, Print& out) {
             return false;
         }
         out.printf("  debug    = %s\n", g_debug ? "on" : "off");
+    } else if (!strcmp(line, "stop")) {
+        // Halt ALL Fox/Live-Key transmission until `start` (see g_tx_halted).
+        // Normal handle_setup_command entry, so it works over serial, BLE, and
+        // the instructor relay path identically. Idempotent.
+        g_tx_halted = true;
+        Serial.println("# TX HALT (stop)");
+        out.println("  tx       = halted");
+    } else if (!strcmp(line, "start")) {
+        g_tx_halted = false;
+        Serial.println("# TX RESUME (start)");
+        out.println("  tx       = running");
     } else if (!strcmp(line, "show")) {
         static const char* mnames[] = {"Hunter", "Fox", "Livekey", "Instructor",
                                        "Hibernate"};
         uint8_t bm = config::boot_mode();
         const char* mn = (bm < 5) ? mnames[bm] : "?";
         out.printf("  id=%u call=%s wpm=%u farns=%u vol=%u mute=%s mode=%s "
-                   "keymode=%s msg=\"%s\"\n",
+                   "keymode=%s tx=%s msg=\"%s\"\n",
                    config::station_id(), config::callsign(),
                    config::wpm(), config::char_wpm(), config::volume(),
                    config::muted() ? "on" : "off", mn,
                    g_keymode == KEYMODE_EDGE ? "edge" : "compat",
+                   g_tx_halted ? "halted" : "running",
                    config::fox_message());
         out.printf("  model    = %s  chip=%s  soc=%s\n",
                    board_model_str(), platform::chip_id_str(), platform::soc_str());
@@ -1062,6 +1087,16 @@ static void tx_keystate(uint32_t now, bool down) {
     uint8_t buf[proto::PACKET_LEN];
     proto::encode(ks, buf);
     radio::send(buf, proto::PACKET_LEN);
+    // Observable TX proof for unattended tests (rate-limited, gated on g_debug
+    // so it costs nothing in normal operation). Pairs with the "TX SKIP" log in
+    // loop_fox to prove the stop/start gate on a serial capture.
+    if (g_debug) {
+        static uint32_t last_tx_log = 0;
+        if (now - last_tx_log >= 1000) {
+            last_tx_log = now;
+            Serial.printf("TX K seq=%u lvl=%u\n", ks.seq, down ? 1 : 0);
+        }
+    }
 }
 
 // Edge-event TX (E3, docs/edge-events.md): send a packet only when the key
@@ -1278,7 +1313,10 @@ static void loop_fox(uint32_t now) {
         player.update(now);
         if (player.finished()) pause_until = now + REPEAT_PAUSE;
     } else if (now >= pause_until) {
-        send_ident(now);                     // announce timing at each loop top
+        // The Ident (timing announce) is part of TX — gate it on the halt too,
+        // so a halted fox is truly silent. The player still cycles so `start`
+        // resumes mid-stream cleanly.
+        if (!g_tx_halted) send_ident(now);   // announce timing at each loop top
         player.start(config::fox_message());
     }
     bool down = player.down();
@@ -1289,10 +1327,18 @@ static void loop_fox(uint32_t now) {
     // keymode gate (E3): "edge" emits EdgeEvents on transitions + heartbeat;
     // "compat" (default) keeps the existing 30 ms KeyState stream untouched.
     // Suppressed during rx_window so the half-duplex radio stays in receive.
-    if (!rx_window) {
+    if (!rx_window && !g_tx_halted) {
         if (g_keymode == KEYMODE_EDGE) tx_edge(now, down);
         else                           tx_keystate(now, down);
         tx_ident(now);   // periodic station-ID packet (Part 97 callsign ID) — both modes
+    } else if (g_tx_halted) {
+        // Observable proof for unattended tests: log (rate-limited) that TX is
+        // being skipped. Cheap, gated on the halt flag — no cost when running.
+        static uint32_t last_skip_log = 0;
+        if (g_debug && now - last_skip_log >= 1000) {
+            last_skip_log = now;
+            Serial.printf("TX SKIP (halted) seq=%u\n", seq);
+        }
     }
 
     if (now - last_draw >= 100) {
@@ -1306,8 +1352,10 @@ static void loop_livekey(uint32_t now) {
     bool down = key.down();
     if (down) display::activity();   // active keying = operator present; keep panel awake
     set_tone(down);
-    if (g_keymode == KEYMODE_EDGE) tx_edge(now, down);
-    else                           tx_keystate(now, down);
+    if (!g_tx_halted) {
+        if (g_keymode == KEYMODE_EDGE) tx_edge(now, down);
+        else                           tx_keystate(now, down);
+    }
 
     if (now - last_draw >= 100) { last_draw = now; display::livekey(seq, down); }
 }
