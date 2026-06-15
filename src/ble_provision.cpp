@@ -21,8 +21,9 @@ namespace {
 
 Handler               g_handler   = nullptr;
 NimBLECharacteristic* g_tx_char   = nullptr;
+NimBLEService*        g_service   = nullptr;   // current NUS service (rebuilt each begin)
 NimBLEServer*         g_server    = nullptr;
-bool                  g_inited    = false;   // one-time NimBLE stack + GATT setup
+bool                  g_inited    = false;   // host stack currently inited
 bool                  g_started   = false;   // advertising active
 volatile bool         g_connected = false;
 
@@ -121,23 +122,38 @@ void begin(const char* adv_name, Handler handler) {
     if (g_started) return;
     g_handler = handler;
 
-    // SPIKE (NimBLE-Arduino 2.x): full stack + GATT teardown/rebuild on every
-    // begin()/stop() cycle. In 1.4.x this leaked the GATT singletons and the
-    // re-created NUS characteristic came back disconnected from the notify path
-    // (so we kept the stack alive and toggled only advertising). 2.x reworked
-    // object ownership so deinit(true) should free everything and a fresh
-    // createServer/createService/createCharacteristic should rebuild a working
-    // notify path — letting AUTO mode actually drop the BT controller (~70 mA)
-    // each time the panel blanks, not just stop advertising. This is what we're
-    // here to validate on the ESP32-S3.
+    // NimBLE-Arduino 2.x: power-cycle the BLE controller on every begin()/stop()
+    // so AUTO mode can drop the 2.4 GHz core (~70 mA) when the panel blanks.
+    // stop() uses deinit(false) because deinit(true) STILL double-free-panics
+    // under 2.x on the ESP32-S3 (heap_caps_free assert — bench-confirmed), so
+    // clean teardown is off the table. See the fresh-service rebuild dance below
+    // and in stop() for how we keep the notify/console path working across
+    // repeated off/on cycles despite deinit(false) leaving the GATT objects
+    // behind. Validated: 3+ off/on cycles + multi-toggle, BLE console responsive
+    // every time, exactly one NUS service/char in the GATT table afterward.
     g_asm_len = 0;
     if (!g_queue) g_queue = xQueueCreate(QUEUE_DEPTH, sizeof(Line));
 
     NimBLEDevice::init(adv_name);
 
+    // createServer() returns the SAME singleton across init/deinit(false)
+    // cycles, and its m_svcVec (with any prior NUS service) survives deinit.
     g_server = NimBLEDevice::createServer();
     g_server->setCallbacks(&g_srv_cb);
+
+    // Build the NUS service + characteristics FRESH on every begin(). The old
+    // service object (if any) was marked for delete by stop() while the host was
+    // still alive; createService()/svc->start() -> resetGATT() now actually
+    // deletes it and registers this fresh one with new handles. Creating a fresh
+    // service also flips the server's internal "services changed" flag, which is
+    // what forces resetGATT() to re-register the GATT DB against the re-inited
+    // host. (Reusing the old service object instead left m_gattsStarted=true, so
+    // start() no-op'd and the host exposed an EMPTY GATT table — the central
+    // connected but found no NUS characteristics: the "silent console" bug.
+    // Naively recreating WITHOUT removing the old one in stop() instead produced
+    // a DUPLICATE TX characteristic, also breaking the notify path.)
     NimBLEService* svc = g_server->createService(NUS_SERVICE_UUID);
+    g_service = svc;
 
     g_tx_char = svc->createCharacteristic(NUS_TX_UUID, NIMBLE_PROPERTY::NOTIFY);
 
@@ -169,17 +185,29 @@ bool connected() { return g_connected; }
 
 void stop() {
     if (!g_started) return;
-    // SPIKE: full teardown. deinit(true) releases the BLE host + controller AND
-    // walks/frees the server/service/characteristic objects — powering down the
-    // 2.4 GHz core (the ~70 mA idle draw on the S3) rather than merely halting
-    // advertising. In 1.4.x this double-free-panicked; the spike is to confirm
-    // 2.x frees cleanly so begin() can rebuild on the next panel wake.
-    g_started = false;
-    g_inited  = false;
-    NimBLEDevice::deinit(true);
-    g_server    = nullptr;
-    g_tx_char   = nullptr;
+    // deinit(false): deinit(true) STILL double-free-panics on the ESP32-S3 under
+    // NimBLE 2.x (heap_caps_free assert — bench-confirmed), so clean teardown is
+    // off the table. deinit(false) releases the BLE host + controller (powers
+    // down the 2.4 GHz core, the ~70 mA drop) WITHOUT walking/freeing the GATT
+    // C++ objects.
+    g_started   = false;
+    g_inited    = false;
     g_connected = false;
+
+    // Mark the current NUS service for deletion WHILE THE HOST IS STILL ALIVE.
+    // removeService() needs a live host to set the service's GATT visibility; do
+    // it before deinit(). This (a) flips the server's services-changed flag and
+    // (b) queues the stale service object for actual deletion by resetGATT() on
+    // the next begin()/start(). Without this, the surviving service object would
+    // be re-registered alongside a freshly-created one -> DUPLICATE TX
+    // characteristic, which kills the notify/console path after rebuild.
+    if (g_server && g_service) {
+        g_server->removeService(g_service, /*deleteSvc=*/true);
+    }
+    g_service = nullptr;
+    g_tx_char = nullptr;
+
+    NimBLEDevice::deinit(false);
 }
 
 }  // namespace ble_provision
