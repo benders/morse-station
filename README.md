@@ -78,4 +78,8 @@ cycles). To re-pick a mode, reset the board (the menu runs again at boot).
   [MAX98357A](docs/components/max98357a.md).
 - [`docs/debug-heltec-v4.md`](docs/debug-heltec-v4.md) — capturing panic
   backtraces over UART/JTAG.
+- [`scripts/README.md`](scripts/README.md) — build/flash wrappers, device
+  discovery (`devices.sh`), console drivers, and the hardware-in-the-loop test
+  harnesses (incl. the instructor relay / broadcast tests), with the per-board
+  serial gotchas.
 - [`TODO.md`](TODO.md) — open work · [`DONE.md`](DONE.md) — completed work.
