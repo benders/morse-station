@@ -304,5 +304,43 @@ void status(const char* title, const char* line1, const char* line2) {
     oled.sendBuffer();
 }
 
+void banner(const char* text, uint32_t now) {
+    if (!g_oled_ok || !text) return;
+    oled.clearBuffer();
+    oled.setFont(u8g2_font_6x12_tr);
+    oled.drawStr(0, 11, "INSTRUCTOR");
+    oled.drawHLine(0, 14, 128);
+
+    const int CW   = 6;          // u8g2_font_6x12_tr glyph advance
+    const int COLS = 128 / CW;   // 21 glyphs across the panel
+    int len = (int)strlen(text);
+
+    if (len <= COLS) {
+        // Short: one line, centered in the body.
+        int x = (128 - len * CW) / 2; if (x < 0) x = 0;
+        oled.drawStr(x, 44, text);
+    } else if (len <= 2 * COLS) {
+        // Fits two lines: wrap at a space at/before the first line's width.
+        int brk = COLS;
+        for (int i = COLS; i > 0; --i) if (text[i] == ' ') { brk = i; break; }
+        char l1[2 * COLS + 2], l2[2 * COLS + 2];
+        int n1 = brk; if (n1 > (int)sizeof(l1) - 1) n1 = sizeof(l1) - 1;
+        memcpy(l1, text, n1); l1[n1] = '\0';
+        const char* rest = text + brk; while (*rest == ' ') rest++;
+        strncpy(l2, rest, sizeof(l2) - 1); l2[sizeof(l2) - 1] = '\0';
+        oled.drawStr(0, 38, l1);
+        oled.drawStr(0, 54, l2);
+    } else {
+        // Too long for two lines: horizontal marquee, two copies for a seamless
+        // wrap. ~33 px/s; u8g2 clips glyphs that fall outside the panel.
+        int textpx = len * CW;
+        int period = textpx + 18;                 // text + inter-loop gap
+        int off    = (int)((now / 30) % (uint32_t)period);
+        oled.drawStr(-off, 44, text);
+        oled.drawStr(-off + period, 44, text);
+    }
+    oled.sendBuffer();
+}
+
 } // namespace display
 #endif // DEVICE_HELTEC_V4 || DEVICE_HELTEC_V3 || DEVICE_RAK4631 || DEVICE_WIO_TRACKER_L1

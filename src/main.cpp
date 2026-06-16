@@ -435,7 +435,7 @@ static uint32_t    g_fox_listen_until = 0;
 // from `relay` (which runs a console command silently). Fire-and-forget: no ack,
 // just a fixed small repeat count for delivery probability.
 static constexpr uint32_t BCAST_REPEATS   = 5;       // burst the same seq this many times
-static constexpr uint32_t BCAST_SHOW_MS   = 15000;   // how long a banner stays on the panel
+static constexpr uint32_t BCAST_SHOW_MS   = 60000;   // how long a banner stays on the panel (1 min)
 static constexpr uint32_t BCAST_INTERVAL  = CTRL_PROBE_INTERVAL;  // gap between repeats
 
 // Shared banner state: set by the RX handler (broadcast_rx_try) or locally when
@@ -1484,11 +1484,12 @@ static bool banner_active(uint32_t now) {
     return g_banner_until != 0 && (int32_t)(g_banner_until - now) > 0;
 }
 
-// Arm the banner overlay from `text` for BCAST_SHOW_MS. `alert` force-wakes a
-// blanked panel (the "RETURN TO BASE" path); an ordinary banner respects the
-// operator's blank state. Used by both the RX handler and the local instructor
-// echo. An empty text clears any showing banner.
+// Arm the banner overlay from `text` for BCAST_SHOW_MS. A broadcast must be seen,
+// so it always force-wakes a blanked panel (the `alert` flag now only affects any
+// extra emphasis a panel chooses to add — every banner wakes the screen). Used by
+// both the RX handler and the local instructor echo. Empty text clears the banner.
 static void set_banner(const char* text, bool alert, uint32_t now) {
+    (void)alert;
     if (!text || !text[0]) {            // `bcast clear` / empty → dismiss
         g_banner[0] = '\0';
         g_banner_until = 0;
@@ -1497,32 +1498,17 @@ static void set_banner(const char* text, bool alert, uint32_t now) {
     strncpy(g_banner, text, proto::BCAST_TEXT_MAX);
     g_banner[proto::BCAST_TEXT_MAX] = '\0';
     g_banner_until = now + BCAST_SHOW_MS;
-    if (alert) display::activity();     // force-wake a blanked panel
+    display::activity();                // force-wake the panel so the banner shows
 }
 
-// Paint the active banner as a full-screen overlay (title + two body lines),
-// splitting g_banner at a word boundary near the panel width. Text past the two
-// lines is simply not shown (the draw truncates rather than assuming it fits).
+// Paint the active banner as a full-screen overlay. The display layer handles
+// centering / two-line wrap / horizontal scroll per panel (display::banner). We
+// call activity() every frame so the panel stays lit for the banner's full life
+// — a broadcast must be seen, so it overrides the idle-blank regardless of the
+// operator's blank state (and regardless of the alert flag).
 static void draw_banner() {
-    constexpr size_t LINE = 20;   // ~chars per body line on the 128px OLED (6x12)
-    char l1[proto::BCAST_TEXT_MAX + 1];
-    char l2[proto::BCAST_TEXT_MAX + 1] = {0};
-    size_t len = strlen(g_banner);
-    if (len <= LINE) {
-        strncpy(l1, g_banner, sizeof(l1));
-        l1[sizeof(l1) - 1] = '\0';
-    } else {
-        size_t brk = LINE;                       // hard-break point if no space
-        for (size_t i = LINE; i > 0; --i)        // prefer a space at/before LINE
-            if (g_banner[i] == ' ') { brk = i; break; }
-        memcpy(l1, g_banner, brk);
-        l1[brk] = '\0';
-        const char* rest = g_banner + brk;
-        while (*rest == ' ') rest++;
-        strncpy(l2, rest, sizeof(l2));
-        l2[sizeof(l2) - 1] = '\0';
-    }
-    display::status("INSTRUCTOR", l1, l2);
+    display::activity();
+    display::banner(g_banner, millis());
 }
 
 // Apply an inbound broadcast banner packet. Decodes, requires src_id ==
@@ -1990,7 +1976,11 @@ static void loop_instructor(uint32_t now) {
     }
 
     if (!g_ctrl.active) {
-        if (now - last_draw >= 1000) {         // idle status, occasional redraw
+        // While the instructor's own banner echo is up, redraw fast enough to
+        // animate a scrolling marquee (100 ms); otherwise the idle status is a
+        // sparse 1 Hz redraw.
+        uint32_t interval = banner_active(now) ? 100 : 1000;
+        if (now - last_draw >= interval) {
             last_draw = now;
             if (banner_active(now)) draw_banner();   // its own banner echo still up
             else display::instructor(PWR_LEVELS[pwr_idx].label, "ready",

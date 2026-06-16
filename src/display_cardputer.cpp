@@ -310,6 +310,44 @@ void instructor(const char* pwr, const char* line1, const char* line2,
     push();
 }
 
+void banner(const char* text, uint32_t now) {
+    if (!text) return;
+    auto& d = gfx();
+    d.fillScreen(TFT_BLACK);
+    d.setTextSize(2);
+    d.setTextColor(TFT_GREEN, TFT_BLACK);
+    d.setCursor(0, 2); d.print("INSTRUCTOR");
+    d.drawFastHLine(0, 22, W, TFT_DARKGREY);
+    d.setTextColor(TFT_WHITE, TFT_BLACK);
+
+    const int CW   = 12;         // size-2 glyph advance
+    const int COLS = W / CW;     // 20 glyphs across
+    int len = (int)strlen(text);
+
+    if (len <= COLS) {
+        int x = (W - len * CW) / 2; if (x < 0) x = 0;
+        d.setCursor(x, 56); d.print(text);
+    } else if (len <= 2 * COLS) {
+        int brk = COLS;
+        for (int i = COLS; i > 0; --i) if (text[i] == ' ') { brk = i; break; }
+        char l1[2 * COLS + 2], l2[2 * COLS + 2];
+        int n1 = brk; if (n1 > (int)sizeof(l1) - 1) n1 = sizeof(l1) - 1;
+        memcpy(l1, text, n1); l1[n1] = '\0';
+        const char* rest = text + brk; while (*rest == ' ') rest++;
+        strncpy(l2, rest, sizeof(l2) - 1); l2[sizeof(l2) - 1] = '\0';
+        d.setCursor(0, 46); d.print(l1);
+        d.setCursor(0, 80); d.print(l2);
+    } else {
+        // Horizontal marquee, two copies for a seamless wrap (LovyanGFX clips).
+        int textpx = len * CW;
+        int period = textpx + 30;
+        int off    = (int)((now / 25) % (uint32_t)period);
+        d.setCursor(-off, 56);          d.print(text);
+        d.setCursor(-off + period, 56); d.print(text);
+    }
+    push();
+}
+
 } // namespace display
 
 #endif // DEVICE_CARDPUTER_ADV

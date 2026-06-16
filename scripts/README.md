@@ -47,6 +47,7 @@ output (most require `debug on`). Run after mapping ports with `devices.sh`.
 | Script | What it validates |
 |---|---|
 | [`broadcast_test.py`](broadcast_test.py) | **Instructor broadcast banner** (`bcast`). Four stations (Instructor / Fox / two Hunters): the instructor relays a `msg`, then `stop`, then a `bcast` banner, and both hunters confirm reception via the passive `RX B … text=…` line plus a `show` "banner =" cross-check. See `docs/plan-instructor-broadcast.md`. |
+| [`broadcast_display_test.py`](broadcast_display_test.py) | Broadcast banner **display** check: halts the Fox, force-blanks both Hunter panels, then broadcasts and asserts each Hunter **wakes** (`# screen: woke`) and holds the banner lit (no re-blank) — i.e. the banner overrides idle-blank and stays up for its minute. |
 | [`relay_stopstart_test.py`](relay_stopstart_test.py) | **Instructor remote control** stop/start: the instructor relays `stop`, hunters finish + screen-blank, then a new `msg` + `start` wakes them and they copy the new message. Also checks BLE responsiveness after auto-wake. |
 | [`rc_test.py`](rc_test.py) | Instructor remote-control end-to-end: concurrently watches fox + instructor + hunters during a relay run. |
 | [`edge_test.py`](edge_test.py) / [`edge_test.sh`](edge_test.sh) | Edge-event keying decode harness (`docs/edge-events.md`, E6). |

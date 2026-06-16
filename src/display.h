@@ -36,6 +36,13 @@ void livekey(uint16_t seq, bool tone_on);
 // an unused body line. Used by bring-up/test sketches. */
 void status(const char* title, const char* line1, const char* line2);
 
+// Instructor broadcast banner overlay (docs/plan-instructor-broadcast.md). Shows
+// an "INSTRUCTOR" title and the message text: centered when it fits one line,
+// wrapped to two static lines when it fits two, and horizontally scrolled
+// (marquee, driven by `now`) when it is longer than the panel can show at once.
+// The caller keeps the panel awake (display::activity()) for the banner's life.
+void banner(const char* text, uint32_t now);
+
 // Idle-blanking (battery saver). The panel is the largest idle load on these
 // boards (an OLED left on draws ~tens of mA; the Cardputer backlight more), so
 // after IDLE_BLANK_MS with no activity tick() powers the panel down. Every wake
