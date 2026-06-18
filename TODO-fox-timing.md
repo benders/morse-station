@@ -101,7 +101,8 @@ Farnsworth settings, and would mask (1).
       elements/gaps at a fixed WPM. Confirm Cardputer is the outlier and get a
       worst-case number per board. (Harness: `scripts/edge_test.py` / the
       `RX E` dump already prints `dn`.)
-- [ ] Prototype a timer/task-driven keying path on one ESP32 board and re-measure.
+- [x] Prototype a timer/task-driven keying path on one ESP32 board and re-measure.
+      (Done — mitigation #1 shipped + HW-validated on Cardputer; see Results below.)
 - [ ] Decide whether mitigation (2) alone is "good enough" for classroom use, or
       whether (1) is warranted.
 
@@ -357,3 +358,82 @@ ports. Fixed settings for all runs: **18 WPM, plain timing, keymode edge**.
   the legacy in-loop `tx_edge` path; never worse than today.
 - **nRF52 task priority.** Keep above loopTask, below SoftDevice; keep `cb` tiny
   so it can't starve the radio/BLE stack.
+
+## Results — mitigation #1 IMPLEMENTED + HW-validated (2026-06-18)
+
+- [x] **Mitigation #1 done.** Fox edge keying timebase moved off `loop()` onto a
+      fixed 2 ms keyer via the new `platform::keyer_start/keyer_stop/keyer_now_us`
+      seam (esp_timer task on ESP32, FreeRTOS task on nRF52). Keyer owns the
+      `Player` and pushes measured segments into a lock-free SPSC ring
+      (`EdgeRec`, `std::atomic` head/tail); `loop_fox()` drains + `radio::send()`.
+      Power-gated: started per message, stopped during `REPEAT_PAUSE`. Legacy
+      in-loop `tx_edge` kept as `g_keyer_fallback`. `src/morse.{h,cpp}` unchanged.
+
+### Build / boot
+
+- `pio run` SUCCESS on **all 5 envs** (heltec_v4, heltec_v3, cardputer_adv,
+  rak4631, wio_tracker_l1).
+- Cardputer (stn 73): clean boots, **no M5/APB boot-loop**; `bootlog` shows only
+  SW/POWERON/UNKNOWN, **no `TASK_WDT`/`PANIC`** (watchdog never tripped).
+
+### Measured (Cardputer stn 73 fox → Heltec stn 43 hunter, 18 WPM, edge keymode)
+
+Captures are **300 s** each (documented deviation from the planned 600 s to keep
+total unattended bench time reasonable across baseline + after + stress; signal
+is unambiguous at 300 s). `dn` classified by **nearest unit-multiple** (unit ≈
+66.7 ms); a loop-jitter stretch shows up as an **off-grid** `dn` value.
+
+| metric (non-heartbeat edges)            | BASELINE (in-loop) | AFTER (keyer) |
+|-----------------------------------------|--------------------|---------------|
+| `dn` histogram (<800 ms)                | `66:668 108:13 198:328 660:28` | `66:698 198:328 660:28` |
+| **off-grid `dn` (jitter signature)**    | **13**             | **0**         |
+| 1-unit intra-char gap `dn` min/med/max  | 66 / 66 / 66 (+108ms outliers) | 66 / 66 / **66** |
+| worst 1-unit gap `dn`                    | 198 ms*            | **66 ms**     |
+| 1-unit gaps stretched ≥ 2 units          | 0*                 | **0**         |
+| RF packet loss (seq jumps)               | 9.4 %              | 7.1 %         |
+| decode ratio (`edge_test` scoring)       | 0.18               | 0.29          |
+
+\* the worst-case `198 ms` and the original `stretched=164` figure were an
+artifact of a crude single-threshold bucket that misread legitimate 3-unit char
+gaps / dahs (198 ms) as stretched 1-unit gaps. The corrected nearest-multiple
+analysis (`scripts/fox_timing_run.py`) isolates the real jitter signature: the
+**13 off-grid `dn` values (e.g. 108 ms ≈ 1.6 units) in baseline → 0 after**.
+
+**Loop-stress variant** (Cardputer): hammered the fox's runtime console at
+~20 cmds/s (2228 commands over 120 s, forcing LCD redraws + serial parsing to
+contend with `loop()`). `dn` histogram stayed clean `66:256 198:119 660:10`,
+**off-grid = 0, stretched 1-unit gaps = 0, worst 1-unit gap = 66 ms** — direct
+proof the measurement is decoupled from loop stalls.
+
+**Power gate:** `show` `keyer = ... ticks=N` is **flat across the entire
+`REPEAT_PAUSE`** (e.g. frozen at 120408 for ~10 s) and advances ~500/s only
+while keying. `keyer = idle` during the pause, `active` while keying.
+`g_keyer_drops == 0` throughout every run.
+
+### Acceptance criteria verdict
+
+- ✅ After-run intra-char-gap `dn` clustered at 66 ms; **no off-grid / stretched
+  1-unit segments** (vs 13 off-grid in baseline). PASS.
+- ✅ **Zero timing-attributable mis-decodes** (off-grid `dn` = 0 after; was 13).
+  PASS. ⚠️ The `edge_test` decode *ratio* did **not** reach pass-ratio (0.29) —
+  but this is **RF packet loss** (≈7–9 %, comparable before/after, surfaced as
+  `?` by the poison/seq machinery), a **different failure class** than the
+  timing jitter this mitigation targets (see "Why poison/seq can't fix it"
+  above). The keyer neither caused nor worsened the loss. Lower-loss link / more
+  TX power would raise the ratio; out of scope for mitigation #1.
+- ✅ `g_keyer_drops == 0`; no `TASK_WDT`/`WATCHDOG`; all 5 envs build; no
+  Cardputer boot-loop. PASS.
+- ✅ **Keyer idle during `REPEAT_PAUSE`** (tick counter flat across the pause).
+  PASS.
+
+### Caveats / not validated
+
+- **Wio Tracker L1 (nRF52) was NOT connected to the bench** during this work
+  (only 4 ESP32 boards present: 43, 73, 115, 38). The nRF52 keyer path
+  (`platform_nrf52.cpp` FreeRTOS task) is **compile-validated only**
+  (`wio_tracker_l1` builds clean); it has **not** been run on hardware.
+  `/tmp/fox-timing-baseline-wio.log` / `-after-wio.log` were not produced.
+- A lifecycle bug was found + fixed during HW bring-up: the keyer was being
+  stopped the loop iteration right after starting (before it cleared
+  `g_keyer_finished`), so the fox thrashed start/stop and emitted only Idents
+  after the first few cycles. Fixed with an explicit `g_keyer_starting` state.
