@@ -65,7 +65,9 @@ def provision_fox_runtime(port: str, msg: str, wpm: int, farns: int | None,
             print(f"  [fox] > {c}")
             s.write((c + "\n").encode())
             s.flush()
-            time.sleep(0.4)
+            # >= ~1.2s: the nRF52 (Wio/RAK) LittleFS NVS commit is slow; a 0.4s
+            # gap lets `reboot` fire before wpm/keymode flush, reverting config.
+            time.sleep(1.3)
             s.read(s.in_waiting or 1)
         print("  [fox] > reboot")
         s.write(b"reboot\n")

@@ -376,7 +376,7 @@ ports. Fixed settings for all runs: **18 WPM, plain timing, keymode edge**.
 - Cardputer (stn 73): clean boots, **no M5/APB boot-loop**; `bootlog` shows only
   SW/POWERON/UNKNOWN, **no `TASK_WDT`/`PANIC`** (watchdog never tripped).
 
-### Measured (Cardputer stn 73 fox → Heltec stn 43 hunter, 18 WPM, edge keymode)
+### Measured — Cardputer stn 73 fox → Heltec stn 43 hunter (ESP32, 18 WPM, edge)
 
 Captures are **300 s** each (documented deviation from the planned 600 s to keep
 total unattended bench time reasonable across baseline + after + stress; signal
@@ -410,6 +410,43 @@ proof the measurement is decoupled from loop stalls.
 while keying. `keyer = idle` during the pause, `active` while keying.
 `g_keyer_drops == 0` throughout every run.
 
+### Measured — Wio Tracker L1 stn 115 fox → Heltec stn 43 hunter (nRF52, 18 WPM, edge)
+
+nRF52840 has far less per-loop peripheral work than the Cardputer, so its
+in-loop baseline jitter is *milder* — but still present: the FreeRTOS keyer
+tightened it the same way. New firmware flashed via `nrfutil` DFU (no UF2
+recovery needed); NVS survived the reflash; clean boot, `keyer` line present.
+
+| metric (non-heartbeat edges)            | BASELINE (in-loop, fw 66c2595) | AFTER (keyer, fw 7d43540) |
+|-----------------------------------------|--------------------|---------------|
+| 1-unit intra-char gap `dn` min/med/max  | **53 / 66 / 78** ms (wide spread) | **65 / 66 / 67** ms |
+| `dn` stretch entries (108–110 ms)        | 14                 | **0**         |
+| **off-grid `dn` (<800 ms, jitter sig.)** | **14**             | **0**         |
+| 1-unit gaps stretched ≥ 2 units          | 0                  | **0**         |
+| RX E captured / 300 s                    | 1239               | 1073          |
+| decode ratio (RF-loss-bound)             | 0.24               | 0.41          |
+
+The baseline `dn` for a nominal 1-unit gap scattered 53–78 ms (loop-cadence
+sampling spread) with 14 off-grid stretches up to 110 ms; the keyer collapsed
+that to a tight 65–67 ms (the ≤±2 ms quantization of the 2 ms FreeRTOS tick),
+**zero off-grid**. As on the Cardputer, the residual `?`s are RF packet loss,
+not timing.
+
+**Power gate (nRF52):** `keyer ticks` flat across the `REPEAT_PAUSE` (e.g.
+frozen at 16468 for the whole pause) and advancing only while active — the
+FreeRTOS keyer task is genuinely `vTaskSuspend`ed in the pause (sleep-through-
+pause door open on nRF52 too). `g_keyer_drops == 0` throughout.
+
+**Watchdog/boot:** the Wio ran the full 300 s capture continuously with **no
+mid-run reboot** (`bootlog` latest stayed `#9` before and after the stable run),
+so the keyer task does **not** trip the WDT at runtime — the loop is still fed.
+The WATCHDOG entries that *are* in `bootlog` (#2,3,5–9) are the **known nRF52
+double-boot-on-`reboot`/DFU artifact** (the Adafruit bootloader clears RESETREAS
+so a spurious second boot is synthesized as WATCHDOG — see
+`platform_nrf52.cpp restart()` and project memory), produced by the provisioning
+churn, **not** by the keyer. No nRF52-specific code fix was needed: the FreeRTOS
+keyer task worked on the first HW try.
+
 ### Acceptance criteria verdict
 
 - ✅ After-run intra-char-gap `dn` clustered at 66 ms; **no off-grid / stretched
@@ -421,19 +458,28 @@ while keying. `keyer = idle` during the pause, `active` while keying.
   timing jitter this mitigation targets (see "Why poison/seq can't fix it"
   above). The keyer neither caused nor worsened the loss. Lower-loss link / more
   TX power would raise the ratio; out of scope for mitigation #1.
-- ✅ `g_keyer_drops == 0`; no `TASK_WDT`/`WATCHDOG`; all 5 envs build; no
-  Cardputer boot-loop. PASS.
-- ✅ **Keyer idle during `REPEAT_PAUSE`** (tick counter flat across the pause).
-  PASS.
+- ✅ `g_keyer_drops == 0` (both boards); all 5 envs build; no Cardputer
+  boot-loop; no runtime watchdog trip on either board (Cardputer `bootlog` clean;
+  Wio ran 300 s with no mid-run reboot — the Wio `bootlog` WATCHDOG entries are
+  the known nRF52 double-boot-on-reboot artifact, not the keyer). PASS.
+- ✅ **Keyer idle during `REPEAT_PAUSE`** (tick counter flat across the pause) —
+  verified on **both** the Cardputer (esp_timer) and the Wio (FreeRTOS
+  `vTaskSuspend`). PASS.
 
-### Caveats / not validated
+### Notes / caveats
 
-- **Wio Tracker L1 (nRF52) was NOT connected to the bench** during this work
-  (only 4 ESP32 boards present: 43, 73, 115, 38). The nRF52 keyer path
-  (`platform_nrf52.cpp` FreeRTOS task) is **compile-validated only**
-  (`wio_tracker_l1` builds clean); it has **not** been run on hardware.
-  `/tmp/fox-timing-baseline-wio.log` / `-after-wio.log` were not produced.
+- **Both target boards HW-validated**: Cardputer ADV (stn 73, ESP32 esp_timer)
+  and **Wio Tracker L1 (stn 115, nRF52 FreeRTOS task)**. Logs:
+  `/tmp/fox-timing-{baseline,after}-card.log`, `-stress-card.log`,
+  `/tmp/fox-timing-{baseline,after}-wio.log`. (An initial pass mistook stn 115
+  for an ESP32 hunter; it is the Wio — 64-bit chip-id `C83D80B0965DC0BC`, not a
+  colon-MAC.) The Heltec V3 / V4 / RAK get the seam by compile parity only.
 - A lifecycle bug was found + fixed during HW bring-up: the keyer was being
   stopped the loop iteration right after starting (before it cleared
   `g_keyer_finished`), so the fox thrashed start/stop and emitted only Idents
   after the first few cycles. Fixed with an explicit `g_keyer_starting` state.
+- **nRF52 provisioning pacing:** the `fox_timing_run.py` 0.4 s inter-command
+  delay is too fast for the Wio's LittleFS NVS commit — `wpm`/`keymode` writes
+  didn't flush before `reboot`, reverting config. Pacing the writes ≥ ~1.2 s
+  apart (done manually for the Wio runs) makes them stick. Not a firmware bug;
+  noted for the harness.
