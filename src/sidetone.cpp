@@ -27,10 +27,11 @@ static constexpr uint32_t FULL_DUTY = (1u << LEDC_BITS) / 2;  // 50% = loudest
 
 static volatile bool s_on    = false;
 static volatile bool s_muted = false;
+static volatile bool s_alert = false;               // instructor alert overrides mute
 static uint32_t      s_duty  = FULL_DUTY;           // duty applied while "on"
 
 static inline void apply() {
-    ledcWrite(LEDC_CH, (s_on && !s_muted) ? s_duty : 0);
+    ledcWrite(LEDC_CH, (s_alert || (s_on && !s_muted)) ? s_duty : 0);
 }
 
 void sidetone_init(int /*gpio*/, uint32_t freq_hz) {
@@ -53,6 +54,7 @@ void sidetone_set_level(uint8_t units) {
 }
 
 void sidetone_set_mute(bool m) { s_muted = m; apply(); }
+void sidetone_alert(bool on)   { s_alert = on; apply(); }
 void sidetone_on()  { s_on = true;  apply(); }
 void sidetone_off() { s_on = false; apply(); }
 
@@ -101,6 +103,7 @@ static constexpr int32_t DEFAULT_GAIN_Q15 = 8192;
 static volatile int32_t  s_gain_q15  = DEFAULT_GAIN_Q15;
 static volatile bool     s_on        = false;
 static volatile bool     s_muted     = false;
+static volatile bool     s_alert     = false;       // instructor alert overrides mute
 static TaskHandle_t      s_task       = nullptr;
 
 // Raised-cosine amplitude envelope. Key on/off ramps the level in/out over a few
@@ -123,7 +126,7 @@ static void feeder(void*) {
     for (;;) {
         // Sample the gate once per block; the per-sample envelope walk below makes
         // the actual on/off smooth and sample-accurate within the ramp.
-        int target_pos = (s_on && !s_muted) ? ENV_RAMP : 0;
+        int target_pos = (s_alert || (s_on && !s_muted)) ? ENV_RAMP : 0;
         for (int i = 0; i < BLOCK_FRAMES; i++) {
             if      (s_env_pos < target_pos) s_env_pos++;   // attack along the curve
             else if (s_env_pos > target_pos) s_env_pos--;   // release along the curve
@@ -193,6 +196,7 @@ void sidetone_set_level(uint8_t units) {
 }
 
 void sidetone_set_mute(bool m) { s_muted = m; }     // feeder writes silence while muted
+void sidetone_alert(bool on)   { s_alert = on; }    // feeder forces tone on while set
 
 void sidetone_on()  { s_on = true; }   // the envelope ramp gives the clickless edge
 void sidetone_off() { s_on = false; }

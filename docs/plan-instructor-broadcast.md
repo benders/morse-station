@@ -1,5 +1,12 @@
 # Plan: Instructor Broadcast Message
 
+> **Superseded naming:** the console verb was later renamed `bcast` → **`alert`**
+> and every alert now sounds an attention tone (overriding mute) in addition to
+> the banner. The `-a` flag was removed (the `BCAST_FLAG_ALERT` wire bit is now
+> always set). See `docs/plan-alert-tone.md`. The wire format and internal
+> `bcast`/`broadcast` symbol names are unchanged; only the operator-facing command
+> and the added audio differ.
+
 Status: IMPLEMENTED on branch `feat/instructor-broadcast` (B1–B7). Firmware: the
 `MAGIC_BCAST` packet in `src/protocol.h`, the `bcast [-a] <text>` / `bcast clear`
 console verb, the TX campaign in `loop_instructor()`, and the banner overlay in

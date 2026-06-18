@@ -20,7 +20,7 @@ command line terminated by CR or LF and read the echoed result.
 | `ipwr <0..3>` | **Instructor mode only.** Runtime TX power override (same level scale as `pwr`). Instructor always boots at MAX; use this to drop power on the bench. **Not persisted** — next boot resets to MAX. | no (RAM) | yes — retunes SX1262 immediately |
 | `mode <0..3>` | Set the **boot** mode: `0`=Hunter `1`=Fox `2`=Livekey `3`=Instructor. (Hibernate is not selectable here.) Takes effect on next boot — pair with `reboot`. | yes | no (boot-time) |
 | `relay <id\|255> <cmd...>` | **Instructor mode only.** Send any command above to a *distant* station over the GFSK radio (not just short-range BLE). `id` is the target station, or `255` to broadcast to all. The target runs `<cmd>` through this same parser and returns an ack, shown on the instructor's screen/serial as `ACK <id>: <reply>`. Alias: `fox <id> <cmd>`. See "Instructor (remote control)" below. | n/a (the *target's* command persists per its own rule) | n/a |
-| `bcast [-a] <text...>` | **Instructor mode only.** Push a short plaintext **banner** (≤ 40 chars) to the screen of *every* station — Fox, Hunter, Instructor — for **1 minute**, regardless of mode. Unlike `relay`, nothing is executed: the literal text is shown on the panel (centered, wrapped to two lines, or horizontally scrolled if too long). The banner **always force-wakes a blanked panel** and keeps it lit for its full minute; `-a` (alert) is reserved for any extra per-panel emphasis. `bcast clear` dismisses it everywhere. Fire-and-forget (no ack): the same message is bursted 5× over ~7.5 s for delivery. A button tap / keypress on any station dismisses its banner. See "Instructor broadcast" below. | no (RAM, transient) | yes — banner appears on receipt |
+| `alert <text...>` | **Instructor mode only.** Push a short plaintext **banner** (≤ 40 chars) to the screen of *every* station — Fox, Hunter, Instructor — for **1 minute**, regardless of mode, **and sound a ~1.5 s attention tone there**. Unlike `relay`, nothing is executed: the literal text is shown on the panel (centered, wrapped to two lines, or horizontally scrolled if too long). The banner **always force-wakes a blanked panel** and keeps it lit for its full minute; the tone sounds **even on a muted node** (it overrides `mute` for its duration without changing the persisted mute state). `alert clear` dismisses it everywhere (and is silent). Fire-and-forget (no ack): the same message is bursted 5× over ~7.5 s for delivery. A button tap / keypress on any station dismisses its banner. See "Instructor alert" below. | no (RAM, transient) | yes — banner + tone on receipt |
 | `vol <1..32>` | Sidetone volume in `GAIN_Q15/1024` units (`8`→gain 8192, `32`→full swing 32768), clamped **1..32**. Default 8. Bare `vol` reports the current level. On the Heltec this scales the I2S sample amplitude; on the Cardputer it maps onto M5.Speaker 0..255. | yes | yes — applied immediately |
 | `mute [on\|off]` | Sidetone mute. Bare `mute` toggles; `on`/`1` and `off`/`0` set explicitly. For a node running near people. | yes | yes — applied immediately |
 | `keymode [compat\|edge]` | TX keying transport: `compat` = legacy 30 ms `KeyState` stream; `edge` = on-edge `EdgeEvent` packets carrying TX-measured durations (see `protocol.md` / `edge-events.md`). Bare `keymode` reports. Only the **fox/livekey TX** changes; hunters are bilingual and auto-follow per packet. Default `compat` (a fresh/legacy unit is unchanged). | yes | yes — fox/livekey emits the new format immediately |
@@ -144,33 +144,44 @@ air than unicast. The full command set is reachable remotely, including `reboot`
 and `mode` (a `reboot` won't ack — the target resets first). Live-key stations
 don't answer control in this version.
 
-## Instructor broadcast (banner to every station)
+## Instructor alert (banner + tone to every station)
 
-`bcast` pushes a short **human-readable banner** to the screen of every station
+`alert` pushes a short **human-readable banner** to the screen of every station
 in the exercise, regardless of mode — for "RETURN TO BASE", "FOX QSY 906.000", a
-hint, or a safety call. It is distinct from `relay`: `relay` carries a *console
-command* a station runs silently; `bcast` carries *display text* shown verbatim.
+hint, or a safety call — **and sounds an attention tone** so an operator who
+isn't looking at the panel still notices. It is distinct from `relay`: `relay`
+carries a *console command* a station runs silently; `alert` carries *display
+text* shown verbatim, with audio.
 
 ```
-bcast RETURN TO BASE NOW        # banner on every Fox/Hunter/Instructor panel, 1 min
-bcast -a FOX MOVING QSY 906     # alert (reserved for extra per-panel emphasis)
-bcast clear                     # dismiss the banner on every station
+alert RETURN TO BASE NOW        # banner + tone on every Fox/Hunter/Instructor panel
+alert FOX MOVING QSY 906        # every alert beeps and force-wakes the panel
+alert clear                     # dismiss the banner on every station (silent)
 ```
+
+**Audible attention tone.** Every alert (with text) sounds a single ~1.5 s tone
+at the board's sidetone frequency. The tone **overrides the master `mute`** — a
+broadcast is important enough to be heard even on a node muted near people — but
+it does *not* change the persisted mute state, so the node is muted again the
+instant the tone ends. Implemented as a mute-bypassing `sidetone_alert()` gate in
+every audio backend (I2S/MAX98357A, Cardputer ES8311, nRF52 buzzer); the main
+loop times the duration without blocking. `alert clear` is silent.
 
 **On-air mechanics.** The banner rides a dedicated packet (`MAGIC_BCAST`,
-`protocol.h`), again honoured only from instructor id **0**. It is always
+`protocol.h`), again honoured only from instructor id **0**, with the
+`BCAST_FLAG_ALERT` bit always set (every broadcast is now an alert). It is always
 all-stations and **fire-and-forget** — acking from every node would flood the
 channel — so reliability comes from repetition: the instructor bursts the same
 `seq` five times ~1.5 s apart (~7.5 s total), and receivers dedup by `seq` so the
-banner paints once. Each station shows the text as a full-screen overlay for **1
-minute** over its normal mode screen (keying/copy continues underneath), then
-reverts. The text is centered if short, wrapped to two lines if it fits, or
-horizontally **scrolled** (marquee) if it is too long for the panel. A banner
-**always force-wakes a blanked panel** and holds it lit for the full minute (a
-broadcast must be seen, so it overrides idle-blank regardless of the operator's
-blank state). A button tap / keypress on a station dismisses its banner early.
-Older firmware that predates `MAGIC_BCAST` ignores the packet for free (every
-decoder is magic-gated).
+banner paints and the tone fires once. Each station shows the text as a
+full-screen overlay for **1 minute** over its normal mode screen (keying/copy
+continues underneath), then reverts. The text is centered if short, wrapped to
+two lines if it fits, or horizontally **scrolled** (marquee) if it is too long
+for the panel. A banner **always force-wakes a blanked panel** and holds it lit
+for the full minute (a broadcast must be seen, so it overrides idle-blank
+regardless of the operator's blank state). A button tap / keypress on a station
+dismisses its banner early. Older firmware that predates `MAGIC_BCAST` ignores
+the packet for free (every decoder is magic-gated).
 
 ## Field watchdog
 

@@ -14,6 +14,7 @@
 static float   s_freq    = 600.0f;
 static uint8_t s_vol     = 255;
 static bool    s_muted   = false;
+static bool    s_alert   = false;   // instructor alert overrides mute
 static bool    s_want_on = false;   // last on/off request, so unmute can resume
 
 void sidetone_init(int /*gpio*/, uint32_t freq_hz) {
@@ -41,8 +42,16 @@ void sidetone_set_level(uint8_t units) {
 
 void sidetone_set_mute(bool m) {
     s_muted = m;
+    if (s_alert) return;                            // alert tone holds the speaker
     if (m) M5.Speaker.stop();                       // silence a sounding tone now
     else if (s_want_on) M5.Speaker.tone(s_freq, UINT32_MAX);  // resume held key
+}
+
+void sidetone_alert(bool on) {
+    s_alert = on;
+    if (on) M5.Speaker.tone(s_freq, UINT32_MAX);    // sound now, regardless of mute
+    else if (s_want_on && !s_muted) M5.Speaker.tone(s_freq, UINT32_MAX);  // resume key
+    else M5.Speaker.stop();                         // back to silence / mute
 }
 
 void sidetone_on() {

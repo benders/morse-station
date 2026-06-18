@@ -6,7 +6,7 @@ Roles persist in NVS from the prior run: stn73 Instructor (usbmodem22301),
 stn38 Fox (usbserial-0001), stn43 + stn115 Hunters (usbmodem20401 / usbmodem21301).
 
 Method: halt the Fox (quiet the channel so Hunters stop receiving and won't
-self-wake), force both Hunter panels blank (`screen off`), then `bcast`. A blanked
+self-wake), force both Hunter panels blank (`screen off`), then `alert`. A blanked
 panel that the broadcast wakes logs "# screen: woke"; assert that on both Hunters
 plus the "RX B ... text=" reception, then confirm the panel stays lit (no
 "# screen: blanked") for ~45 s — i.e., the banner overrides idle-blank for its life.
@@ -145,7 +145,7 @@ def main():
 
         t_bc=time.time(); wokeA=wokeB=rbA=rbB=setA=setB=None
         for attempt in range(3):
-            tb=time.time(); st["instructor"].send(f"bcast {BANNER}")
+            tb=time.time(); st["instructor"].send(f"alert {BANNER}")
             # passive observables (informational; the Wio CDC can stall these)
             wokeA=wokeA or st["hunterA"].wait_for([r"# screen: woke"],10,since=tb)
             wokeB=wokeB or st["hunterB"].wait_for([r"# screen: woke"],10,since=tb)

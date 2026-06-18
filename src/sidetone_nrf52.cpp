@@ -112,6 +112,7 @@ constexpr int32_t DEFAULT_GAIN_Q15 = 8192;
 volatile int32_t  s_gain_q15 = DEFAULT_GAIN_Q15;
 volatile bool     s_on       = false;
 volatile bool     s_muted    = false;
+volatile bool     s_alert    = false;     // instructor alert overrides mute
 
 // Raised-cosine key envelope (same rationale as sidetone.cpp): zero slope at both
 // ends => no click/chirp on the first element after silence. ~8 ms ramp.
@@ -130,7 +131,7 @@ __attribute__((aligned(4))) uint16_t s_buf[2][FRAMES];
 // mid-rail. Idle/mute relaxes the envelope to 0 => every sample is PWM_MID (50%
 // duty) => the RC-filtered output is flat DC => silent, no DC step (no pop).
 void fill_buffer(uint16_t* buf) {
-    const int target = (s_on && !s_muted) ? ENV_RAMP : 0;
+    const int target = (s_alert || (s_on && !s_muted)) ? ENV_RAMP : 0;
     for (int i = 0; i < FRAMES; i++) {
         if      (s_env_pos < target) s_env_pos++;   // attack along the curve
         else if (s_env_pos > target) s_env_pos--;   // release along the curve
@@ -157,7 +158,7 @@ __attribute__((aligned(4))) uint32_t s_buf[2][FRAMES];
 
 // Fill one DMA buffer with the next FRAMES samples (DDS + volume + envelope).
 void fill_buffer(uint32_t* buf) {
-    const int target = (s_on && !s_muted) ? ENV_RAMP : 0;
+    const int target = (s_alert || (s_on && !s_muted)) ? ENV_RAMP : 0;
     for (int i = 0; i < FRAMES; i++) {
         if      (s_env_pos < target) s_env_pos++;   // attack along the curve
         else if (s_env_pos > target) s_env_pos--;   // release along the curve
@@ -229,6 +230,7 @@ uint32_t s_countertop  = 0;     // PWM period in base-clock ticks
 uint16_t s_compare     = 0;     // duty compare value (bit15=0 => duty/COUNTERTOP)
 volatile bool s_on     = false; // logical key state (independent of mute)
 volatile bool s_muted  = false;
+volatile bool s_alert  = false; // instructor alert overrides mute
 uint8_t  s_level       = 32;    // sidetone_set_level units, stored only (no-op)
 uint8_t  s_volume      = 255;   // sidetone_set_volume units, stored only (no-op)
 
@@ -327,6 +329,7 @@ void sidetone_set_level(uint8_t units) {
 
 void sidetone_set_mute(bool m) {
     s_muted = m;
+    if (s_alert) return;                // alert tone holds the buzzer on
     if (s_muted) {
         // Silence immediately regardless of s_on, but remember s_on so an
         // unmute while keyed resumes the tone (matches the sidetone.h
@@ -335,6 +338,13 @@ void sidetone_set_mute(bool m) {
     } else if (s_on) {
         buzzer_start();
     }
+}
+
+void sidetone_alert(bool on) {
+    s_alert = on;
+    // buzzer_start/stop are idempotent; on ends, fall back to the key/mute state.
+    if (on || (s_on && !s_muted)) buzzer_start();
+    else                          buzzer_stop();
 }
 
 void sidetone_on() {
@@ -464,6 +474,7 @@ void sidetone_set_level(uint8_t units) {
 }
 
 void sidetone_set_mute(bool m) { s_muted = m; }   // feeder writes silence while muted
+void sidetone_alert(bool on)   { s_alert = on; }  // feeder forces tone on while set
 
 void sidetone_on()  { s_on = true; }   // the envelope ramp gives the clickless edge
 void sidetone_off() { s_on = false; }

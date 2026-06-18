@@ -12,7 +12,7 @@ Procedure (from the task):
   2. Roles: stn73 Instructor, stn38 Fox, stn43 + stn115 Hunters.
   3. Instructor relays a test message to the Fox; confirm Hunters receive/copy it.
   4. Instructor relays `stop` to the Fox (quiets the channel).
-  5. Instructor sends a `bcast` broadcast banner.
+  5. Instructor sends an `alert` broadcast banner (+ attention tone).
   6. Confirm via Hunter serial that the broadcast was RECEIVED ("RX B ... text=..."),
      with a `show` "banner = ..." cross-check.
 
@@ -256,9 +256,9 @@ def main():
 
         # ===== STEP 5/6: instructor broadcast banner ======================
         t_bc = time.time()
-        st["instructor"].send(f"bcast {BANNER}")
+        st["instructor"].send(f"alert {BANNER}")
         # instructor confirms staging + campaign
-        stage = st["instructor"].wait_for([rf"bcasting.*: {re.escape(BANNER)}"], 6, since=t_bc)
+        stage = st["instructor"].wait_for([rf"alerting.*: {re.escape(BANNER)}"], 6, since=t_bc)
         txb   = st["instructor"].wait_for([r"TX B seq="], 8, since=t_bc)
         record("5. Instructor staged + bursting broadcast", stage is not None and txb is not None,
                f"stage={'ok' if stage else 'no'}, txB={'ok' if txb else 'no'}")

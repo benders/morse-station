@@ -30,3 +30,12 @@ void sidetone_set_level(uint8_t units);
 // people. Driven by the Cardputer 'm' key and the BLE `mute` command, persisted
 // in config (see config::muted()).
 void sidetone_set_mute(bool muted);
+
+// Attention gate for instructor alerts (docs/plan-alert-tone.md). Forces the
+// sidetone ON at the board's fixed frequency regardless of the master mute AND
+// regardless of any in-progress key/RX tone — a broadcast must be heard even on
+// a node that's been muted near people. The main loop times the tone's length
+// and calls sidetone_alert(false) to end it, which restores the underlying
+// key/mute state. Independent of sidetone_set_mute(): it never changes the
+// persisted mute, so the node is muted again the instant the alert ends.
+void sidetone_alert(bool on);

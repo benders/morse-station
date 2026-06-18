@@ -444,6 +444,14 @@ static constexpr uint32_t BCAST_INTERVAL  = CTRL_PROBE_INTERVAL;  // gap between
 static char     g_banner[proto::BCAST_TEXT_MAX + 1] = {0};
 static uint32_t g_banner_until = 0;
 
+// Audible attention tone that rides along with a received/sent alert banner
+// (docs/plan-alert-tone.md). A single steady tone at the board's sidetone
+// frequency, sounded for ALERT_TONE_MS via sidetone_alert() — which overrides the
+// master mute, so a muted node still beeps. g_alert_tone_until is a millis()
+// deadline (0 = not sounding); alert_tone_tick() ends it without blocking.
+static constexpr uint32_t ALERT_TONE_MS = 1500;      // attention tone length
+static uint32_t g_alert_tone_until = 0;
+
 // Pending broadcast campaign (the TX side), staged by the `bcast` verb and
 // driven by loop_instructor(). Mirrors CtrlPending but fire-and-forget.
 struct BcastPending {
@@ -460,6 +468,8 @@ static BcastPending g_bcast;
 // but referenced earlier — by the `bcast`/`show` console verbs and prg_tapped.
 static bool banner_active(uint32_t now);
 static void set_banner(const char* text, bool alert, uint32_t now);
+static void start_alert_tone(uint32_t now);
+static void alert_tone_tick(uint32_t now);
 
 // A Print sink that captures the FIRST line of a command's reply into a small
 // buffer, so a station can return a short confirmation in its ack packet. The
@@ -747,43 +757,43 @@ static bool handle_setup_command(const char* line, Print& out) {
                            tid, g_ctrl.seq, g_ctrl.cmd);
             }
         }
-    } else if (!strcmp(line, "bcast") || !strncmp(line, "bcast ", 6)) {
-        // Instructor broadcast banner (docs/plan-instructor-broadcast.md): push a
-        // short plaintext message to EVERY station's screen — distinct from
-        // `relay`, which runs a console command silently. `bcast <text>` shows an
-        // ordinary banner; `bcast -a <text>` (alert) force-wakes a blanked panel;
-        // `bcast clear` dismisses any showing banner everywhere. Fire-and-forget:
-        // no ack, just BCAST_REPEATS repeats from loop_instructor(). The actual
-        // bursting happens there; here we just stage it. Instructor-mode only.
+    } else if (!strcmp(line, "alert") || !strncmp(line, "alert ", 6)) {
+        // Instructor alert (docs/plan-alert-tone.md): push a short plaintext
+        // message to EVERY station's screen AND sound an attention tone there —
+        // distinct from `relay`, which runs a console command silently. Every
+        // alert beeps (overriding a receiver's mute); `alert clear` dismisses any
+        // showing banner everywhere (and is silent). Fire-and-forget: no ack, just
+        // BCAST_REPEATS repeats from loop_instructor(). The actual bursting happens
+        // there; here we just stage it. Instructor-mode only.
         const char* arg = line + 5;
         while (*arg == ' ') arg++;
-        bool alert = false;
-        if (!strncmp(arg, "-a ", 3)) { alert = true; arg += 3; while (*arg == ' ') arg++; }
         bool clear = !strcmp(arg, "clear");
         if (clear) arg = "";              // empty text → receivers dismiss
         if (mode != MODE_INSTRUCTOR) {
-            out.println("  bcast: only in Instructor mode");
+            out.println("  alert: only in Instructor mode");
         } else if (!*arg && !clear) {
-            out.println("  ? bcast [-a] <text...> | bcast clear");
+            out.println("  ? alert <text...> | alert clear");
         } else if (strlen(arg) > proto::BCAST_TEXT_MAX) {
-            out.printf("  bcast: text too long (max %u)\n",
+            out.printf("  alert: text too long (max %u)\n",
                        (unsigned)proto::BCAST_TEXT_MAX);
         } else {
             g_bcast.active       = true;
             g_bcast.seq          = g_ctrl_seq++;
             config::set_ctrl_seq(g_ctrl_seq);   // shared monotonic id, persisted
-            g_bcast.flags        = alert ? proto::BCAST_FLAG_ALERT : 0;
+            g_bcast.flags        = proto::BCAST_FLAG_ALERT;  // every alert is an alert
             strncpy(g_bcast.text, arg, proto::BCAST_TEXT_MAX);
             g_bcast.text[proto::BCAST_TEXT_MAX] = '\0';
             g_bcast.last_tx      = 0;            // send the first repeat immediately
             g_bcast.repeats_left = BCAST_REPEATS;
-            // The instructor sees its own banner (it does not RX its own send).
-            set_banner(arg, alert, millis());
+            // The instructor sees its own banner (it does not RX its own send) and
+            // hears the same tone; `alert clear` (empty text) stays silent.
+            set_banner(arg, true, millis());
             if (clear)
-                out.printf("  bcast clear (seq %u)\n", g_bcast.seq);
-            else
-                out.printf("  bcasting%s (seq %u): %s\n", alert ? " ALERT" : "",
-                           g_bcast.seq, g_bcast.text);
+                out.printf("  alert clear (seq %u)\n", g_bcast.seq);
+            else {
+                start_alert_tone(millis());
+                out.printf("  alerting (seq %u): %s\n", g_bcast.seq, g_bcast.text);
+            }
         }
     } else if (!strcmp(line, "mute") || !strncmp(line, "mute ", 5)) {
         // Bare "mute" toggles; "mute on|off" (or 1|0) sets explicitly. Persisted
@@ -1008,7 +1018,7 @@ static bool handle_setup_command(const char* line, Print& out) {
                     "rxbw <khz> | mode <0..2> | "
                     "vol <1..32> | mute [on|off] | showtext [on|off] | "
                     "keymode <compat|edge> | "
-                    "relay <id|255> <cmd> | bcast [-a] <text> | "
+                    "relay <id|255> <cmd> | alert <text> | "
                     "model | debug [on|off] | show | screen [on|off] | power | "
                     "bootlog [clear] | btn | stall [secs] | reboot | hibernate | done");
     }
@@ -1501,6 +1511,25 @@ static void set_banner(const char* text, bool alert, uint32_t now) {
     display::activity();                // force-wake the panel so the banner shows
 }
 
+// Sound the attention tone for ALERT_TONE_MS. Overrides the master mute (a
+// broadcast must be heard); sidetone_alert() forces the tone on at the board's
+// fixed frequency. Re-arming while already sounding just extends the deadline.
+static void start_alert_tone(uint32_t now) {
+    g_alert_tone_until = now + ALERT_TONE_MS;
+    sidetone_alert(true);
+    if (g_debug) Serial.printf("alert: tone %ums\n", (unsigned)ALERT_TONE_MS);
+}
+
+// End the attention tone once its deadline passes. Cheap, non-blocking — called
+// every loop() so it never holds the speaker past ALERT_TONE_MS. Restores the
+// underlying key/mute state (sidetone_alert(false) re-evaluates it).
+static void alert_tone_tick(uint32_t now) {
+    if (g_alert_tone_until && (int32_t)(g_alert_tone_until - now) <= 0) {
+        g_alert_tone_until = 0;
+        sidetone_alert(false);
+    }
+}
+
 // Paint the active banner as a full-screen overlay. The display layer handles
 // centering / two-line wrap / horizontal scroll per panel (display::banner). We
 // call activity() every frame so the panel stays lit for the banner's full life
@@ -1528,6 +1557,8 @@ static bool broadcast_rx_try(const uint8_t* buf, size_t n, uint32_t now) {
     if (fresh) {
         bool alert = (b.flags & proto::BCAST_FLAG_ALERT) != 0;
         set_banner(b.text, alert, now);
+        // Every alert beeps (text present); `alert clear` (empty text) is silent.
+        if (b.text[0]) start_alert_tone(now);
         last_draw = 0;   // force an immediate redraw to show the banner
         if (g_debug)
             Serial.printf("RX B seq=%u flags=%u text=%s\n", b.seq, b.flags, b.text);
@@ -1965,7 +1996,7 @@ static void loop_instructor(uint32_t now) {
             if (g_bcast.repeats_left) g_bcast.repeats_left--;
             if (g_bcast.repeats_left == 0) g_bcast.active = false;
             char l1[24];
-            snprintf(l1, sizeof(l1), "BCAST seq %u", g_bcast.seq);
+            snprintf(l1, sizeof(l1), "ALERT seq %u", g_bcast.seq);
             display::instructor(PWR_LEVELS[pwr_idx].label, l1, g_bcast.text, true);
             last_draw = now;
             if (g_debug)
@@ -2084,6 +2115,9 @@ void loop() {
         case MODE_INSTRUCTOR: loop_instructor(now); break;
         case MODE_HIBERNATE:  break;   // never reached (slept in setup)
     }
+    // End the instructor attention tone once its deadline passes (non-blocking;
+    // every mode can receive an alert, so tick it here regardless of mode).
+    alert_tone_tick(now);
     // Battery saver: power the panel down after the idle timeout. Wake sources
     // (button, serial/BLE command, hunter RX keying) call display::activity();
     // this only acts once the timeout elapses with none of them firing.
