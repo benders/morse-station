@@ -154,9 +154,12 @@ carries a *console command* a station runs silently; `alert` carries *display
 text* shown verbatim, with audio.
 
 ```
-alert RETURN TO BASE NOW        # banner + tone on every Fox/Hunter/Instructor panel
-alert FOX MOVING QSY 906        # every alert beeps and force-wakes the panel
-alert clear                     # dismiss the banner on every station (silent)
+alert RETURN TO BASE NOW        # banner + ~1.5 s tone on every Fox/Hunter/Instructor panel
+alert FOX QSY 906.000           # re-point hunters to a new frequency; force-wakes blanked panels
+alert NET IN 5 MIN ON 905.0     # short text → centered (wraps to two lines if it fits)
+alert SHELTER IN PLACE - HEAVY RAIN MOVING IN, HOLD POSITION   # too long → marquee-scrolls
+alert WX ALERT                  # beeps even on a node with `mute on` (mute restored after)
+alert clear                     # dismiss the banner on every station (silent, no tone)
 ```
 
 **Audible attention tone.** Every alert (with text) sounds a single ~1.5 s tone
