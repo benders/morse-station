@@ -193,6 +193,15 @@ bool init(int& err) {
                         TX_POWER_DBM, PREAMBLE_BITS, TCXO_V, USE_LDO);
     if (err != RADIOLIB_ERR_NONE) return false;
 
+    // 2-byte hardware CRC. beginFSK() already defaults this on, but pin it
+    // explicitly so a future RadioLib default change can't silently disable it:
+    // the decoder relies on corrupted frames being dropped (poll() returns false
+    // on RADIOLIB_ERR_CRC_MISMATCH), since a bit-flipped-but-accepted packet
+    // would decode to a confident wrong character. The only RX integrity check
+    // is this 16-bit CRC — packets carry just a 1-byte MAGIC, no app checksum.
+    err = chip.setCRC(2);
+    if (err != RADIOLIB_ERR_NONE) return false;
+
     // DIO2 drives the TX/RX antenna switch. On the Heltec V4 that's the FEM CTX
     // line; the Cap LoRa-1262 wires DIO2 to its on-cap RF switch the same way.
     err = chip.setDio2AsRfSwitch(true);
@@ -352,6 +361,12 @@ bool poll(uint8_t* out, size_t max_len, size_t& out_len, float& rssi_dbm) {
     rssi_dbm = chip.getRSSI();
     chip.startReceive();           // re-arm
 
+    // LOAD-BEARING: this also rejects RADIOLIB_ERR_CRC_MISMATCH, so a frame that
+    // failed the 16-bit hardware CRC is dropped here before reaching the decoder.
+    // readData() fills `out` even on a CRC failure (RadioLib lets you keep corrupt
+    // bytes); do NOT relax this to "salvage" that data — it would feed bit-flipped
+    // packets to the Morse decoder as confident wrong characters. See begin()'s
+    // setCRC(2) note.
     if (state != RADIOLIB_ERR_NONE) return false;
     out_len = n;
     return true;
