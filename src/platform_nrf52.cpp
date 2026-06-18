@@ -30,6 +30,8 @@
 #include <Arduino.h>
 #include <nrf_power.h>   // NRF_POWER, RESETREAS bit masks
 #include <nrf_sdm.h>     // sd_power_system_off()
+#include <FreeRTOS.h>    // FreeRTOS kernel (Adafruit nRF52 core)
+#include <task.h>        // xTaskCreate / vTaskDelayUntil / suspend / resume
 
 namespace platform {
 
@@ -55,6 +57,60 @@ void restart() {
 void     set_cpu_low_power() { /* nRF52840: fixed 64 MHz, nothing to scale */ }
 uint32_t cpu_freq_mhz()      { return 64; }
 int      cpu_cores()         { return 1; }
+
+// Fixed-cadence keyer tick via a dedicated FreeRTOS task (TODO-fox-timing.md
+// mitigation #1). The task is created ONCE (on first keyer_start) at a priority
+// above the Adafruit loopTask but below the SoftDevice, and `vTaskDelayUntil`s
+// at the requested period — so a slow loop() can't stretch a measured Morse
+// element/gap. `cb` must stay tiny (sample player + timestamp edges only) so it
+// can never starve the radio/BLE stack.
+//
+// Power gating: keyer_start()/keyer_stop() resume/suspend the task. A suspended
+// task adds no scheduler ticks, so FreeRTOS tickless idle / sd_app_evt_wait can
+// reach low-power wait through the inter-message pause (sleep-through-pause).
+static TaskHandle_t s_keyer_task = nullptr;
+static void (*s_keyer_cb)()      = nullptr;
+static uint32_t s_keyer_period_ticks = 1;
+static volatile bool s_keyer_running = false;
+
+static void keyer_task_body(void* /*arg*/) {
+    TickType_t last = xTaskGetTickCount();
+    for (;;) {
+        vTaskDelayUntil(&last, s_keyer_period_ticks);
+        if (s_keyer_running && s_keyer_cb) s_keyer_cb();
+    }
+}
+
+bool keyer_start(void (*cb)(), uint32_t period_us) {
+    if (!cb) return false;
+    s_keyer_cb = cb;
+    uint32_t ticks = pdMS_TO_TICKS(period_us / 1000);
+    if (ticks == 0) ticks = 1;       // 2 ms >= 1 tick at the 1024 Hz config tick
+    s_keyer_period_ticks = ticks;
+    if (s_keyer_task == nullptr) {
+        // Priority above loopTask (TASK_PRIO_LOW), below the SoftDevice. Small
+        // stack: the body only samples the player + pushes a ring entry.
+        BaseType_t ok = xTaskCreate(keyer_task_body, "keyer", 256, nullptr,
+                                    TASK_PRIO_HIGH, &s_keyer_task);
+        if (ok != pdPASS) {
+            s_keyer_task = nullptr;
+            return false;
+        }
+        // Created in the running state; gate it explicitly via s_keyer_running.
+    }
+    s_keyer_running = true;
+    vTaskResume(s_keyer_task);
+    return true;
+}
+
+void keyer_stop() {
+    if (s_keyer_task != nullptr) {
+        s_keyer_running = false;
+        vTaskSuspend(s_keyer_task);
+    }
+}
+
+uint32_t keyer_now_us() { return micros(); }
 
 // Enter the lowest-power "System OFF" state with no wake source configured —
 // only a RESET pin pulse (or, on some boards, a configured GPIO wake) brings

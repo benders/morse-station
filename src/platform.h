@@ -100,4 +100,25 @@ void     set_cpu_low_power();
 uint32_t cpu_freq_mhz();
 int      cpu_cores();
 
+// Fixed-cadence keyer tick, decoupled from loop() jitter. Invokes `cb` every
+// period_us microseconds from a high-priority context independent of the
+// Arduino loopTask: an esp_timer periodic callback on ESP32, a FreeRTOS task
+// (vTaskDelayUntil) above loop priority on nRF52. `cb` MUST be short and
+// non-blocking — it samples the Morse player and timestamps key edges only:
+// NO radio SPI, NO Serial, NO flash. Returns false if the timer/task could not
+// be created (caller falls back to in-loop sampling — never worse than today).
+//
+// Power-gating contract: the keyer is started per message and stopped during
+// the inter-message pause, so it ticks only during active keying. esp_timer
+// start/stop_periodic and a FreeRTOS suspend/resume make re-arming cheap and
+// leave the pause genuinely keyer-quiet (no wake-ups), keeping the
+// sleep-through-pause door open. See TODO-fox-timing.md mitigation #1.
+bool keyer_start(void (*cb)(), uint32_t period_us);
+void keyer_stop();
+
+// Monotonic microsecond clock used by the keyer for duration measurement.
+// esp_timer_get_time() on ESP32, micros() on nRF52. Truncated to 32-bit; wraps
+// every ~71 min, which is harmless for the ms-scale durations measured here.
+uint32_t keyer_now_us();
+
 } // namespace platform

@@ -19,6 +19,7 @@
 #include <esp_sleep.h>    // esp_deep_sleep_start()
 #include <esp_system.h>   // esp_restart(), esp_reset_reason()
 #include <esp_task_wdt.h> // esp_task_wdt_init/add/reset — the Task Watchdog Timer
+#include <esp_timer.h>    // esp_timer_* — the fixed-cadence keyer tick
 #include <Arduino.h>      // ESP.getEfuseMac()
 
 namespace platform {
@@ -70,6 +71,61 @@ void set_cpu_low_power() {
 
 uint32_t cpu_freq_mhz() { return getCpuFrequencyMhz(); }
 int      cpu_cores()    { return ESP.getChipCores(); }
+
+// Fixed-cadence keyer tick via esp_timer (TODO-fox-timing.md mitigation #1).
+//
+// esp_timer runs the callback from its own dedicated high-priority task (the
+// "esp_timer" task), independent of the Arduino loopTask, so a slow LCD/audio/
+// BLE loop() frame can no longer stretch a measured Morse element/gap. esp_timer
+// is clock-source-agnostic (driven by the high-res timer, not the CPU APB
+// scaling), so it does NOT retrigger the Cardputer M5/APB boot-loop hazard that
+// setCpuFrequencyMhz() does (see set_cpu_low_power()).
+//
+// Power gating: the handle is created lazily once; keyer_start()/keyer_stop()
+// map to esp_timer_start_periodic()/esp_timer_stop(), so the timer fires only
+// while a message is keying and is genuinely stopped (no wake-ups) through the
+// inter-message pause — keeping the sleep-through-pause door open.
+static esp_timer_handle_t s_keyer_timer = nullptr;
+static void (*s_keyer_cb)() = nullptr;
+static bool s_keyer_running = false;
+
+// esp_timer trampoline: fixed C-callable signature -> the registered void(void).
+static void keyer_trampoline(void* /*arg*/) {
+    if (s_keyer_cb) s_keyer_cb();
+}
+
+bool keyer_start(void (*cb)(), uint32_t period_us) {
+    if (!cb) return false;
+    s_keyer_cb = cb;
+    if (s_keyer_timer == nullptr) {
+        esp_timer_create_args_t args = {};
+        args.callback        = keyer_trampoline;
+        args.arg             = nullptr;
+        args.dispatch_method = ESP_TIMER_TASK;   // run in the esp_timer task, not ISR
+        args.name            = "keyer";
+        if (esp_timer_create(&args, &s_keyer_timer) != ESP_OK) {
+            s_keyer_timer = nullptr;
+            return false;
+        }
+    }
+    if (s_keyer_running) {
+        // Already armed (re-arm without a stop): restart cleanly.
+        esp_timer_stop(s_keyer_timer);
+        s_keyer_running = false;
+    }
+    if (esp_timer_start_periodic(s_keyer_timer, period_us) != ESP_OK) return false;
+    s_keyer_running = true;
+    return true;
+}
+
+void keyer_stop() {
+    if (s_keyer_timer != nullptr && s_keyer_running) {
+        esp_timer_stop(s_keyer_timer);
+        s_keyer_running = false;
+    }
+}
+
+uint32_t keyer_now_us() { return (uint32_t)esp_timer_get_time(); }
 
 // Enter deep sleep with no wake source configured.  Only a hardware RST (or
 // power cycle) brings the node back; on-return is impossible, but the compiler
