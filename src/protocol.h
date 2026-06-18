@@ -91,8 +91,8 @@ inline bool decode_listen(const uint8_t* buf, size_t len, Listen& l) {
 constexpr uint8_t MAGIC_EDGE = 0x45;   // 'E'
 
 // Idle heartbeat: when the key has been steady this long, re-send the current
-// state as a (heartbeat) EdgeEvent. Gives presence, late-joiner re-anchor, and
-// double-loss recovery without the 30 ms stream. See docs/edge-events.md.
+// state as a (heartbeat) EdgeEvent. Gives presence and late-joiner re-anchor
+// without the 30 ms stream. See docs/edge-events.md.
 constexpr uint32_t HEARTBEAT_MS = 700;
 
 // flags bits in EdgeEvent.
@@ -105,7 +105,10 @@ struct __attribute__((packed)) EdgeEvent {
     uint8_t  seq;          // per-edge, wraps mod 256 (loss/dup/reorder detect)
     uint8_t  flags;        // EDGE_FLAG_*
     uint16_t dur_now_ms;   // duration of the segment that JUST ENDED
-    uint16_t dur_prev_ms;  // duration of the segment before that (single-loss heal)
+    uint16_t dur_prev_ms;  // segment before that. Still transmitted, but the RX
+                           // no longer heals from it: a lost edge now renders as
+                           // '?' rather than a guessed letter (see main.cpp /
+                           // docs/edge-events.md "Loss handling"). Reserved.
 };
 
 constexpr size_t EDGE_LEN = sizeof(EdgeEvent);   // 8 bytes

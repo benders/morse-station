@@ -1653,6 +1653,18 @@ static void loop_livekey(uint32_t now) {
     }
 }
 
+// Single-fox lock gate. In a classroom several foxes may share the channel; the
+// hunter follows exactly ONE so their edge streams don't interleave into the
+// single shared decoder. Adopts the first fox heard, refreshes liveness on each
+// packet from it, and reports false for any OTHER fox so the caller drops it.
+// The lock is released (locked=-1) by loop_hunter when the fox goes silent.
+static bool fox_lock(uint8_t s, int& locked, uint32_t& last_fox_rx, uint32_t now) {
+    if (locked < 0) locked = s;            // adopt the first fox heard
+    if ((int)s != locked) return false;    // a competing fox: ignore its keying
+    last_fox_rx = now;
+    return true;
+}
+
 static void loop_hunter(uint32_t now) {
     static bool     rx_down = false;
     static float    rssi = 0.0f;
@@ -1669,6 +1681,12 @@ static void loop_hunter(uint32_t now) {
     static bool rx_is_edge     = false;
     static int  last_edge_seq  = -1;
     static bool reanchor       = false;
+
+    // Single-fox lock (see fox_lock above): the station this hunter is currently
+    // following, and the last time we heard its keying. -1 = unlocked, adopt the
+    // next fox heard. Released when last_fox_rx ages past signal_timeout_ms.
+    static int      locked_fox  = -1;
+    static uint32_t last_fox_rx = 0;
 
     // Copy-blanking timeout: after this long with no fresh decoded code, wipe the
     // text and dit/dah copy lines so a stale message doesn't linger. The fox's
@@ -1724,10 +1742,12 @@ static void loop_hunter(uint32_t now) {
             // Count it as signal so the presence bar doesn't blink during a
             // run of control packets. The radio is re-armed by control_rx_try.
             last_signal = now;
-        } else if (proto::decode(buf, n, ks)) {
+        } else if (proto::decode(buf, n, ks) &&
+                   fox_lock(ks.station_id, locked_fox, last_fox_rx, now)) {
             // KeyState (compat): a fox sending this is NOT in edge mode, so a
             // bilingual hunter follows it back to the polling decode path —
             // byte-identical to pre-E4 behavior once rx_is_edge is false.
+            // (Gated by fox_lock: a competing fox's keying is dropped here.)
             rx_is_edge = false;
             rx_down = ks.key_down != 0;
             rx_station_id = ks.station_id;
@@ -1742,8 +1762,10 @@ static void loop_hunter(uint32_t now) {
                 Serial.printf("RX K %u seq=%u lvl=%u rssi=%d\n",
                               ks.station_id, ks.seq, rx_down ? 1 : 0, (int)r);
             }
-        } else if (proto::decode_ident(buf, n, id) && id.wpm && id.char_wpm) {
+        } else if (proto::decode_ident(buf, n, id) && id.wpm && id.char_wpm &&
+                   fox_lock(id.station_id, locked_fox, last_fox_rx, now)) {
             // Retune the decoder to the fox's announced timing (only on change).
+            // Gated by fox_lock so we never retune to a competing fox's speed.
             if (id.wpm != rx_wpm || id.char_wpm != rx_char_wpm) {
                 rx_wpm = id.wpm;
                 rx_char_wpm = id.char_wpm;
@@ -1755,7 +1777,8 @@ static void loop_hunter(uint32_t now) {
                 Serial.printf("RX I %u wpm=%u cwpm=%u call=%s\n",
                               id.station_id, id.wpm, id.char_wpm, id.call);
             }
-        } else if (proto::decode_edge(buf, n, ev)) {
+        } else if (proto::decode_edge(buf, n, ev) &&
+                   fox_lock(ev.station_id, locked_fox, last_fox_rx, now)) {
             // EdgeEvent (E4, docs/edge-events.md "Bilingual RX"): the packet's
             // flags level is the level being ENTERED, so the segment that JUST
             // ENDED (dur_now_ms) had the OPPOSITE level, and the one before
@@ -1782,12 +1805,16 @@ static void loop_hunter(uint32_t now) {
             }
 
             if (!hb) {
-                // Self-heal via seq (docs/edge-events.md "Loss handling"): a
-                // gap of 1 is the normal case (strictly incrementing real-edge
-                // seq); 0 is a duplicate; 2 means exactly one edge was lost and
-                // dur_prev_ms restates it; >=2 is an unrecoverable boundary.
+                // Loss handling WITHOUT guessing (docs/edge-events.md): we never
+                // reconstruct a lost edge from dur_prev_ms — a confident wrong
+                // letter confuses a first-time learner more than an honest '?'.
+                // A gap of 1 is the normal case (strictly incrementing real-edge
+                // seq); 0 is a duplicate; ANY gap >= 2 means one or more edges
+                // were lost, so the character spanning the loss is ambiguous:
+                // mark it '?' and re-anchor on the current segment. (dur_prev_ms
+                // is no longer consumed on RX — see protocol.h.)
                 if (reanchor || last_edge_seq < 0) {
-                    decoder.feed_segment(!level_down, ev.dur_now_ms);  // anchor, no heal
+                    decoder.feed_segment(!level_down, ev.dur_now_ms);  // anchor
                     reanchor = false;
                 } else {
                     uint8_t gap = (uint8_t)((uint8_t)ev.seq - (uint8_t)last_edge_seq);
@@ -1795,11 +1822,11 @@ static void loop_hunter(uint32_t now) {
                         // duplicate edge: skip feeding
                     } else if (gap == 1) {
                         decoder.feed_segment(!level_down, ev.dur_now_ms);
-                    } else if (gap == 2) {              // exactly one edge lost -> recover it
-                        decoder.feed_segment(level_down, ev.dur_prev_ms);   // the missing segment
-                        decoder.feed_segment(!level_down, ev.dur_now_ms);   // this segment
-                    } else {                            // >=2 lost: unrecoverable boundary
-                        decoder.flush();
+                    } else {
+                        // gap >= 2: edge(s) lost. '?' for the poisoned character;
+                        // force a marker at gap >= 3 where a whole character may
+                        // be gone even with nothing half-built. Then re-anchor.
+                        decoder.mark_lost(gap >= 3);
                         decoder.feed_segment(!level_down, ev.dur_now_ms);
                     }
                 }
@@ -1817,6 +1844,7 @@ static void loop_hunter(uint32_t now) {
     if (rx_down && (now - last_rx) > rx_timeout_ms) {
         rx_down = false;
         if (rx_is_edge) {
+            decoder.mark_lost(false);   // '?' for a character cut off mid-build
             decoder.flush();
             reanchor = true;
         }
@@ -1827,6 +1855,16 @@ static void loop_hunter(uint32_t now) {
     if (rssi_valid && (now - last_signal) > signal_timeout_ms) {
         rssi_valid = false;
         rx_station_id = -1;
+    }
+
+    // Fox-lock release: the locked fox's keying has gone silent this long, so
+    // drop the lock and let the next fox heard be adopted. Flush the decoder and
+    // re-anchor so a half-built character from the departed fox doesn't bleed
+    // into the next one. (Instructor control/broadcast traffic does not refresh
+    // last_fox_rx, so it can't hold a dead fox's lock open.)
+    if (locked_fox >= 0 && (now - last_fox_rx) > signal_timeout_ms) {
+        locked_fox = -1;
+        if (rx_is_edge) { decoder.mark_lost(false); decoder.flush(); reanchor = true; }
     }
 
     // No fresh decoded code for 10 s → blank the copy lines (text and dit/dah).

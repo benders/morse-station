@@ -69,6 +69,14 @@ public:
     char take_char();                 // next decoded char/space, 0 if none
     void flush();                     // drop a half-built character (loss/resync)
 
+    // Mark the in-progress character undecodable: queue one '?' (decoded text)
+    // and surface '?' in the element view, then discard the half-built element
+    // buffer. force=true emits '?' even when no partial character is pending
+    // (a known multi-edge loss). The RX layer calls this at every ambiguous
+    // edge instead of guessing a lost element — see docs/edge-events.md
+    // "Loss handling". A confident wrong letter confuses a learner more than '?'.
+    void mark_lost(bool force);
+
     // Per-element side-channel for live dit/dah display: returns the single
     // element ('.' or '-') classified on the most recent key-up edge, then
     // clears it, so the hunter can scroll one element at a time as it arrives

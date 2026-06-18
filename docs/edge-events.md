@@ -41,15 +41,15 @@ struct __attribute__((packed)) EdgeEvent {
     uint8_t  flags;        // bit0 = new key level entered (1=down,0=up);
                            // bit1 = heartbeat (no real edge, just a re-assert)
     uint16_t dur_now_ms;   // duration of the segment that JUST ENDED
-    uint16_t dur_prev_ms;  // duration of the segment before that (self-heal)
+    uint16_t dur_prev_ms;  // segment before that — still sent, RX-ignored now
 };                         // 8 bytes -> ~25 ms airtime at 4.8 kbps GFSK
 ```
 
-Levels strictly alternate, so `flags.bit0` + the two durations let a receiver
-reconstruct the last two segments completely. **A single lost edge packet is
-fully recovered from the next one** (its `dur_prev_ms` restates the segment the
-lost packet carried). Only two consecutive losses drop an element — rare, and
-bounded by the heartbeat below.
+Levels strictly alternate, so `flags.bit0` + `dur_now_ms` place each segment
+absolutely. `dur_prev_ms` once let a receiver self-heal a single lost edge by
+restating the missing segment, but the RX **no longer guesses** — a lost edge is
+rendered as `?` instead (see "Loss handling"). `dur_prev_ms` stays in the packet
+(wire format unchanged, reserved) but is not consumed on receive.
 
 `dur_*` are `uint16` ms (max 65 s) — covers the slowest word gap with room to
 spare; resolution is exact ms.
@@ -77,12 +77,34 @@ level + repeated seq) so it never injects a spurious element.
 
 ## Loss handling (the explicit requirement)
 
+**Policy: never guess — render ambiguity as `?`.** These are first-time
+learners; a confident *wrong* letter (e.g. `A` shown as `N`) is more confusing
+than an honest `?`. So the RX no longer reconstructs lost edges from
+`dur_prev_ms`. The seq delta is `gap = ev.seq − last_edge_seq` (the code's
+convention: `gap == 1` is the *normal* consecutive case).
+
 | Failure | Detection | Response |
 |---|---|---|
-| Single edge lost | `seq` gap == 1 | Next edge's `dur_prev_ms` reconstructs the missing segment → feed both to decoder in order. No visible glitch. |
-| Two+ edges lost | `seq` gap >= 2 | Unrecoverable boundary: flush the decoder's pending character (emit nothing or `?`), re-anchor absolute level from the next edge/heartbeat. |
-| Key-down then silence (mid-element drop) | no packet for `T_silence` | Force key-up (kill tone so it can't latch), flush pending element, mark segment lost. |
-| Prolonged silence | no packet for `signal_timeout_ms` (existing 3 s) | Clear RECV id + RSSI bar (existing behavior). |
+| Duplicate edge | `gap == 0` | Skip — already decoded. |
+| Normal edge | `gap == 1` | Feed the segment to the decoder. |
+| One edge lost | `gap == 2` | **No heal.** `mark_lost(false)` → `?` for the in-progress character, then re-anchor on the current segment. `dur_prev_ms` is ignored. |
+| Two+ edges lost | `gap >= 3` | `mark_lost(true)` → always emit `?` (a whole character may be gone), then re-anchor. |
+| Key-down then silence (mid-element drop) | no packet for `T_silence` | Force key-up (kill tone so it can't latch), `mark_lost(false)` → `?` for the cut-off character, flush + re-anchor. |
+| Prolonged silence | no packet for `signal_timeout_ms` (existing 3 s) | Clear RECV id + RSSI bar; **release the fox lock** so the next fox heard is adopted. |
+
+`mark_lost()` also surfaces `?` in the dit/dah element scroll, and the decoder's
+`classify()` independently returns `?` for any element pattern that matches no
+letter — so a garble that survives into an invalid pattern shows the same `?`.
+
+### Single-fox lock
+
+Several foxes may share the channel in a class. The hunter adopts the **first**
+fox it hears (`fox_lock()` in `main.cpp`) and ignores every other station's
+keying — KeyState, EdgeEvent, and Ident alike — so two foxes' edge streams can't
+interleave into the one shared decoder. The lock releases only when the locked
+fox's keying goes silent for `signal_timeout_ms` (3 s); the next fox heard is
+then adopted. Instructor control/broadcast packets are addressed by id and do
+not refresh or hold the lock.
 
 `T_silence` is driven by the **heartbeat**, not by CW gap length, so a
 legitimate 1.7 s word gap at 5 WPM is never a false drop: set

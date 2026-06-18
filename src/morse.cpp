@@ -175,10 +175,21 @@ char Decoder::take_char() {
 }
 
 void Decoder::flush() {
+    // Drop only the half-built character and the element view. The decoded
+    // output queue is intentionally NOT cleared: it's drained every loop, and a
+    // loss marker queued by mark_lost() just before a flush must survive to be
+    // displayed.
     n_elems_ = 0;
-    oq_head_ = oq_tail_ = 0;
     last_out_ = 0;
     new_elem_ = 0;
+}
+
+void Decoder::mark_lost(bool force) {
+    if (n_elems_ > 0 || force) {
+        push_char('?');      // decoded-text line
+        new_elem_ = '?';     // dit/dah element scroll
+        n_elems_ = 0;
+    }
 }
 
 void Decoder::feed_segment(bool on, uint16_t dur_ms) {
