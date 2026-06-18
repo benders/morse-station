@@ -137,6 +137,12 @@ Therefore: **move player advance + edge detection + duration measurement off
 `loop()` and onto a fixed-interval keyer**, and leave packetization + radio TX in
 `loop()`, fed by a queue.
 
+The keyer is **gated to active message playback** — started when a message
+begins, stopped the instant it finishes — so it ticks only during the few
+seconds of keying and is completely quiet through the `REPEAT_PAUSE`. See
+"Power-saving interaction" below; this is a hard requirement, not an
+optimization.
+
 ## Architecture
 
 Producer/consumer split, single-producer/single-consumer (SPSC):
@@ -157,8 +163,8 @@ Producer/consumer split, single-producer/single-consumer (SPSC):
   ┌─────────────────────────────── loop_fox() ───────────────────────────────┐
   │  drain ring → build proto::EdgeEvent (maintain prev_dur) → radio::send()  │
   │    (suppressed during rx_window / g_tx_halted, as today)                  │
-  │  own pause/restart: when keyer reports finished && now ≥ pause_until,     │
-  │    send_ident(), issue keyer "start(fox_message)" command                 │
+  │  own pause/restart: when keyer reports finished → keyer_stop() (sleepable │
+  │    pause); when now ≥ pause_until, send_ident(), keyer_start()+start cmd   │
   │  unchanged: prg tap, instructor rx_window, ident, halt                    │
   └───────────────────────────────────────────────────────────────────────────┘
 ```
@@ -194,15 +200,19 @@ void keyer_stop();
 uint32_t keyer_now_us();
 ```
 
-- `src/platform_esp32.cpp`: `esp_timer_create` + `esp_timer_start_periodic`
-  (period_us). esp_timer runs the callback in its own high-priority task — it is
-  clock-agnostic, so it does **not** retrigger the Cardputer M5/APB
-  boot-loop hazard (that was `setCpuFrequencyMhz`, see `set_cpu_low_power`).
+- `src/platform_esp32.cpp`: `esp_timer_create` once; `keyer_start`/`keyer_stop`
+  map to `esp_timer_start_periodic(period_us)` / `esp_timer_stop` so re-arming
+  per message is cheap and the timer is genuinely stopped (no wake-ups) during
+  the pause. esp_timer runs the callback in its own high-priority task — it is
+  clock-agnostic, so it does **not** retrigger the Cardputer M5/APB boot-loop
+  hazard (that was `setCpuFrequencyMhz`, see `set_cpu_low_power`).
   `keyer_now_us()` → `esp_timer_get_time()` (µs since boot, truncated to 32-bit).
-- `src/platform_nrf52.cpp`: `xTaskCreate` a small task, `vTaskDelayUntil` at
-  `pdMS_TO_TICKS(period_us/1000)` (2 ms ≥ 1 tick at 1024 Hz), priority
-  `TASK_PRIO_HIGH` (above the Adafruit loopTask, below the SoftDevice).
-  `keyer_now_us()` → `micros()`.
+- `src/platform_nrf52.cpp`: `xTaskCreate` a small task **once** (priority
+  `TASK_PRIO_HIGH` — above the Adafruit loopTask, below the SoftDevice); the task
+  body `vTaskDelayUntil`s at `pdMS_TO_TICKS(period_us/1000)` (2 ms ≥ 1 tick at
+  1024 Hz). `keyer_start`/`keyer_stop` `vTaskResume`/`vTaskSuspend` it so a
+  suspended keyer adds no ticks and lets FreeRTOS tickless idle / the SoftDevice
+  reach low-power wait through the pause. `keyer_now_us()` → `micros()`.
 - Heltec V3/V4 + RAK get the ESP32/nRF52 impls for free (compile-only here).
 
 ## Concurrency model
@@ -236,9 +246,14 @@ uint32_t keyer_now_us();
    - `loop_fox()`: replace the `player.update` + `tx_edge` block with
      "issue start command at top-of-loop / drain queue"; keep prg tap, rx_window,
      ident, halt logic.
-   - `setup()`: after mode resolves, if `MODE_FOX && g_keymode==KEYMODE_EDGE`,
-     `platform::keyer_start(keyer_tick, 2000)`. If it returns false, set a
-     `g_keyer_fallback` flag and keep the legacy in-loop `tx_edge` path.
+   - `loop_fox()` keyer lifecycle (power-gated): the keyer is **not** started in
+     `setup()`. In the fox edge path, `keyer_start(keyer_tick, 2000)` is called at
+     each message *start* (alongside the start command) and `keyer_stop()` the
+     instant the keyer reports `finished`, so it is idle for the whole
+     `REPEAT_PAUSE`. `keyer_start` must be cheap to re-arm (esp_timer
+     start/stop_periodic; FreeRTOS task created once then suspended/resumed). If
+     `keyer_start` ever returns false, set `g_keyer_fallback` and use the legacy
+     in-loop `tx_edge` path for that message.
    - keep `tx_edge()` compiled as the fallback path (guarded by `g_keyer_fallback`)
      so we are guaranteed never worse than today.
 5. `docs/edge-events.md` — add a "Keying timebase" subsection describing the
@@ -256,6 +271,31 @@ uint32_t keyer_now_us();
 - We do **not** stabilize radio TX timing (unnecessary — see "Core idea").
 - We do **not** snap/quantize durations to nominal (that is mitigation #3, which
   the design rejects for hiding real timing).
+
+## Power-saving interaction (hard requirement)
+
+The fox's largest remaining sleepable window is the ~12 s `REPEAT_PAUSE` between
+message repeats; the power roadmap's next fox item is light-sleep through it
+(see the power-saving notes — display idle-blank @60 s, 80 MHz on Heltec,
+BLE-off AUTO, SX1262 hibernate are already in `main`). A **free-running** 2 ms
+keyer would wake the core 500×/s forever — on ESP32 it wakes
+`esp_light_sleep_start`, on nRF52 it defeats FreeRTOS tickless idle /
+`sd_app_evt_wait` — and would therefore **block sleep-through-pause outright**,
+as well as add a small always-on draw today.
+
+Gating the keyer to active playback (start on message start, stop/suspend on
+`finished`) removes that conflict: the 2 ms cadence runs only during the few
+seconds of keying, when the radio + loop are already busy (negligible
+incremental draw), and the entire `REPEAT_PAUSE` stays keyer-quiet and fully
+sleepable. The start/stop points coincide with the message-boundary command
+handoff, so this is a small addition, not a redesign. The instructor `rx_window`
+(pause-tail RX) and the display-blank / BLE-off AUTO policies are all idle-time
+behaviours and are unaffected — they never overlap active keying. Hibernate
+(SX1262 `SetSleep`) never reaches the run loop, so `keyer_start` is never called
+on that path.
+
+Net: with gating, impact on power work is neutral-to-positive (it keeps the
+sleep-through-pause door open and tidies the active/idle boundary).
 
 ## Test plan
 
@@ -301,6 +341,11 @@ ports. Fixed settings for all runs: **18 WPM, plain timing, keymode edge**.
   `edge_test.py` decode score ≥ its pass ratio (parity with baseline-Heltec).
 - `g_keyer_drops == 0`; watchdog still fed (no `TASK_WDT`/`WATCHDOG` in
   `bootlog`); all 5 envs build; no Cardputer boot-loop.
+- **Keyer idle during `REPEAT_PAUSE`** (power gate): verify no keyer ticks fire
+  while `player.finished()` — e.g. a debug tick counter that is flat across the
+  pause and only advances during active keying (or a current-meter check on a
+  Heltec showing no 2 ms-cadence activity in the pause). This guards the
+  sleep-through-pause feature.
 - Before/after numbers pasted into this file; mitigation #1 checkbox ticked.
 
 ### Risks & fallbacks
