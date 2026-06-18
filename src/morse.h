@@ -67,15 +67,18 @@ public:
     // update() time-based state machine — a node uses one path or the other.
     void feed_segment(bool on, uint16_t dur_ms);
     char take_char();                 // next decoded char/space, 0 if none
-    void flush();                     // drop a half-built character (loss/resync)
+    void flush();                     // finalize at a hard boundary: emit '?' for
+                                      // a damaged/half-built char, then resync
 
-    // Mark the in-progress character undecodable: queue one '?' (decoded text)
-    // and surface '?' in the element view, then discard the half-built element
-    // buffer. force=true emits '?' even when no partial character is pending
-    // (a known multi-edge loss). The RX layer calls this at every ambiguous
-    // edge instead of guessing a lost element — see docs/edge-events.md
-    // "Loss handling". A confident wrong letter confuses a learner more than '?'.
-    void mark_lost(bool force);
+    // Poison the character the current packet loss falls within. The damaged
+    // character resolves to exactly ONE '?' when it closes at its next char-gap
+    // (or on flush): the partial elements collected so far are discarded and
+    // every element until that char-gap is absorbed, so a truncated element-run
+    // can never surface as a confident WRONG letter (e.g. a dit dropped from
+    // "..." (S) leaving ".." (I)) and the word's letter count is preserved. The
+    // RX layer calls this at every detected seq gap instead of guessing — see
+    // docs/edge-events.md "Loss handling".
+    void poison();
 
     // Per-element side-channel for live dit/dah display: returns the single
     // element ('.' or '-') classified on the most recent key-up edge, then
@@ -96,6 +99,7 @@ private:
     char     new_elem_   = 0;         // freshest element for live dit/dah display
     uint8_t  n_elems_    = 0;
     bool     pending_    = false;     // have undecoded elements waiting on a gap
+    bool     poisoned_   = false;     // current char damaged by loss -> one '?'
 
     // Edge-mode output queue (feed_segment -> take_char). A single segment can
     // emit up to two chars (letter + word space), so results are buffered.

@@ -87,14 +87,25 @@ convention: `gap == 1` is the *normal* consecutive case).
 |---|---|---|
 | Duplicate edge | `gap == 0` | Skip — already decoded. |
 | Normal edge | `gap == 1` | Feed the segment to the decoder. |
-| One edge lost | `gap == 2` | **No heal.** `mark_lost(false)` → `?` for the in-progress character, then re-anchor on the current segment. `dur_prev_ms` is ignored. |
-| Two+ edges lost | `gap >= 3` | `mark_lost(true)` → always emit `?` (a whole character may be gone), then re-anchor. |
-| Key-down then silence (mid-element drop) | no packet for `T_silence` | Force key-up (kill tone so it can't latch), `mark_lost(false)` → `?` for the cut-off character, flush + re-anchor. |
+| Edge(s) lost | `gap >= 2` | **No heal.** `poison()` the character the loss falls within, then re-anchor on the current segment. `dur_prev_ms` is ignored. |
+| Key-down then silence (mid-element drop) | no packet for `T_silence` | Force key-up (kill tone so it can't latch), `flush()` → `?` for the cut-off character, re-anchor. |
 | Prolonged silence | no packet for `signal_timeout_ms` (existing 3 s) | Clear RECV id + RSSI bar; **release the fox lock** so the next fox heard is adopted. |
 
-`mark_lost()` also surfaces `?` in the dit/dah element scroll, and the decoder's
-`classify()` independently returns `?` for any element pattern that matches no
-letter — so a garble that survives into an invalid pattern shows the same `?`.
+**Poison, don't guess — and collapse a damaged character to ONE `?`.** A single
+lost edge can truncate an element run into a *different valid letter* — drop a
+dit from `...` (S) and the surviving `..` decodes as I, a confident wrong letter
+with no marker. Worse, a loss at a character boundary used to emit no `?` at all
+yet still eat the next character's leading element. So a detected loss does not
+emit a standalone `?`; it `poison()`s the current character: the partial elements
+are discarded, every element until the next char-gap is absorbed, and exactly one
+`?` is emitted when that character closes. One damaged character → one `?`, the
+word's letter count is preserved, and a truncated run can never surface as a
+wrong letter. Trade-off: a loss landing purely in an inter-character *gap* still
+spends one `?` on the adjacent (intact) character — an honest "something dropped
+here" is preferred over a confident wrong letter. `poison()`/`flush()` also mark
+the dit/dah scroll with `?`, and `classify()` independently returns `?` for any
+element pattern matching no letter, so every flavour of ambiguity shows the same
+glyph.
 
 ### Single-fox lock
 

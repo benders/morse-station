@@ -1823,10 +1823,12 @@ static void loop_hunter(uint32_t now) {
                     } else if (gap == 1) {
                         decoder.feed_segment(!level_down, ev.dur_now_ms);
                     } else {
-                        // gap >= 2: edge(s) lost. '?' for the poisoned character;
-                        // force a marker at gap >= 3 where a whole character may
-                        // be gone even with nothing half-built. Then re-anchor.
-                        decoder.mark_lost(gap >= 3);
+                        // gap >= 2: edge(s) lost. Poison the character the loss
+                        // falls within so it resolves to a single '?' at its next
+                        // char-gap (preserving the word's letter count) instead of
+                        // a truncated element-run decoding as a confident wrong
+                        // letter (e.g. a dropped dit turning "..."/S into ".."/I).
+                        decoder.poison();
                         decoder.feed_segment(!level_down, ev.dur_now_ms);
                     }
                 }
@@ -1844,8 +1846,7 @@ static void loop_hunter(uint32_t now) {
     if (rx_down && (now - last_rx) > rx_timeout_ms) {
         rx_down = false;
         if (rx_is_edge) {
-            decoder.mark_lost(false);   // '?' for a character cut off mid-build
-            decoder.flush();
+            decoder.flush();   // '?' for a damaged/half-built char, then resync
             reanchor = true;
         }
     }
@@ -1864,7 +1865,7 @@ static void loop_hunter(uint32_t now) {
     // last_fox_rx, so it can't hold a dead fox's lock open.)
     if (locked_fox >= 0 && (now - last_fox_rx) > signal_timeout_ms) {
         locked_fox = -1;
-        if (rx_is_edge) { decoder.mark_lost(false); decoder.flush(); reanchor = true; }
+        if (rx_is_edge) { decoder.flush(); reanchor = true; }
     }
 
     // No fresh decoded code for 10 s → blank the copy lines (text and dit/dah).

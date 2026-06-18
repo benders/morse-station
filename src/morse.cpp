@@ -175,25 +175,30 @@ char Decoder::take_char() {
 }
 
 void Decoder::flush() {
-    // Drop only the half-built character and the element view. The decoded
-    // output queue is intentionally NOT cleared: it's drained every loop, and a
-    // loss marker queued by mark_lost() just before a flush must survive to be
-    // displayed.
-    n_elems_ = 0;
+    // Abandon the in-progress character at a hard boundary (silence timeout /
+    // resync). If it was damaged by a loss (poisoned) or only half-built, surface
+    // a single '?' so a cut-off character isn't silently dropped. The decoded
+    // output queue is intentionally NOT cleared (it's drained every loop) so that
+    // '?' survives to be displayed.
+    if (poisoned_ || n_elems_ > 0) push_char('?');
+    poisoned_ = false;
+    n_elems_  = 0;
     last_out_ = 0;
     new_elem_ = 0;
 }
 
-void Decoder::mark_lost(bool force) {
-    if (n_elems_ > 0 || force) {
-        push_char('?');      // decoded-text line
-        new_elem_ = '?';     // dit/dah element scroll
-        n_elems_ = 0;
-    }
+void Decoder::poison() {
+    // Mark the current character undecodable; it resolves to one '?' when it
+    // closes (feed_segment at a char-gap, or flush). Discard partial elements so
+    // a truncated run can't classify as a wrong letter, and mark the dit/dah view.
+    poisoned_ = true;
+    n_elems_  = 0;
+    new_elem_ = '?';
 }
 
 void Decoder::feed_segment(bool on, uint16_t dur_ms) {
     if (on) {                                    // a keyed element: dit or dah
+        if (poisoned_) return;                   // damaged char: absorb, show one '?'
         if (n_elems_ < 7) {
             char e = (dur_ms >= dah_ms_) ? '-' : '.';
             elems_[n_elems_++] = e;
@@ -203,10 +208,16 @@ void Decoder::feed_segment(bool on, uint16_t dur_ms) {
     }
     // a gap. A char-gap (or longer) closes the current character; a word-gap
     // also yields a space. Thresholds are the same midpoints begin() computed.
-    if (dur_ms >= chargap_ms_ && n_elems_ > 0) {
-        elems_[n_elems_] = 0;
-        push_char(classify());
-        n_elems_ = 0;
+    if (dur_ms >= chargap_ms_) {
+        if (poisoned_) {                         // damaged char resolves to one '?'
+            push_char('?');
+            poisoned_ = false;
+            n_elems_ = 0;
+        } else if (n_elems_ > 0) {
+            elems_[n_elems_] = 0;
+            push_char(classify());
+            n_elems_ = 0;
+        }
     }
     if (dur_ms >= wordgap_ms_ && last_out_ != ' ') {
         push_char(' ');
