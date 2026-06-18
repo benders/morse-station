@@ -12,3 +12,9 @@ __pycache__/
 # Per-machine Claude Code state (permission overrides + runtime locks)
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
+
+# Bench-test capture output (fox-hunt round-robin / RX-BW sweeps)
+foxhunt_*.csv
+
+# macOS Finder metadata
+.DS_Store
