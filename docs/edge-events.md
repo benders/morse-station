@@ -174,6 +174,39 @@ element's start. A burst-retransmit was rejected: 3× ≈ 70 ms would overrun a
 60 ms dit and starve key scanning — the `dur_prev_ms` self-heal gives the same
 loss protection for one transmission's airtime.
 
+### Keying timebase (fox, edge keymode)
+
+The decode in edge mode is driven **entirely by the transmitted `dur_now_ms`**,
+not by packet arrival time — so durations must be *measured* on a stable clock,
+even though the radio TX itself is free to jitter. Originally the fox advanced
+the `Player` and measured edge durations from `loop()` (`tx_edge()`): a single
+slow LCD/audio/BLE frame would observe the next transition late and stretch the
+measured (and on-air) duration, so a receiver could decode a confident **wrong
+letter** with no packet loss (e.g. an intra-char gap stretched 66 → 198 ms reads
+as a char gap: `S` → `I`). See `TODO-fox-timing.md` for the root cause.
+
+Mitigation #1 moves player-advance + edge-detection + duration measurement onto
+a fixed-cadence **keyer** decoupled from `loop()` (the `platform::keyer_start/
+keyer_stop/keyer_now_us` seam — an `esp_timer` periodic task on ESP32, a
+`FreeRTOS` task above loop priority on nRF52, ticking every 2 ms). The keyer
+owns the `Player`, timestamps each completed segment off `keyer_now_us()`, and
+pushes an `EdgeRec {flags, dur_ms}` into a lock-free SPSC ring (`std::atomic`
+head/tail). `loop_fox()` drains the ring, builds the `proto::EdgeEvent`
+(carrying `dur_prev_ms` across pops), and does the blocking `radio::send()` — so
+a slow frame can no longer corrupt a measured duration. At 18 WPM (unit ≈ 66 ms)
+the 2 ms cadence quantizes edges to ≤ ±2 ms; durations are **not** snapped to
+nominal (genuine Farnsworth/odd timing is preserved — this is not mitigation #3).
+
+The keyer is **power-gated**: it is started per message and stopped (esp_timer
+`stop_periodic` / FreeRTOS `vTaskSuspend`) the instant the message finishes, so
+it is completely idle through the `REPEAT_PAUSE` and never blocks
+sleep-through-pause. `show` reports `keyer = active|idle|fallback drops=N
+ticks=N`: `drops` must stay 0 (ring not drained fast enough otherwise) and
+`ticks` is flat across the pause, advancing only while keying. Scope is
+`MODE_FOX` + `KEYMODE_EDGE` only; compat keymode and livekey stay on the in-loop
+sampler, and if `keyer_start()` ever fails the fox falls back to the legacy
+in-loop `tx_edge()` path (`g_keyer_fallback`) — never worse than before.
+
 ## Unattended test instrumentation
 
 The bench has three boards (different builds → exercises the cross-build
