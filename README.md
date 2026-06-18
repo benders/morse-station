@@ -54,7 +54,10 @@ Modes:
   power — by relaying the normal console commands on-air to a target station,
   which applies them and acks back. Drive it from the instructor's own
   BLE/serial console: `relay <id> <cmd>` (or `relay 255 <cmd>` to reach every
-  station). See `docs/commands.md` → "Instructor (remote control over GFSK)".
+  station). `alert <text>` pushes a plaintext banner to **every** station's
+  screen and sounds a short attention tone there — **even on muted units** — so
+  operators notice; `alert clear` dismisses it. See `docs/commands.md` →
+  "Instructor (remote control over GFSK)".
 - **Hibernate** — power-off stand-in (the boards have no hardware switch):
   powers down the front-end and peripheral rail and enters deep sleep. Press
   **RST** to wake — the sketch restarts back into this menu. So RST turns the
