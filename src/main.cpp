@@ -13,6 +13,7 @@
 #include "ble_provision.h"
 #include "platform.h"     // restart() / system_off() / reset_reason() / unique_id_byte()
 #include "kv.h"           // kv::Store — persist boot/reset-reason log
+#include <atomic>         // SPSC ring head/tail + keyer flags (TODO-fox-timing.md)
 
 // Stage 6 — integrated fox-hunt firmware.
 //
@@ -155,6 +156,39 @@ static bool g_tx_halted = false;
 
 static uint32_t pause_until = 0;
 static uint32_t last_draw = 0;
+
+// ---------------------------------------------------------------------------
+// Fox keying timebase (TODO-fox-timing.md mitigation #1).
+//
+// In MODE_FOX + KEYMODE_EDGE the player-advance, edge-detection and duration
+// measurement run on platform::keyer_*'s fixed 2 ms cadence (esp_timer task on
+// ESP32, a FreeRTOS task on nRF52), NOT from loop(). A slow LCD/audio/BLE frame
+// can therefore no longer stretch a measured element/gap (the bug). The keyer
+// timestamps each completed segment and pushes a record into a lock-free SPSC
+// ring; loop_fox() drains it, builds proto::EdgeEvent (carrying dur_prev across
+// pops) and does the blocking radio::send(). radio TX jitter no longer corrupts
+// the decode because the duration is already captured.
+//
+// Concurrency: producer = keyer context, consumer = loop(). Ring head/tail are
+// std::atomic for a lock-free SPSC handoff. The keyer OWNS `player` in this
+// path (loop never calls player.update/start/down here); loop signals message
+// start via g_keyer_start_req and reads completion via g_keyer_finished — no
+// payload crosses, so a single atomic flag replaces the planned command mutex
+// (message text comes from stable config::fox_message()).
+struct EdgeRec {
+    uint8_t  flags;     // EDGE_FLAG_DOWN (level ENTERED) | EDGE_FLAG_HEARTBEAT
+    uint16_t dur_ms;    // duration of the segment that just ENDED (or elapsed, for HB)
+};
+static constexpr uint8_t KEYER_RING_SZ = 32;   // power-of-two not required; SPSC
+static EdgeRec               g_keyer_ring[KEYER_RING_SZ];
+static std::atomic<uint8_t>  g_keyer_head{0};   // consumer (loop) reads here
+static std::atomic<uint8_t>  g_keyer_tail{0};   // producer (keyer) writes here
+static std::atomic<uint32_t> g_keyer_drops{0};  // ring-full drops (should stay 0)
+static std::atomic<bool>     g_keyer_finished{true};   // player.finished(), keyer-owned
+static std::atomic<bool>     g_keyer_start_req{false};  // loop -> keyer: (re)start message
+static std::atomic<uint32_t> g_keyer_ticks{0};   // tick counter (idle-during-pause proof)
+static bool                  g_keyer_active   = false;  // loop-side: keyer timer running
+static bool                  g_keyer_fallback = false;  // keyer_start() failed -> in-loop tx_edge
 
 // Cycle the SX1262 TX power to the next level and persist it. This is the single
 // button-driven power action shared by every mode that exposes it on the PRG
@@ -904,6 +938,14 @@ static bool handle_setup_command(const char* line, Print& out) {
         out.printf("  ble      = %s [%s]\n", g_ble_on ? "on (advertising)" : "off",
                    g_ble_mode == BLE_ON ? "on" : g_ble_mode == BLE_OFF ? "off" : "auto");
         out.printf("  rxbw     = %.1f kHz\n", radio::rx_bw_khz());
+        // Fox keyer (TODO-fox-timing.md #1): drops MUST stay 0 (ring not drained
+        // fast enough otherwise); ticks proves the keyer is idle during the pause
+        // (flat across REPEAT_PAUSE, advancing only while keying).
+        out.printf("  keyer    = %s  drops=%lu  ticks=%lu\n",
+                   g_keyer_fallback ? "fallback(in-loop)"
+                                    : (g_keyer_active ? "active" : "idle"),
+                   (unsigned long)g_keyer_drops.load(std::memory_order_relaxed),
+                   (unsigned long)g_keyer_ticks.load(std::memory_order_relaxed));
         out.printf("  banner   = %s\n",
                    banner_active(millis()) ? g_banner : "(none)");
         if (radio::has_fem()) {
@@ -1388,6 +1430,136 @@ static void tx_edge(uint32_t now, bool down) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Fox keyer (TODO-fox-timing.md mitigation #1): the fixed-cadence callback.
+//
+// Runs in platform::keyer_*'s timer/task context every ~2 ms — NEVER from
+// loop(). It is the ONLY caller of player.update/start/down in the fox edge
+// path. It advances the player off a stable monotonic clock
+// (platform::keyer_now_us → ms), detects key-level transitions, MEASURES the
+// duration of each completed segment, and pushes a small EdgeRec into the SPSC
+// ring. It does NO radio SPI / Serial / flash — loop_fox() drains the ring and
+// transmits. This mirrors tx_edge()'s measurement state machine but on the
+// jitter-free timebase, so a slow loop() can no longer stretch a measured
+// element/gap.
+static void keyer_tick() {
+    g_keyer_ticks.fetch_add(1, std::memory_order_relaxed);
+
+    static bool     last_level   = false;   // level of the currently-open segment
+    static uint32_t seg_start_ms = 0;       // when the open segment began (keyer clock)
+    static uint32_t last_hb_ms   = 0;       // last heartbeat emission (keyer clock)
+    static bool     in_message   = false;   // a message timeline is playing
+
+    uint32_t now = platform::keyer_now_us() / 1000u;   // keyer monotonic ms
+
+    // (Re)start command from loop at a message boundary.
+    if (g_keyer_start_req.exchange(false, std::memory_order_acq_rel)) {
+        player.start(config::fox_message());
+        last_level   = player.down();
+        seg_start_ms = now;
+        last_hb_ms   = now;
+        in_message   = true;
+        g_keyer_finished.store(false, std::memory_order_release);
+        // Announce presence/level immediately as a heartbeat (mirrors tx_edge
+        // §init) so a receiver re-anchors without waiting a full HEARTBEAT_MS.
+        EdgeRec r{(uint8_t)((last_level ? proto::EDGE_FLAG_DOWN : 0) |
+                            proto::EDGE_FLAG_HEARTBEAT), 0};
+        uint8_t tail = g_keyer_tail.load(std::memory_order_relaxed);
+        uint8_t next = (uint8_t)((tail + 1) % KEYER_RING_SZ);
+        if (next != g_keyer_head.load(std::memory_order_acquire)) {
+            g_keyer_ring[tail] = r;
+            g_keyer_tail.store(next, std::memory_order_release);
+        } else {
+            g_keyer_drops.fetch_add(1, std::memory_order_relaxed);
+        }
+        return;
+    }
+
+    if (!in_message) return;   // idle: keyer stays quiet between messages
+
+    player.update(now);
+    bool down = player.down();
+
+    EdgeRec r{};
+    bool have = false;
+
+    if (down != last_level) {
+        // Real edge: the segment at last_level just ended after `dur` ms.
+        uint16_t dur = (uint16_t)(now - seg_start_ms);
+        r.flags  = (uint8_t)(down ? proto::EDGE_FLAG_DOWN : 0);
+        r.dur_ms = dur;
+        have = true;
+        last_level   = down;
+        seg_start_ms = now;
+        last_hb_ms   = now;
+    } else if (now - last_hb_ms >= proto::HEARTBEAT_MS) {
+        // Steady too long → presence heartbeat with elapsed-so-far.
+        uint32_t elapsed = now - seg_start_ms;
+        r.flags  = (uint8_t)((last_level ? proto::EDGE_FLAG_DOWN : 0) |
+                             proto::EDGE_FLAG_HEARTBEAT);
+        r.dur_ms = (uint16_t)(elapsed > 65535 ? 65535 : elapsed);
+        have = true;
+        last_hb_ms = now;
+    }
+
+    if (have) {
+        uint8_t tail = g_keyer_tail.load(std::memory_order_relaxed);
+        uint8_t next = (uint8_t)((tail + 1) % KEYER_RING_SZ);
+        if (next != g_keyer_head.load(std::memory_order_acquire)) {
+            g_keyer_ring[tail] = r;
+            g_keyer_tail.store(next, std::memory_order_release);
+        } else {
+            g_keyer_drops.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+
+    if (player.finished()) {
+        in_message = false;
+        g_keyer_finished.store(true, std::memory_order_release);
+    }
+}
+
+// Drain the keyer ring in loop context: pop EdgeRecs, build proto::EdgeEvents
+// (maintaining dur_prev across pops + the heartbeat/real-edge seq rules from
+// tx_edge §seq), and radio::send(). Gated by the caller (rx_window/g_tx_halted).
+static void fox_keyer_drain(uint32_t now) {
+    static uint16_t prev_dur_ms = 0;   // duration of the segment before the one in dur_now
+    static uint8_t  edge_seq    = 0;   // EdgeEvent seq space (matches tx_edge)
+
+    for (;;) {
+        uint8_t head = g_keyer_head.load(std::memory_order_relaxed);
+        if (head == g_keyer_tail.load(std::memory_order_acquire)) break;   // empty
+        EdgeRec rec = g_keyer_ring[head];
+        g_keyer_head.store((uint8_t)((head + 1) % KEYER_RING_SZ),
+                           std::memory_order_release);
+
+        bool hb = (rec.flags & proto::EDGE_FLAG_HEARTBEAT) != 0;
+        proto::EdgeEvent ev{};
+        ev.magic      = proto::MAGIC_EDGE;
+        ev.station_id = config::station_id();
+        ev.flags      = rec.flags;
+        ev.dur_now_ms = rec.dur_ms;
+        ev.dur_prev_ms = prev_dur_ms;
+        // Real edges own and increment seq; heartbeats repeat the current seq
+        // unconsumed so the receiver distinguishes "lost edge" from "heartbeat".
+        if (!hb) {
+            ev.seq = edge_seq++;
+            prev_dur_ms = rec.dur_ms;   // self-heal: next packet carries this as dur_prev
+        } else {
+            ev.seq = edge_seq;
+        }
+
+        uint8_t buf[proto::EDGE_LEN];
+        proto::encode_edge(ev, buf);
+        radio::send(buf, proto::EDGE_LEN);
+        if (g_debug) {
+            Serial.printf("TX E seq=%u lvl=%u hb=%u dn=%u dp=%u\n",
+                          ev.seq, (ev.flags & proto::EDGE_FLAG_DOWN) ? 1 : 0,
+                          hb ? 1 : 0, ev.dur_now_ms, ev.dur_prev_ms);
+        }
+    }
+}
+
 // Send a station-ID packet now (callsign + keying speeds). A rare, ~ms
 // transmission, so it doesn't perturb the 30 ms keystate stream.
 static void send_ident(uint32_t now) {
@@ -1597,35 +1769,75 @@ static void loop_fox(uint32_t now) {
         rx_armed = false;
     }
 
-    if (!player.finished()) {
-        player.update(now);
-        if (player.finished()) pause_until = now + REPEAT_PAUSE;
-    } else if (now >= pause_until) {
-        // The Ident (timing announce) is part of TX — gate it on the halt too,
-        // so a halted fox is truly silent. The player still cycles so `start`
-        // resumes mid-stream cleanly.
-        if (!g_tx_halted) send_ident(now);   // announce timing at each loop top
-        player.start(config::fox_message());
-    }
-    bool down = player.down();
-    // Fox runs SILENT: a transmitter that beeps is easy to find by ear, which
-    // defeats the hunt. The fox only keys the radio; hunters hear the Morse from
-    // the received keystate. (The display still shows "*" as a keying indicator.)
-    set_tone(false);
-    // keymode gate (E3): "edge" emits EdgeEvents on transitions + heartbeat;
-    // "compat" (default) keeps the existing 30 ms KeyState stream untouched.
-    // Suppressed during rx_window so the half-duplex radio stays in receive.
-    if (!rx_window && !g_tx_halted) {
-        if (g_keymode == KEYMODE_EDGE) tx_edge(now, down);
-        else                           tx_keystate(now, down);
-        tx_ident(now);   // periodic station-ID packet (Part 97 callsign ID) — both modes
-    } else if (g_tx_halted) {
-        // Observable proof for unattended tests: log (rate-limited) that TX is
-        // being skipped. Cheap, gated on the halt flag — no cost when running.
-        static uint32_t last_skip_log = 0;
-        if (g_debug && now - last_skip_log >= 1000) {
-            last_skip_log = now;
-            Serial.printf("TX SKIP (halted) seq=%u\n", seq);
+    // Keying-timebase split (TODO-fox-timing.md mitigation #1): in KEYMODE_EDGE
+    // with a working keyer, the keyer task OWNS the player + measures durations
+    // off-loop, and loop_fox only manages the message lifecycle + drains/sends.
+    // Everything else (compat keymode, or the keyer-start fallback) keeps the
+    // legacy in-loop player.update + tx_edge/tx_keystate path, unchanged.
+    bool use_keyer = (g_keymode == KEYMODE_EDGE) && !g_keyer_fallback;
+
+    bool down;
+    if (use_keyer) {
+        // Power-gated lifecycle: keyer runs only while a message is keying.
+        if (g_keyer_finished.load(std::memory_order_acquire)) {
+            if (g_keyer_active) {
+                // Message just finished → stop the keyer (idle/sleepable pause)
+                // and open the inter-message pause window.
+                platform::keyer_stop();
+                g_keyer_active = false;
+                pause_until = now + REPEAT_PAUSE;
+            } else if (now >= pause_until) {
+                // Start the next message: Ident announce, then arm the keyer and
+                // hand it the start command. keyer_start re-arms cheaply.
+                if (!g_tx_halted) send_ident(now);
+                if (!platform::keyer_start(keyer_tick, 2000)) {
+                    g_keyer_fallback = true;   // never worse than the in-loop path
+                } else {
+                    g_keyer_active = true;
+                    g_keyer_start_req.store(true, std::memory_order_release);
+                }
+            }
+        }
+        down = player.down();   // cosmetic (display "*"); single-bool read is benign
+        set_tone(false);        // Fox runs SILENT (see below)
+        if (!rx_window && !g_tx_halted) {
+            fox_keyer_drain(now);   // pop measured edges → radio::send
+            tx_ident(now);          // periodic station-ID packet (Part 97)
+        } else if (g_tx_halted) {
+            static uint32_t last_skip_log = 0;
+            if (g_debug && now - last_skip_log >= 1000) {
+                last_skip_log = now;
+                Serial.printf("TX SKIP (halted) seq=%u\n", seq);
+            }
+        }
+    } else {
+        // Legacy in-loop path (compat keymode, or keyer fallback).
+        if (g_keyer_active) { platform::keyer_stop(); g_keyer_active = false; }
+        if (!player.finished()) {
+            player.update(now);
+            if (player.finished()) pause_until = now + REPEAT_PAUSE;
+        } else if (now >= pause_until) {
+            // The Ident (timing announce) is part of TX — gate it on the halt
+            // too, so a halted fox is truly silent. The player still cycles so
+            // `start` resumes mid-stream cleanly.
+            if (!g_tx_halted) send_ident(now);   // announce timing at each loop top
+            player.start(config::fox_message());
+        }
+        down = player.down();
+        // Fox runs SILENT: a transmitter that beeps is easy to find by ear,
+        // which defeats the hunt. The fox only keys the radio; hunters hear the
+        // Morse from the received keystate. (Display still shows "*".)
+        set_tone(false);
+        if (!rx_window && !g_tx_halted) {
+            if (g_keymode == KEYMODE_EDGE) tx_edge(now, down);
+            else                           tx_keystate(now, down);
+            tx_ident(now);   // periodic station-ID packet (Part 97 callsign ID)
+        } else if (g_tx_halted) {
+            static uint32_t last_skip_log = 0;
+            if (g_debug && now - last_skip_log >= 1000) {
+                last_skip_log = now;
+                Serial.printf("TX SKIP (halted) seq=%u\n", seq);
+            }
         }
     }
 
