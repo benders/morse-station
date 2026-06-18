@@ -188,6 +188,7 @@ static std::atomic<bool>     g_keyer_finished{true};   // player.finished(), key
 static std::atomic<bool>     g_keyer_start_req{false};  // loop -> keyer: (re)start message
 static std::atomic<uint32_t> g_keyer_ticks{0};   // tick counter (idle-during-pause proof)
 static bool                  g_keyer_active   = false;  // loop-side: keyer timer running
+static bool                  g_keyer_starting = false;  // start issued, awaiting keyer ack
 static bool                  g_keyer_fallback = false;  // keyer_start() failed -> in-loop tx_edge
 
 // Cycle the SX1262 TX power to the next level and persist it. This is the single
@@ -1778,25 +1779,38 @@ static void loop_fox(uint32_t now) {
 
     bool down;
     if (use_keyer) {
-        // Power-gated lifecycle: keyer runs only while a message is keying.
-        if (g_keyer_finished.load(std::memory_order_acquire)) {
-            if (g_keyer_active) {
-                // Message just finished → stop the keyer (idle/sleepable pause)
-                // and open the inter-message pause window.
-                platform::keyer_stop();
-                g_keyer_active = false;
-                pause_until = now + REPEAT_PAUSE;
-            } else if (now >= pause_until) {
-                // Start the next message: Ident announce, then arm the keyer and
-                // hand it the start command. keyer_start re-arms cheaply.
+        // Power-gated lifecycle, explicit state machine:
+        //   idle  (!active)            : waiting out REPEAT_PAUSE, keyer stopped.
+        //   start (active && starting) : start command issued, waiting for the
+        //                                keyer to clear g_keyer_finished. We must
+        //                                NOT treat the still-true finished flag as
+        //                                "message done" here, or we'd stop the
+        //                                keyer the very next loop before it ran.
+        //   run   (active && !starting): keyer is keying; stop when it reports
+        //                                finished.
+        bool finished = g_keyer_finished.load(std::memory_order_acquire);
+        if (!g_keyer_active) {
+            if (now >= pause_until) {
+                // Start the next message: Ident announce, arm the keyer, hand it
+                // the start command. keyer_start re-arms cheaply (start_periodic /
+                // task resume). g_keyer_starting holds until the keyer acks.
                 if (!g_tx_halted) send_ident(now);
                 if (!platform::keyer_start(keyer_tick, 2000)) {
                     g_keyer_fallback = true;   // never worse than the in-loop path
                 } else {
-                    g_keyer_active = true;
+                    g_keyer_active   = true;
+                    g_keyer_starting = true;
                     g_keyer_start_req.store(true, std::memory_order_release);
                 }
             }
+        } else if (g_keyer_starting) {
+            if (!finished) g_keyer_starting = false;   // keyer accepted the start
+        } else if (finished) {
+            // Message done → stop the keyer (idle/sleepable pause) and open the
+            // inter-message pause window.
+            platform::keyer_stop();
+            g_keyer_active = false;
+            pause_until = now + REPEAT_PAUSE;
         }
         down = player.down();   // cosmetic (display "*"); single-bool read is benign
         set_tone(false);        // Fox runs SILENT (see below)
@@ -1812,7 +1826,10 @@ static void loop_fox(uint32_t now) {
         }
     } else {
         // Legacy in-loop path (compat keymode, or keyer fallback).
-        if (g_keyer_active) { platform::keyer_stop(); g_keyer_active = false; }
+        if (g_keyer_active) {
+            platform::keyer_stop();
+            g_keyer_active = false; g_keyer_starting = false;
+        }
         if (!player.finished()) {
             player.update(now);
             if (player.finished()) pause_until = now + REPEAT_PAUSE;
