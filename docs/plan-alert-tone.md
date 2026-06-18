@@ -1,8 +1,13 @@
 # Plan: rename `bcast` → `alert` + audible attention tone (overrides mute)
 
-Status: **IMPLEMENTED** on branch `feat/instructor-broadcast` — all 5 envs build
-clean; not yet HW-validated. Builds on the instructor broadcast banner
-(`docs/plan-instructor-broadcast.md`, shipped commit `5c0d2e0` / `d6fbaaa`).
+Status: **IMPLEMENTED + HW-VALIDATED** on branch `feat/instructor-broadcast` —
+all 5 envs build clean. Validated 2026-06-17 on the bench (instructor=Cardputer
+stn73, Hunters=Heltec V4 stn43 + Wio stn115): `scripts/alert_tone_test.py` 6/6 —
+both muted Hunters sounded the ~1.5 s tone (mute overridden), mute stayed on
+afterward, and `alert clear` was silent; tone also confirmed audibly by the
+operator. The rename path is covered by `scripts/broadcast_display_test.py` 7/7.
+Builds on the instructor broadcast banner (`docs/plan-instructor-broadcast.md`,
+shipped commit `5c0d2e0` / `d6fbaaa`).
 
 Internal `bcast`/`broadcast` C++ symbols were left unchanged (only the
 operator-facing command, console strings, docs, and scripts say `alert`), per the

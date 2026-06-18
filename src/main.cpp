@@ -1517,7 +1517,7 @@ static void set_banner(const char* text, bool alert, uint32_t now) {
 static void start_alert_tone(uint32_t now) {
     g_alert_tone_until = now + ALERT_TONE_MS;
     sidetone_alert(true);
-    if (g_debug) Serial.printf("alert: tone %ums\n", (unsigned)ALERT_TONE_MS);
+    if (g_debug) Serial.printf("# alert: tone %ums\n", (unsigned)ALERT_TONE_MS);
 }
 
 // End the attention tone once its deadline passes. Cheap, non-blocking — called
