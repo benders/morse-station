@@ -215,6 +215,24 @@ identically). See `docs/protocol.md`.
       PRG button wakes the display only (no power cycling), and BLE is pinned ON
       even when the panel blanks so the instructor stays reachable.
       (commits f5107c4 / 9718a22)
+- [x] **Instructor alert** (`alert <text>` / `alert clear`) — pushes a plaintext
+      banner to **every** station's screen (distinct from `relay`, which runs a
+      console command silently). Its own packet (`MAGIC_BCAST`, fire-and-forget,
+      5 repeats, per-seq dedup), magic-gated so old nodes drop it. The banner
+      force-wakes a blanked panel and holds it lit ~60 s (centered / two-line wrap
+      / marquee scroll); button or keypress dismisses; `show` reports the active
+      banner. Every alert also sounds a **~1.5 s attention tone that overrides a
+      receiver's `mute`** for its duration without changing the persisted mute
+      state — so an operator who isn't looking still notices. New mute-bypassing
+      `sidetone_alert()` gate added to all three sidetone backends (ESP32 LEDC +
+      I2S/MAX98357A, Cardputer M5.Speaker, nRF52 buzzer + I2S); non-blocking
+      `ALERT_TONE_MS` timer in `loop()`. HW-validated 2026-06-17 (instructor
+      Cardputer stn73 → Hunters Heltec V4 stn43 + Wio stn115):
+      `scripts/broadcast_display_test.py` 7/7 (banner wakes + holds the panel) and
+      `scripts/alert_tone_test.py` 6/6 (muted Hunters sound the tone, mute stays
+      on afterward, `alert clear` silent). See `docs/plan-alert-tone.md` /
+      `docs/plan-instructor-broadcast.md`. (commits 5c0d2e0 / d6fbaaa / 327b0cd /
+      7622ead)
 
 ## Power saving
 

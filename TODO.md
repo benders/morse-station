@@ -359,6 +359,25 @@ status board live in `wio-tracker-port.md`.
 
 ---
 
+## Instructor alert (banner + attention tone)
+
+The `alert <text>` / `alert clear` feature is **done and HW-validated** — banner
+to every screen + a ~1.5 s mute-overriding tone. See **`DONE.md`** and
+`docs/plan-alert-tone.md`. Deferred / possible follow-ups:
+
+- [ ] **Distinguish alert types by ear** — a distinct pitch or a short "CQ CQ"
+      Morse burst instead of one steady tone. Deferred from v1: CQ needs a Morse
+      encoder in the alert path, and a distinct pitch needs per-backend runtime
+      frequency control (the I2S/envelope backends fix frequency at init). Revisit
+      only if operators ask to tell alert types apart without looking.
+- [ ] **Per-board tone loudness / EIRP** — the tone currently uses the node's
+      existing `vol` level (just overriding mute); no per-board loudness tuning.
+- [ ] **Acknowledged alerts** (optional) — today's alert is fire-and-forget (no
+      ack, dedup by seq). If the instructor ever needs confirmation that a given
+      station saw/heard an alert, add a CACK-style reply path (mirrors `relay`).
+
+---
+
 ## Cardputer ADV port (experimental fox)
 
 See `docs/components/cardputer-adv.md` for the hardware facts and lessons.
