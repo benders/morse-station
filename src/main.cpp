@@ -53,8 +53,19 @@ static constexpr uint32_t CTRL_BURST_INTERVAL = 250;     // min gap between burs
 static constexpr uint32_t CTRL_SILENCE_MS     = 800;     // > 700 ms heartbeat → window
 static constexpr uint32_t CTRL_PROBE_INTERVAL = 1500;    // sparse probe before target heard
 static constexpr uint32_t CTRL_BURST_WINDOW   = 90000;
-static constexpr uint32_t CTRL_ACK_LISTEN_MS  = 200;     // blocking RX right after a
-                                                         // burst to catch the prompt ack
+static constexpr uint32_t CTRL_ACK_LISTEN_MS  = 300;     // blocking RX right after a
+                                                         // burst to catch the prompt ack;
+                                                         // covers the target's ack burst
+// The target answers each control burst with a short burst of identical acks
+// rather than a single packet. A phone attached to the *instructor* makes NimBLE
+// connection events preempt its loopTask in the gap between TX-complete and
+// re-arming RX, so a lone ack flies past a momentarily-deaf SX1262 and is lost
+// (systematically, since the preemption phase is ~periodic). Spreading several
+// copies ~ACK_GAP_MS apart guarantees at least one lands after RX is armed and
+// outside a BLE blind spot. ACK_REPEATS*ACK_GAP_MS must stay under CTRL_RX_WINDOW
+// and is what CTRL_ACK_LISTEN_MS above is sized to cover.
+static constexpr uint8_t  ACK_REPEATS = 4;
+static constexpr uint32_t ACK_GAP_MS  = 50;
 
 // Callsign and fox message live in NVS (config), set via the boot serial console
 // (see run_setup_console). The callsign is sent in the periodic station-ID
@@ -1662,11 +1673,19 @@ static bool control_rx_try(const uint8_t* buf, size_t n, uint32_t now) {
                       c.src_id, c.target_id, c.seq, fresh ? 1 : 0, c.cmd);
     }
 
-    // Ack the instructor with a short confirmation, then re-arm RX.
+    // Ack the instructor with a short confirmation, then re-arm RX. Send the ack
+    // as a small burst of identical copies (see ACK_REPEATS): a phone on the
+    // instructor makes NimBLE preempt its RX-arming, so a lone ack lands on a deaf
+    // radio and is lost — spreading copies guarantees one lands once it is armed.
+    // The instructor stops bursting on the first copy it hears; the rest are
+    // harmless (it dedups acks by src_id, see instructor_service_rx).
     uint8_t ackbuf[proto::CTRL_HDR_LEN + proto::ACK_STATUS_MAX];
     size_t  alen = proto::encode_ack(config::station_id(), c.src_id, c.seq,
                                      status, ackbuf);
-    radio::send(ackbuf, alen);
+    for (uint8_t i = 0; i < ACK_REPEATS; ++i) {
+        radio::send(ackbuf, alen);
+        if (i + 1 < ACK_REPEATS) delay(ACK_GAP_MS);
+    }
     radio::start_receive();
     return true;
 }

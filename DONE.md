@@ -209,6 +209,20 @@ identically). See `docs/protocol.md`.
       instructor burst immediately instead of waiting out `CTRL_SILENCE_MS`.
       HW-validated 2026-06-10 (stn73 Cardputer → fox42/hunter43). Full mechanics in
       `docs/commands.md`. (commits f4a2381 / 0abff75 / 2516351)
+  - [~] **BLE-attached ACK gap (#3).** With a phone connected to the instructor
+        over BLE the command still landed but **no** ACK was ever surfaced (0/4):
+        NimBLE connection events preempt the instructor's loopTask in the gap
+        between TX-complete and re-arming RX, so the target's lone ACK flew past a
+        momentarily-deaf SX1262 — and because the preemption phase is ~periodic it
+        missed *every* time. Fix: the target now answers each control burst with a
+        small **burst of ACKs** (`ACK_REPEATS=4`, `ACK_GAP_MS=50`) so at least one
+        copy lands once RX is armed and outside a BLE blind spot, and the
+        instructor's blocking ack-listen widened `200→300 ms` to cover the burst.
+        The instructor stops on the first copy (dedups by `src_id`); the rest are
+        harmless. (`src/main.cpp` `control_rx_try` + `CTRL_ACK_LISTEN_MS`/
+        `ACK_REPEATS`/`ACK_GAP_MS`.) Builds on `cardputer_adv` + `wio_tracker_l1`;
+        **HW validation with a phone-attached instructor still pending** — test
+        plan in `docs/test-ble-ack-gap.md`.
 - [x] **Instructor display + power policy** — OLED header always shows battery and
       the current TX level; instructor boots at MAX so every field fox hears the
       bursts, with a non-persisted `ipwr <0..3>` runtime override for the bench. The
