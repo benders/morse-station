@@ -246,9 +246,17 @@ identically). See `docs/protocol.md`.
       dropped, which is why the async ACK showed up as a lone `\n`. HW-validated
       2026-06-19 on stn73 (Cardputer): MTU negotiates to 247, `bootlog` returns
       complete (16/16 lines through #128, was truncating ~#112), and the relay ACK
-      renders in full over BLE (`ACK 43 seq=N: wpm = …`, all multi-ACK copies). The
-      nRF52 `BleOut` (`ble_provision_nrf52.cpp`) may still want the same treatment
-      if a phone ever drives a RAK/Wio console directly.
+      renders in full over BLE (`ACK 43 seq=N: wpm = …`, all multi-ACK copies).
+      The nRF52 `BleOut` (`ble_provision_nrf52.cpp`, Adafruit Bluefruit) got the
+      analogous fix: `Bluefruit.configPrphBandwidth(BANDWIDTH_MAX)` before
+      `begin()` (MTU 247 + deeper HVN queue), explicit chunking to `getMtu()-3` in
+      `emit()` — Bluefruit's unbuffered `BLEUart::write()` forwards the whole
+      buffer to `_txd.notify()`, which sends ONE ≤MTU notification and silently
+      drops the rest while returning success, so the chunking has to be ours —
+      per-chunk backpressure on the `write()==0` (queue-full) return, and the same
+      single-write `notify()` coalesce. HW-validated 2026-06-19 on stn115 (Wio):
+      MTU 247, `bootlog` complete (17/17), and a ~380-byte `help` line that
+      previously truncated mid-string now returns whole (matches USB).
 - [x] **Instructor display + power policy** — OLED header always shows battery and
       the current TX level; instructor boots at MAX so every field fox hears the
       bursts, with a non-persisted `ipwr <0..3>` runtime override for the bench. The

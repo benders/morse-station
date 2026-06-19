@@ -35,14 +35,12 @@ constexpr size_t RX_LINE_MAX = 160;
 char   g_asm[RX_LINE_MAX];
 size_t g_asm_len = 0;
 
-// Conservative notify chunk size — BLEUart negotiates the connection MTU
-// itself and chunks internally, but we cap writes to a safe default-MTU-sized
-// piece anyway so behaviour matches the ESP32 BleOut (20 bytes = 23-byte ATT
-// MTU minus the 3-byte ATT header, the un-negotiated default).
-constexpr size_t TX_CHUNK = 20;
+// Max retries for a stalled TX before giving up (central likely gone). Each is a
+// short yield so the SoftDevice can drain its notification queue — see emit().
+constexpr int TX_RETRIES = 20;
 
 // Print sink that forwards everything handle_setup_command() writes back to
-// the central via BLEUart, chunked the same way the ESP32 BleOut does.
+// the central via BLEUart.
 class BleOut : public Print {
 public:
     size_t write(uint8_t b) override {
@@ -58,11 +56,29 @@ public:
 private:
     void emit(const uint8_t* buf, size_t size) {
         if (!g_connected) return;
+        // Chunk to the negotiated payload (MTU-3) OURSELVES. In its default
+        // unbuffered mode BLEUart::write() forwards the whole buffer straight to
+        // _txd.notify(), which does NOT split — it sends one notification of at
+        // most MTU-3 bytes and silently discards the rest while still returning
+        // the full length (success). That was the dropped-tail bug: a long `help`
+        // line truncated mid-string. We bumped the MTU to 247 via
+        // configPrphBandwidth(BANDWIDTH_MAX), so chunks are large; fall back to 20
+        // (default ATT MTU) before negotiation.
+        BLEConnection* conn = Bluefruit.Connection(Bluefruit.connHandle());
+        size_t chunk = (conn && conn->getMtu() > 23) ? (size_t)(conn->getMtu() - 3) : 20;
         size_t off = 0;
         while (off < size) {
             size_t n = size - off;
-            if (n > TX_CHUNK) n = TX_CHUNK;
-            bleuart.write(buf + off, n);
+            if (n > chunk) n = chunk;
+            // Each chunk fits one notification. write() returns n on success and 0
+            // when the SoftDevice's notification queue is momentarily full —
+            // backpressure: yield so the radio drains, then retry the SAME chunk.
+            // Runs on the main loop, never a callback, so delay() is safe.
+            int stalls = 0;
+            while (bleuart.write(buf + off, n) == 0) {
+                if (!g_connected || ++stalls > TX_RETRIES) return;
+                delay(4);
+            }
             off += n;
         }
     }
@@ -87,6 +103,13 @@ void begin(const char* adv_name, Handler handler) {
     if (g_started) return;
     g_handler = handler;
     g_asm_len = 0;
+
+    // Request maximum peripheral bandwidth BEFORE begin(): bumps the ATT MTU to
+    // 247, deepens the HVN (notification) queue, and lengthens the connection
+    // event — the nRF52/SoftDevice equivalent of the ESP32 setMTU + larger
+    // chunks. Without it BLEUart stays at the 23-byte default MTU and a long
+    // reply needs many small notifications that overrun the queue (dropped tail).
+    Bluefruit.configPrphBandwidth(BANDWIDTH_MAX);
 
     Bluefruit.begin();
 #if defined(DEVICE_WIO_TRACKER_L1)
@@ -145,9 +168,15 @@ void process() {
 
 void notify(const char* line) {
     if (!g_started || !g_connected || !line) return;
+    // Emit line + newline in a SINGLE write(), not print(line) then print('\n').
+    // Matches the ESP32 fix: two back-to-back notifications can race so the first
+    // (the text) is dropped, leaving a bare newline. One write keeps the line whole.
+    char tmp[RX_LINE_MAX + 2];
+    int n = snprintf(tmp, sizeof(tmp), "%s\n", line);
+    if (n < 0) return;
+    if (n > (int)(sizeof(tmp) - 1)) n = sizeof(tmp) - 1;
     BleOut out;
-    out.print(line);
-    out.print('\n');
+    out.write(reinterpret_cast<const uint8_t*>(tmp), (size_t)n);
 }
 
 bool connected() { return g_connected; }
