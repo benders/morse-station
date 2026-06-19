@@ -209,7 +209,7 @@ identically). See `docs/protocol.md`.
       instructor burst immediately instead of waiting out `CTRL_SILENCE_MS`.
       HW-validated 2026-06-10 (stn73 Cardputer → fox42/hunter43). Full mechanics in
       `docs/commands.md`. (commits f4a2381 / 0abff75 / 2516351)
-  - [~] **BLE-attached ACK gap (#3).** With a phone connected to the instructor
+  - [x] **BLE-attached ACK gap (#3).** With a phone connected to the instructor
         over BLE the command still landed but **no** ACK was ever surfaced (0/4):
         NimBLE connection events preempt the instructor's loopTask in the gap
         between TX-complete and re-arming RX, so the target's lone ACK flew past a
@@ -220,9 +220,20 @@ identically). See `docs/protocol.md`.
         instructor's blocking ack-listen widened `200→300 ms` to cover the burst.
         The instructor stops on the first copy (dedups by `src_id`); the rest are
         harmless. (`src/main.cpp` `control_rx_try` + `CTRL_ACK_LISTEN_MS`/
-        `ACK_REPEATS`/`ACK_GAP_MS`.) Builds on `cardputer_adv` + `wio_tracker_l1`;
-        **HW validation with a phone-attached instructor still pending** — test
-        plan in `docs/test-ble-ack-gap.md`.
+        `ACK_REPEATS`/`ACK_GAP_MS`.) **HW-validated 2026-06-19** with a phone (BLE
+        central) attached to instructor stn73, driving both target builds —
+        `scripts/ble_ack_test.py` 6/6: BLE-attached relay to stn43 (Heltec V4) and
+        stn115 (Wio nRF52) now lands the ACK **4/4** (3–4 copies each, pre-fix 0/4),
+        each relay's copies share one seq (clean dedup), USB control path still 4/4,
+        and `show` confirms delivery on both targets. Test plan in
+        `docs/test-ble-ack-gap.md`.
+        **Caveat — the phone still can't *read* the ACK.** The instructor now
+        *receives* it over the air reliably (proven on its USB serial), but the
+        text is mangled to a bare newline going out over BLE NUS by the *separate*
+        already-tracked **BLE notify throughput** bug (back-to-back 20-byte
+        `notify()` with no pacing, see the TODO of the same name). So the
+        end-to-end "operator sees the ACK on their phone" goal needs that throughput
+        fix too; #3 (the air-side ACK loss) itself is resolved.
 - [x] **Instructor display + power policy** — OLED header always shows battery and
       the current TX level; instructor boots at MAX so every field fox hears the
       bursts, with a non-persisted `ipwr <0..3>` runtime override for the bench. The

@@ -130,6 +130,41 @@ The fix is validated when **T1 + T4** flip the BLE-attached case to majority-ACK
 (was 0/4) while **T2, T3, T5** confirm nothing regressed. T6 is a
 collision-margin check, run it if a fox is on the bench.
 
+## Automation
+
+`scripts/ble_ack_test.py` (BLE venv: `tools/blevenv/bin/python`) runs T1–T5 plus
+delivery readback unattended. `--setup` puts stn73 into Instructor mode first.
+
+**Measurement trap (important):** do **not** count ACKs off the BLE notify stream.
+The separate BLE-notify-throughput bug shreds the ACK text down to a bare newline
+when a phone is attached, so the ACK *looks* absent over BLE even though it
+arrived. The harness instead keeps a BLE central attached (the jitter source that
+caused #3) and reads the ACKs off the **instructor's USB serial** (`Serial.printf`
+in `instructor_service_rx`).
+
+## Results — 2026-06-19 (HW-validated)
+
+Rig: instructor stn73 (Cardputer) with a live BLE central attached the whole time;
+targets stn43 (Heltec V4) and stn115 (Wio Tracker L1, nRF52). `ble_ack_test.py`
+**6/6**:
+
+| Check | Result |
+|-------|--------|
+| T1 BLE-attached relay → stn43 ACK | **4/4** relays acked, 4 copies each (pre-fix 0/4) |
+| T4 BLE-attached relay → stn115 ACK | **4/4** relays acked, 3–4 copies each (pre-fix 0/4) |
+| T5 ACK copies share one seq (dedup) | 4/4 single-seq |
+| T3 USB relay, no BLE (control) | **4/4**, no regression |
+| T2 delivery readback (stn43 / stn115) | wpm landed on both |
+
+The multi-ACK burst lands in full (3–4 of the 4 copies are received per relay),
+confirming the fix defeats the connection-event blind spot. **T6 (fox-keying
+collision) not run** — the bench was configured with both non-instructor nodes as
+Hunters, not a fox+hunter pair; the ACK burst fits inside `CTRL_RX_WINDOW_MS` so
+collision risk is low, but it remains an unrun margin check.
+
+Note: `set_wpm` clamps at 40, so use sub-40 distinct values for unambiguous
+delivery readback (the harness uses 12–15 / 22–25).
+
 ## Record on completion
 
 - Update `DONE.md`: flip the `[~]` BLE-attached ACK gap bullet to `[x]` with the
