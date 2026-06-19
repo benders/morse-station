@@ -209,6 +209,54 @@ identically). See `docs/protocol.md`.
       instructor burst immediately instead of waiting out `CTRL_SILENCE_MS`.
       HW-validated 2026-06-10 (stn73 Cardputer → fox42/hunter43). Full mechanics in
       `docs/commands.md`. (commits f4a2381 / 0abff75 / 2516351)
+  - [x] **BLE-attached ACK gap (#3).** With a phone connected to the instructor
+        over BLE the command still landed but **no** ACK was ever surfaced (0/4):
+        NimBLE connection events preempt the instructor's loopTask in the gap
+        between TX-complete and re-arming RX, so the target's lone ACK flew past a
+        momentarily-deaf SX1262 — and because the preemption phase is ~periodic it
+        missed *every* time. Fix: the target now answers each control burst with a
+        small **burst of ACKs** (`ACK_REPEATS=4`, `ACK_GAP_MS=50`) so at least one
+        copy lands once RX is armed and outside a BLE blind spot, and the
+        instructor's blocking ack-listen widened `200→300 ms` to cover the burst.
+        The instructor stops on the first copy (dedups by `src_id`); the rest are
+        harmless. (`src/main.cpp` `control_rx_try` + `CTRL_ACK_LISTEN_MS`/
+        `ACK_REPEATS`/`ACK_GAP_MS`.) **HW-validated 2026-06-19** with a phone (BLE
+        central) attached to instructor stn73, driving both target builds —
+        `scripts/ble_ack_test.py` 6/6: BLE-attached relay to stn43 (Heltec V4) and
+        stn115 (Wio nRF52) now lands the ACK **4/4** (3–4 copies each, pre-fix 0/4),
+        each relay's copies share one seq (clean dedup), USB control path still 4/4,
+        and `show` confirms delivery on both targets. Test plan in
+        `docs/test-ble-ack-gap.md`. After the BLE notify-throughput fix below, the
+        whole suite was **re-run measuring the ACK over BLE** (the real operator
+        path) — 6/6, full ACK text intact 4/4 to both targets — so #3 is now
+        verifiable end to end on a phone, not just on the instructor's USB serial.
+- [x] **BLE notify throughput — long replies / async ACKs dropped chunks.** Replies
+      longer than a few hundred bytes (`bootlog`, full `help`) arrived truncated
+      over BLE NUS (tail lost), and an async relay ACK arrived as a bare newline —
+      `BleOut::emit` fired back-to-back 20-byte `notify()` calls with no MTU
+      negotiation and no backpressure, so chunks were silently dropped when they
+      outran the NimBLE msys mbuf pool. Three-part fix in `src/ble_provision.cpp`:
+      (1) request a 247-byte ATT MTU (`NimBLEDevice::setMTU`) and track the
+      negotiated value via `onMTUChange`, chunking to `MTU-3` instead of 20 — far
+      fewer notifications per reply; (2) real backpressure — `notify()` returns
+      false when the pool is momentarily empty, so retry with a short `delay()`
+      yield (runs on the main loop task, never the host task) instead of dropping;
+      (3) coalesce `ble_provision::notify()` into a SINGLE `write()` of `"line\n"`
+      — two back-to-back notifications raced and the *first* (the text) was the one
+      dropped, which is why the async ACK showed up as a lone `\n`. HW-validated
+      2026-06-19 on stn73 (Cardputer): MTU negotiates to 247, `bootlog` returns
+      complete (16/16 lines through #128, was truncating ~#112), and the relay ACK
+      renders in full over BLE (`ACK 43 seq=N: wpm = …`, all multi-ACK copies).
+      The nRF52 `BleOut` (`ble_provision_nrf52.cpp`, Adafruit Bluefruit) got the
+      analogous fix: `Bluefruit.configPrphBandwidth(BANDWIDTH_MAX)` before
+      `begin()` (MTU 247 + deeper HVN queue), explicit chunking to `getMtu()-3` in
+      `emit()` — Bluefruit's unbuffered `BLEUart::write()` forwards the whole
+      buffer to `_txd.notify()`, which sends ONE ≤MTU notification and silently
+      drops the rest while returning success, so the chunking has to be ours —
+      per-chunk backpressure on the `write()==0` (queue-full) return, and the same
+      single-write `notify()` coalesce. HW-validated 2026-06-19 on stn115 (Wio):
+      MTU 247, `bootlog` complete (17/17), and a ~380-byte `help` line that
+      previously truncated mid-string now returns whole (matches USB).
 - [x] **Instructor display + power policy** — OLED header always shows battery and
       the current TX level; instructor boots at MAX so every field fox hears the
       bursts, with a non-persisted `ipwr <0..3>` runtime override for the bench. The

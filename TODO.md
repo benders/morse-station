@@ -325,19 +325,6 @@ status board live in `wio-tracker-port.md`.
       also drops the FEM rail on the Heltec. Note `mode <n>` currently clamps to
       0..3 in `handle_setup_command` (Instructor=3); extend it. (`src/main.cpp`,
       `src/radio.cpp`.)
-- [ ] **BLE notify throughput — long replies drop chunks.** Replies longer than
-      a few hundred bytes (e.g. `bootlog`, a full `help`) arrive truncated/garbled
-      over BLE NUS: the dump is oldest-first and the *tail* (newest bootlog
-      entries) is consistently lost. Cause: `BleOut::emit` in
-      `src/ble_provision.cpp` fires back-to-back 20-byte `notify()` calls with no
-      pacing or flow control, so notifications are dropped when they outrun the
-      connection interval. Observed on stn38 (NimBLE 2.x): 4 retries of `bootlog`
-      only ever returned 6–10 of ~16 entries, max `#112` while the device was
-      actually at `#116`. Short replies (`show`, `batt`) are fine. Fix options:
-      negotiate a larger ATT MTU and chunk to `MTU-3` instead of 20; and/or add a
-      small inter-notify yield / wait-for-txbuf so the stack drains. The nRF52
-      Bluefruit `BleOut` (`ble_provision_nrf52.cpp`) likely needs the same. Purely
-      a console-readability bug — does not affect provisioning or the MCU.
 - [ ] Field test at range; tune power and message cadence (hardware).
 - [ ] "RECV" station ID and signal strength bar should clear after timeout from
       last received packet.
