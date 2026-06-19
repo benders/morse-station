@@ -41,8 +41,13 @@ char   g_asm[RX_LINE_MAX];
 size_t g_asm_len = 0;
 
 // Conservative notify chunk size. The default ATT MTU is 23 (so 20 payload
-// bytes); chunking to 20 is safe before any MTU negotiation.
+// bytes); chunking to 20 is safe before any MTU negotiation. We *request* a
+// larger MTU in begin() and track the negotiated value (g_mtu) so a long reply
+// goes out in far fewer notifications — fewer packets means much less pressure
+// on the NimBLE msys mbuf pool, which is what was being exhausted (see emit()).
 constexpr size_t TX_CHUNK = 20;
+constexpr uint16_t PREF_MTU = 247;        // request this; clamps to whatever the central grants
+volatile uint16_t g_mtu = 23;             // negotiated ATT MTU (onMTUChange); 23 until exchanged
 
 // Print sink that forwards everything handle_setup_command() writes back to the
 // central as TX-characteristic notifications, chunked to a safe MTU size.
@@ -61,12 +66,24 @@ public:
 private:
     void emit(const uint8_t* buf, size_t size) {
         if (!g_tx_char || !g_connected) return;
+        // Chunk to the negotiated payload (MTU-3 for the ATT notify header),
+        // falling back to the safe 20 before any MTU exchange.
+        size_t chunk = (g_mtu > 23) ? (size_t)(g_mtu - 3) : TX_CHUNK;
         size_t off = 0;
         while (off < size) {
             size_t n = size - off;
-            if (n > TX_CHUNK) n = TX_CHUNK;
+            if (n > chunk) n = chunk;
             g_tx_char->setValue(buf + off, n);
-            g_tx_char->notify();
+            // Backpressure: notify() returns false when the msys mbuf pool is
+            // momentarily empty (the old code ignored this, silently dropping the
+            // chunk — the tail of bootlog/help vanished). Yield so the NimBLE host
+            // task can flush queued packets to the controller, then retry. This
+            // runs on the main loop task (process()/notify()), never the host
+            // task, so delay() is safe and is what lets the pool drain.
+            for (int tries = 0; !g_tx_char->notify() && tries < 20; ++tries) {
+                if (!g_connected) return;   // central vanished mid-send
+                delay(4);
+            }
             off += n;
         }
     }
@@ -104,9 +121,16 @@ class ServerCallbacks : public NimBLEServerCallbacks {
     void onConnect(NimBLEServer*, NimBLEConnInfo& /*connInfo*/) override {
         g_connected = true;
     }
+    // Capture the ATT MTU the central agreed to so emit() can chunk to MTU-3
+    // instead of 20. Without this, long replies stayed at 20-byte chunks and
+    // overran the mbuf pool. NimBLE-Arduino 2.x signature.
+    void onMTUChange(uint16_t mtu, NimBLEConnInfo& /*connInfo*/) override {
+        g_mtu = mtu;
+    }
     void onDisconnect(NimBLEServer*, NimBLEConnInfo& /*connInfo*/,
                       int /*reason*/) override {
         g_connected = false;
+        g_mtu = 23;                 // next central renegotiates from the default
         // Re-advertise only while we're meant to be up — not after stop()
         // intentionally pulled advertising (the BLE-off / panel-blank case).
         if (g_started) NimBLEDevice::startAdvertising();
@@ -135,6 +159,11 @@ void begin(const char* adv_name, Handler handler) {
     if (!g_queue) g_queue = xQueueCreate(QUEUE_DEPTH, sizeof(Line));
 
     NimBLEDevice::init(adv_name);
+
+    // Request a larger ATT MTU (the central clamps to its own ceiling, then the
+    // exchange fires onMTUChange -> g_mtu). Bigger MTU = fewer notifications per
+    // reply = far less msys mbuf-pool pressure, the root of the dropped-tail bug.
+    NimBLEDevice::setMTU(PREF_MTU);
 
     // createServer() returns the SAME singleton across init/deinit(false)
     // cycles, and its m_svcVec (with any prior NUS service) survives deinit.
@@ -183,9 +212,17 @@ void process() {
 
 void notify(const char* line) {
     if (!g_tx_char || !g_connected || !line) return;
+    // Emit the line + newline in a SINGLE write() (one notification), not
+    // print(line) then print('\n'). Two back-to-back notifications race here:
+    // empirically the first (the text) was dropped and only the trailing '\n'
+    // survived — so an async ACK arrived over BLE as a bare newline. Coalescing
+    // matches the handler's printf("…\n") path, which always rendered intact.
+    char tmp[RX_LINE_MAX + 2];
+    int n = snprintf(tmp, sizeof(tmp), "%s\n", line);
+    if (n < 0) return;
+    if (n > (int)(sizeof(tmp) - 1)) n = sizeof(tmp) - 1;
     BleOut out;
-    out.print(line);
-    out.print('\n');
+    out.write(reinterpret_cast<const uint8_t*>(tmp), (size_t)n);
 }
 
 bool connected() { return g_connected; }

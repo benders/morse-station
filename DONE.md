@@ -226,14 +226,29 @@ identically). See `docs/protocol.md`.
         stn115 (Wio nRF52) now lands the ACK **4/4** (3–4 copies each, pre-fix 0/4),
         each relay's copies share one seq (clean dedup), USB control path still 4/4,
         and `show` confirms delivery on both targets. Test plan in
-        `docs/test-ble-ack-gap.md`.
-        **Caveat — the phone still can't *read* the ACK.** The instructor now
-        *receives* it over the air reliably (proven on its USB serial), but the
-        text is mangled to a bare newline going out over BLE NUS by the *separate*
-        already-tracked **BLE notify throughput** bug (back-to-back 20-byte
-        `notify()` with no pacing, see the TODO of the same name). So the
-        end-to-end "operator sees the ACK on their phone" goal needs that throughput
-        fix too; #3 (the air-side ACK loss) itself is resolved.
+        `docs/test-ble-ack-gap.md`. After the BLE notify-throughput fix below, the
+        whole suite was **re-run measuring the ACK over BLE** (the real operator
+        path) — 6/6, full ACK text intact 4/4 to both targets — so #3 is now
+        verifiable end to end on a phone, not just on the instructor's USB serial.
+- [x] **BLE notify throughput — long replies / async ACKs dropped chunks.** Replies
+      longer than a few hundred bytes (`bootlog`, full `help`) arrived truncated
+      over BLE NUS (tail lost), and an async relay ACK arrived as a bare newline —
+      `BleOut::emit` fired back-to-back 20-byte `notify()` calls with no MTU
+      negotiation and no backpressure, so chunks were silently dropped when they
+      outran the NimBLE msys mbuf pool. Three-part fix in `src/ble_provision.cpp`:
+      (1) request a 247-byte ATT MTU (`NimBLEDevice::setMTU`) and track the
+      negotiated value via `onMTUChange`, chunking to `MTU-3` instead of 20 — far
+      fewer notifications per reply; (2) real backpressure — `notify()` returns
+      false when the pool is momentarily empty, so retry with a short `delay()`
+      yield (runs on the main loop task, never the host task) instead of dropping;
+      (3) coalesce `ble_provision::notify()` into a SINGLE `write()` of `"line\n"`
+      — two back-to-back notifications raced and the *first* (the text) was the one
+      dropped, which is why the async ACK showed up as a lone `\n`. HW-validated
+      2026-06-19 on stn73 (Cardputer): MTU negotiates to 247, `bootlog` returns
+      complete (16/16 lines through #128, was truncating ~#112), and the relay ACK
+      renders in full over BLE (`ACK 43 seq=N: wpm = …`, all multi-ACK copies). The
+      nRF52 `BleOut` (`ble_provision_nrf52.cpp`) may still want the same treatment
+      if a phone ever drives a RAK/Wio console directly.
 - [x] **Instructor display + power policy** — OLED header always shows battery and
       the current TX level; instructor boots at MAX so every field fox hears the
       bursts, with a non-persisted `ipwr <0..3>` runtime override for the bench. The

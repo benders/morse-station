@@ -135,32 +135,41 @@ collision-margin check, run it if a fox is on the bench.
 `scripts/ble_ack_test.py` (BLE venv: `tools/blevenv/bin/python`) runs T1–T5 plus
 delivery readback unattended. `--setup` puts stn73 into Instructor mode first.
 
-**Measurement trap (important):** do **not** count ACKs off the BLE notify stream.
-The separate BLE-notify-throughput bug shreds the ACK text down to a bare newline
-when a phone is attached, so the ACK *looks* absent over BLE even though it
-arrived. The harness instead keeps a BLE central attached (the jitter source that
-caused #3) and reads the ACKs off the **instructor's USB serial** (`Serial.printf`
-in `instructor_service_rx`).
+The harness keeps a BLE central attached for the whole run (the jitter source that
+caused #3) and reads the ACK back **over that same BLE notify stream** — the real
+operator experience. This is only a valid measurement because the companion BLE
+notify-throughput fix is in place; see the trap below for why.
 
-## Results — 2026-06-19 (HW-validated)
+**Measurement trap (history):** before the BLE notify-throughput fix, the ACK could
+NOT be measured over BLE — that bug shredded the ACK text down to a bare newline
+when a phone was attached, so the ACK *looked* absent over BLE even though it
+arrived. The first validation pass worked around it by reading the ACKs off the
+**instructor's USB serial** (`Serial.printf` in `instructor_service_rx`). After the
+throughput fix (MTU negotiation + notify backpressure + single-write ACK line) the
+ACK renders intact over BLE and the harness measures it there directly.
+
+## Results — 2026-06-19 (HW-validated, end-to-end over BLE)
 
 Rig: instructor stn73 (Cardputer) with a live BLE central attached the whole time;
 targets stn43 (Heltec V4) and stn115 (Wio Tracker L1, nRF52). `ble_ack_test.py`
-**6/6**:
+**6/6**, ACK measured over the BLE notify stream:
 
 | Check | Result |
 |-------|--------|
-| T1 BLE-attached relay → stn43 ACK | **4/4** relays acked, 4 copies each (pre-fix 0/4) |
-| T4 BLE-attached relay → stn115 ACK | **4/4** relays acked, 3–4 copies each (pre-fix 0/4) |
+| T1 BLE-attached relay → stn43, full ACK over BLE | **4/4**, 4 copies each, full text (pre-fix 0/4) |
+| T4 BLE-attached relay → stn115, full ACK over BLE | **4/4**, 3–4 copies each, full text (pre-fix 0/4) |
 | T5 ACK copies share one seq (dedup) | 4/4 single-seq |
 | T3 USB relay, no BLE (control) | **4/4**, no regression |
 | T2 delivery readback (stn43 / stn115) | wpm landed on both |
 
-The multi-ACK burst lands in full (3–4 of the 4 copies are received per relay),
-confirming the fix defeats the connection-event blind spot. **T6 (fox-keying
-collision) not run** — the bench was configured with both non-instructor nodes as
-Hunters, not a fox+hunter pair; the ACK burst fits inside `CTRL_RX_WINDOW_MS` so
-collision risk is low, but it remains an unrun margin check.
+The multi-ACK burst lands in full (3–4 of the 4 copies received per relay) and each
+copy now arrives as complete text (`ACK <id> seq=N: wpm = …`) over BLE, confirming
+the fix defeats the connection-event blind spot AND that the operator's phone can
+read the result. Separately confirmed alongside the throughput fix: `bootlog` over
+BLE returns complete (16/16 lines, was truncating to ~#112) and MTU negotiates to
+247. **T6 (fox-keying collision) not run** — the bench had both non-instructor
+nodes as Hunters, not a fox+hunter pair; the ACK burst fits inside
+`CTRL_RX_WINDOW_MS` so collision risk is low, but it remains an unrun margin check.
 
 Note: `set_wpm` clamps at 40, so use sub-40 distinct values for unambiguous
 delivery readback (the harness uses 12–15 / 22–25).

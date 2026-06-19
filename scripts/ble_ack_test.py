@@ -1,21 +1,21 @@
 #!/usr/bin/env python
 """Automated validation of the BLE-attached instructor ACK gap fix (#3).
 
-Reproduces the 2026-06-18 failure and checks the multi-ACK fix flips it.
+Reproduces the 2026-06-18 failure and checks the multi-ACK fix flips it, end to
+end over BLE — the way the field operator actually sees it.
 
-THE TRAP: you cannot measure this off the BLE notify stream. A *separate*,
-already-tracked bug (BLE notify throughput, TODO.md "BLE notify throughput —
-long replies drop chunks") shreds the ACK text down to a bare newline when a
-phone is attached, so the ACK looks absent over BLE even when it arrived. The
-instructor prints every received ACK to USB serial too (`Serial.printf` in
-instructor_service_rx), so the honest measurement is: keep a BLE central
-ATTACHED (this is what reproduces the connection-event jitter that caused #3)
-and watch the instructor's USB serial for `ACK <tgt> seq=`.
+This measures the ACK off the BLE notify stream, which is only valid because the
+companion BLE notify-throughput fix (MTU negotiation + notify() backpressure +
+single-write ACK line) now delivers the text intact. Before BOTH fixes the ACK
+was absent over BLE for two stacked reasons: the air-side ACK was lost to BLE
+connection-event jitter (#3), and even when caught it was shredded to a bare
+newline by the throughput bug. A BLE central stays ATTACHED for the whole run —
+that attachment is what reproduces the jitter that caused #3.
 
-  T1/T4  BLE-attached relay -> ACK on instructor serial   (the #3 fix; was 0/4)
-  T3     USB relay, NO BLE central                        (control: still 4/4)
-  T5     all ACK copies for a relay carry ONE seq         (dedup = one logical ack)
-  T2     `show` readback on each target over USB          (delivery actually landed)
+  T1/T4  BLE-attached relay -> full ACK text over BLE      (the #3 fix; was 0/4)
+  T3     USB relay, NO BLE central                         (control: still 4/4)
+  T5     all ACK copies for a relay carry ONE seq          (dedup = one logical ack)
+  T2     `show` readback on each target over USB           (delivery actually landed)
 
 Run from the repo root with the BLE venv (bleak + pyserial):
   tools/blevenv/bin/python scripts/ble_ack_test.py [--setup]
@@ -87,40 +87,51 @@ async def find_instructor(scan_timeout=8.0):
     return sorted(found.items())[0][1] if found else None
 
 
-async def ble_attached_phase(tap):
+async def ble_attached_phase():
     # One BLE connection held across all relays (= the field phone), driving the
-    # instructor while we read its serial for the ACKs it catches over the air.
+    # instructor AND reading the ACK back over the SAME BLE notify stream — the
+    # real operator experience. This is only a valid measurement because the BLE
+    # notify-throughput fix (MTU negotiation + backpressure + coalesced ACK line)
+    # now delivers the ACK text intact; before it, the ACK arrived as a bare '\n'.
     dev = await find_instructor()
     if dev is None:
         for tid, label in ((43, "T1"), (115, "T4")):
             record(f"{label} BLE-attached relay to {tid}", False,
                    "instructor not advertising")
         return
+    lines = []
+    buf = bytearray()
+    def on_notify(_c, data):
+        buf.extend(data)
+        while b"\n" in buf:
+            ln, _, rest = buf.partition(b"\n")
+            lines.append(ln.decode("utf-8", "replace").rstrip()); buf[:] = rest
     async with BleakClient(dev) as client:
-        await client.start_notify(NUS_TX, lambda _c, _d: None)   # subscribe (jitter source)
+        await client.start_notify(NUS_TX, on_notify)
         for tid, label in ((43, "T1"), (115, "T4")):
             hits, seqs_ok = 0, 0
             for i in range(N):
                 val = 12 + i
-                m0 = len(tap.log)
+                m0 = len(lines)
                 await client.write_gatt_char(
                     NUS_RX, f"relay {tid} wpm {val}\n".encode(), response=False)
                 t0 = time.time(); acks = []
                 while time.time() - t0 < ACK_WAIT:
                     await asyncio.sleep(0.2)
-                    acks = [ln for _, ln in tap.log[m0:]
-                            if re.search(rf"ACK {tid} seq=", ln)]
+                    acks = [ln for ln in lines[m0:] if re.search(rf"ACK {tid} seq=", ln)]
                     if acks: break
-                # let the rest of the multi-ACK copies land before tallying dedup
-                await asyncio.sleep(0.8)
-                acks = [ln for _, ln in tap.log[m0:] if re.search(rf"ACK {tid} seq=", ln)]
+                await asyncio.sleep(0.8)            # catch the rest of the copies
+                acks = [ln for ln in lines[m0:] if re.search(rf"ACK {tid} seq=", ln)]
+                # require the FULL ACK text (id + seq + status), not a fragment
+                full = [a for a in acks if re.search(rf"ACK {tid} seq=\d+: \S", a)]
                 seqs = {re.search(rf"ACK {tid} seq=(\d+)", a).group(1) for a in acks}
-                hits += 1 if acks else 0
+                hits += 1 if full else 0
                 seqs_ok += 1 if len(seqs) == 1 else 0
-                print(f"    relay {tid} wpm {val}: {len(acks)} ACK copy(s), "
-                      f"seq(s)={sorted(seqs)}", flush=True)
-            record(f"{label} BLE-attached relay to {tid} -> ACK received",
-                   hits >= PASS_RATIO, f"{hits}/{N} relays acked (pre-fix 0/{N})")
+                print(f"    relay {tid} wpm {val}: {len(acks)} ACK copy(s) over BLE, "
+                      f"full-text={'Y' if full else 'N'}, seq(s)={sorted(seqs)}",
+                      flush=True)
+            record(f"{label} BLE-attached relay to {tid} -> full ACK over BLE",
+                   hits >= PASS_RATIO, f"{hits}/{N} relays acked intact (pre-fix 0/{N})")
             if tid == 43:
                 record("T5 each relay's ACK copies share one seq (dedup)",
                        seqs_ok >= PASS_RATIO, f"{seqs_ok}/{N} relays single-seq")
@@ -171,10 +182,8 @@ async def amain(args):
         tap.cmd("reboot", read_secs=1.0); tap.close()
         time.sleep(16)
 
-    print("\n== T1/T4/T5: relay over BLE (phone attached), ACK read on serial ==", flush=True)
-    tap = SerialTap(INSTRUCTOR_PORT)
-    await ble_attached_phase(tap)
-    tap.close()
+    print("\n== T1/T4/T5: relay over BLE (phone attached), ACK read over BLE ==", flush=True)
+    await ble_attached_phase()
 
     print("\n== T3: relay over USB (no BLE control) ==", flush=True)
     usb_control_phase()
