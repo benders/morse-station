@@ -143,6 +143,13 @@ void process() {
     }
 }
 
+void notify(const char* line) {
+    if (!g_started || !g_connected || !line) return;
+    BleOut out;
+    out.print(line);
+    out.print('\n');
+}
+
 bool connected() { return g_connected; }
 
 void stop() {

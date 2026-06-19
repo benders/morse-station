@@ -30,6 +30,13 @@ void begin(const char* adv_name, Handler handler);
 // handler, notifying responses back over TX. Call once per main-loop iteration.
 void process();
 
+// Push an unsolicited line to the connected central over the TX characteristic,
+// outside the command/response path. Used for asynchronous events the operator's
+// phone should see without having issued a command — e.g. an Instructor relay
+// ACK arriving from a distant fox. A trailing newline is appended. No-op when no
+// central is connected. Safe to call from the main loop.
+void notify(const char* line);
+
 // True while a central is connected (advertising auto-restarts on disconnect).
 bool connected();
 

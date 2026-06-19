@@ -465,6 +465,16 @@ static uint32_t    g_fox_last_heard = 0;
 static bool        g_fox_listening    = false;
 static uint32_t    g_fox_listen_until = 0;
 
+// Sticky ACK display. An instructor relay ack arrives asynchronously and was
+// drawn for under a second before the 1 Hz idle redraw wiped it back to "ready"
+// — the operator could miss whether a command actually landed. Latch the last
+// ack's two lines and a deadline; while g_ack_show_until is in the future the
+// idle draw shows the ack instead of the "ready" prompt, so it stays legible.
+static constexpr uint32_t ACK_STICKY_MS = 8000;
+static char     g_ack_l1[24] = {0};
+static char     g_ack_l2[24] = {0};
+static uint32_t g_ack_show_until = 0;
+
 // Instructor broadcast banner (docs/plan-instructor-broadcast.md). A short
 // plaintext message the instructor pushes to EVERY station's screen, distinct
 // from `relay` (which runs a console command silently). Fire-and-forget: no ack,
@@ -2190,10 +2200,19 @@ static bool instructor_service_rx(uint32_t now) {
     proto::Listen     l;
     if (proto::decode_ack(buf, n, a) && a.target_id == proto::INSTRUCTOR_ID) {
         Serial.printf("ACK %u seq=%u: %s\n", a.src_id, a.seq, a.status);
-        char l1[24], l2[24];
-        snprintf(l1, sizeof(l1), "ACK id %u", a.src_id);
-        snprintf(l2, sizeof(l2), "%s", a.status);
-        display::instructor(PWR_LEVELS[pwr_idx].label, l1, l2);
+        // Echo the ack to a connected phone over BLE too — without this it only
+        // ever reached USB serial, so a field operator driving the instructor
+        // from a phone had no confirmation a command was received.
+        char bleline[48];
+        snprintf(bleline, sizeof(bleline), "ACK %u seq=%u: %s",
+                 a.src_id, a.seq, a.status);
+        ble_provision::notify(bleline);
+        // Latch the ack on the panel so the 1 Hz idle redraw can't wipe it back
+        // to "ready" before the operator reads it (see g_ack_show_until).
+        snprintf(g_ack_l1, sizeof(g_ack_l1), "ACK id %u", a.src_id);
+        snprintf(g_ack_l2, sizeof(g_ack_l2), "%s", a.status);
+        g_ack_show_until = now + ACK_STICKY_MS;
+        display::instructor(PWR_LEVELS[pwr_idx].label, g_ack_l1, g_ack_l2);
         last_draw = now;
         if (g_ctrl.active && a.seq == g_ctrl.seq) {
             // Tally the responder; stop a unicast burst once its target acks.
@@ -2282,6 +2301,10 @@ static void loop_instructor(uint32_t now) {
         if (now - last_draw >= interval) {
             last_draw = now;
             if (banner_active(now)) draw_banner();   // its own banner echo still up
+            else if ((int32_t)(g_ack_show_until - now) > 0)
+                // Keep the most recent ack on screen for ACK_STICKY_MS before
+                // reverting to the idle prompt.
+                display::instructor(PWR_LEVELS[pwr_idx].label, g_ack_l1, g_ack_l2);
             else display::instructor(PWR_LEVELS[pwr_idx].label, "ready",
                                      "relay <id> <cmd>");
         }
