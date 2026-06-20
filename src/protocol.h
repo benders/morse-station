@@ -278,12 +278,16 @@ inline bool decode_ack(const uint8_t* buf, size_t len, ControlAck& a) {
 constexpr uint8_t MAGIC_BCAST     = 0x42;   // 'B' — instructor broadcast banner
 constexpr size_t  BCAST_HDR_LEN   = 4;      // magic, src, seq, flags
 constexpr size_t  BCAST_TEXT_MAX  = 40;     // two short OLED lines; airtime budget
-constexpr uint8_t BCAST_FLAG_ALERT = 0x01;  // bit0: force-wake a blanked panel
+constexpr uint8_t BCAST_FLAG_ALERT  = 0x01;  // bit0: force-wake a blanked panel
+constexpr uint8_t BCAST_FLAG_STICKY = 0x02;  // bit1: latch — never auto-expire,
+                                             //       halt fox TX until alert clear
+                                             //       (field note §6). Old nodes
+                                             //       ignore the bit (flags masked).
 
 struct BroadcastMsg {
     uint8_t src_id;                       // must be INSTRUCTOR_ID (0) to be honoured
     uint8_t seq;                          // wraps; for dedup (no ack)
-    uint8_t flags;                        // BCAST_FLAG_*; unknown bits ignored
+    uint8_t flags;                        // BCAST_FLAG_* (ALERT|STICKY); unknown bits ignored
     char    text[BCAST_TEXT_MAX + 1];     // NUL-terminated ASCII
 };
 

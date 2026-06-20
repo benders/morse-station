@@ -500,6 +500,15 @@ static constexpr uint32_t BCAST_INTERVAL  = CTRL_PROBE_INTERVAL;  // gap between
 static char     g_banner[proto::BCAST_TEXT_MAX + 1] = {0};
 static uint32_t g_banner_until = 0;
 
+// Sticky-alert latch (field note §6). When a node RECEIVES an alert carrying
+// proto::BCAST_FLAG_STICKY, this latches: banner_active() then ignores the
+// g_banner_until timeout and keeps the banner up forever, and a Fox/Live-Key
+// node also halts its TX (g_tx_halted). Released only by `alert clear` (empty
+// text), an explicit `start` (TX only — leaves the banner), or reset. RAM-only:
+// a reboot always comes up un-alerted. The instructor never latches its OWN
+// panel (it must stay usable to send the clear) — see set_banner() callers.
+static bool g_alert_latched = false;
+
 // Audible attention tone that rides along with a received/sent alert banner
 // (docs/plan-alert-tone.md). A single steady tone at the board's sidetone
 // frequency, sounded for ALERT_TONE_MS via sidetone_alert() — which overrides the
@@ -523,7 +532,7 @@ static BcastPending g_bcast;
 // fwd: the broadcast banner helpers are defined far below (near the mode loops)
 // but referenced earlier — by the `bcast`/`show` console verbs and prg_tapped.
 static bool banner_active(uint32_t now);
-static void set_banner(const char* text, bool alert, uint32_t now);
+static void set_banner(const char* text, bool alert, bool sticky, uint32_t now);
 static void start_alert_tone(uint32_t now);
 static void alert_tone_tick(uint32_t now);
 
@@ -836,14 +845,20 @@ static bool handle_setup_command(const char* line, Print& out) {
             g_bcast.active       = true;
             g_bcast.seq          = g_ctrl_seq++;
             config::set_ctrl_seq(g_ctrl_seq);   // shared monotonic id, persisted
-            g_bcast.flags        = proto::BCAST_FLAG_ALERT;  // every alert is an alert
+            // Every alert beeps; a real alert (not `clear`) also latches on the
+            // RECEIVING fleet via BCAST_FLAG_STICKY (§6). `alert clear` carries
+            // empty text → receivers hit the release branch in set_banner().
+            g_bcast.flags        = proto::BCAST_FLAG_ALERT;
+            if (!clear) g_bcast.flags |= proto::BCAST_FLAG_STICKY;
             strncpy(g_bcast.text, arg, proto::BCAST_TEXT_MAX);
             g_bcast.text[proto::BCAST_TEXT_MAX] = '\0';
             g_bcast.last_tx      = 0;            // send the first repeat immediately
             g_bcast.repeats_left = BCAST_REPEATS;
             // The instructor sees its own banner (it does not RX its own send) and
-            // hears the same tone; `alert clear` (empty text) stays silent.
-            set_banner(arg, true, millis());
+            // hears the same tone; `alert clear` (empty text) stays silent. It does
+            // NOT latch its own panel (sticky=false) — the instructor must stay
+            // usable to send the clear (§6). Only the receiving fleet latches.
+            set_banner(arg, true, /*sticky=*/false, millis());
             if (clear)
                 out.printf("  alert clear (seq %u)\n", g_bcast.seq);
             else {
@@ -968,8 +983,9 @@ static bool handle_setup_command(const char* line, Print& out) {
                                     : (g_keyer_active ? "active" : "idle"),
                    (unsigned long)g_keyer_drops.load(std::memory_order_relaxed),
                    (unsigned long)g_keyer_ticks.load(std::memory_order_relaxed));
-        out.printf("  banner   = %s\n",
-                   banner_active(millis()) ? g_banner : "(none)");
+        out.printf("  banner   = %s%s\n",
+                   banner_active(millis()) ? g_banner : "(none)",
+                   g_alert_latched ? "  [ALERTED/LATCHED]" : "");
         if (radio::has_fem()) {
             out.printf("  fem      = %s  pa %s  lna %s\n", radio::fem_name(),
                        g_pa_on ? "on" : "off", radio::lna_on() ? "on" : "off");
@@ -1626,11 +1642,15 @@ static bool prg_tapped(uint32_t now) {
         bool was_blanked = display::blanked();
         display::activity();
         if (was_blanked) edge = false;
-        else if (banner_active(now)) {
+        else if (banner_active(now) && !g_alert_latched) {
             // A press while a banner is showing dismisses it instead of doing the
             // mode's button action, and is swallowed (mirrors the wake-press rule).
+            // A §6 sticky alert is NOT dismissable locally (only `alert clear` or
+            // reset) — the press is still swallowed below to avoid the button action.
             g_banner_until = 0;
             edge = false;
+        } else if (banner_active(now)) {
+            edge = false;               // latched alert: swallow the press, keep banner
         }
     }
     was_down = down;
@@ -1709,23 +1729,29 @@ static bool control_rx_try(const uint8_t* buf, size_t n, uint32_t now) {
 // True while an instructor broadcast banner should be shown (set by
 // broadcast_rx_try or a local instructor send; cleared by timeout/dismiss).
 static bool banner_active(uint32_t now) {
+    if (g_alert_latched) return true;   // §6 sticky alert: never expires
     return g_banner_until != 0 && (int32_t)(g_banner_until - now) > 0;
 }
 
-// Arm the banner overlay from `text` for BCAST_SHOW_MS. A broadcast must be seen,
-// so it always force-wakes a blanked panel (the `alert` flag now only affects any
-// extra emphasis a panel chooses to add — every banner wakes the screen). Used by
-// both the RX handler and the local instructor echo. Empty text clears the banner.
-static void set_banner(const char* text, bool alert, uint32_t now) {
+// Arm the banner overlay from `text`. A broadcast must be seen, so it always
+// force-wakes a blanked panel (the `alert` flag now only affects any extra
+// emphasis a panel chooses to add — every banner wakes the screen). Used by both
+// the RX handler and the local instructor echo. Empty text clears the banner AND
+// releases any §6 sticky latch. `sticky` (field note §6) latches the banner: it
+// never auto-expires (g_banner_until = 0 sentinel; banner_active() short-circuits
+// on g_alert_latched) until an empty-text clear or reset. Last-writer-wins.
+static void set_banner(const char* text, bool alert, bool sticky, uint32_t now) {
     (void)alert;
-    if (!text || !text[0]) {            // `bcast clear` / empty → dismiss
+    if (!text || !text[0]) {            // `alert clear` / empty → dismiss + release
         g_banner[0] = '\0';
         g_banner_until = 0;
+        g_alert_latched = false;
         return;
     }
     strncpy(g_banner, text, proto::BCAST_TEXT_MAX);
     g_banner[proto::BCAST_TEXT_MAX] = '\0';
-    g_banner_until = now + BCAST_SHOW_MS;
+    g_alert_latched = sticky;           // last-writer-wins
+    g_banner_until = sticky ? 0 : now + BCAST_SHOW_MS;  // latched = no deadline
     display::activity();                // force-wake the panel so the banner shows
 }
 
@@ -1773,13 +1799,22 @@ static bool broadcast_rx_try(const uint8_t* buf, size_t n, uint32_t now) {
     bool fresh = !(have_last && (int)b.seq == last_seq);
     last_seq = b.seq; have_last = true;
     if (fresh) {
-        bool alert = (b.flags & proto::BCAST_FLAG_ALERT) != 0;
-        set_banner(b.text, alert, now);
+        bool alert  = (b.flags & proto::BCAST_FLAG_ALERT) != 0;
+        bool sticky = (b.flags & proto::BCAST_FLAG_STICKY) != 0;
+        set_banner(b.text, alert, sticky, now);
         // Every alert beeps (text present); `alert clear` (empty text) is silent.
         if (b.text[0]) start_alert_tone(now);
+        // §6 all-stop: a sticky alert halts our own TX (Fox + Live Key share
+        // g_tx_halted); an empty-text clear resumes it. `start`/reset are the
+        // other two resume triggers and are handled elsewhere.
+        if (mode == MODE_FOX || mode == MODE_LIVEKEY) {
+            if (sticky)            g_tx_halted = true;
+            else if (!b.text[0])   g_tx_halted = false;
+        }
         last_draw = 0;   // force an immediate redraw to show the banner
         if (g_debug)
-            Serial.printf("RX B seq=%u flags=%u text=%s\n", b.seq, b.flags, b.text);
+            Serial.printf("RX B seq=%u flags=%u sticky=%d text=%s\n",
+                          b.seq, b.flags, sticky ? 1 : 0, b.text);
     }
     return true;
 }
@@ -2425,8 +2460,10 @@ void loop() {
         // swallow it so it doesn't also toggle mute. (See prg_tapped().)
         bool was_blanked = display::blanked();
         display::activity();   // any keyboard press wakes the panel
-        if (!was_blanked && banner_active(now)) {
+        if (!was_blanked && banner_active(now) && !g_alert_latched) {
             g_banner_until = 0;   // dismiss the banner; swallow the key
+        } else if (!was_blanked && g_alert_latched) {
+            /* §6 latched alert: swallow the key, keep the banner up */
         } else if (!was_blanked && (kc == 'm' || kc == 'M')) {
             bool m = !config::muted();
             apply_mute(m);
@@ -2434,6 +2471,9 @@ void loop() {
         }
     }
 #endif
+    // §6: keep the panel awake while a sticky alert is latched so the 60 s idle-
+    // blank never hides it (display::activity() just stamps a millis — cheap).
+    if (g_alert_latched) display::activity();
     switch (mode) {
         case MODE_FOX:        loop_fox(now);        break;
         case MODE_LIVEKEY:    loop_livekey(now);    break;
