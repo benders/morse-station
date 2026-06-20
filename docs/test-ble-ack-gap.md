@@ -8,7 +8,10 @@ but surfaced **zero ACKs** (0/4), while the same relay over USB serial was 4/4.
 
 - **Target side** (`control_rx_try`, `src/main.cpp`): each control burst is now
   answered with a burst of `ACK_REPEATS = 4` identical ACK copies spaced
-  `ACK_GAP_MS = 50 ms` (≈150 ms span), instead of a single packet.
+  `ACK_GAP_MS = 50 ms` (≈150 ms span), instead of a single packet. (As of the
+  2026-06-19 always-ACK-at-MAX change, the whole burst is also bracketed to `MAX`
+  TX power + FEM PA, then restored — so distance, not just BLE blind spots, no
+  longer drops the ACK. Orthogonal to this test, but same code path.)
 - **Instructor side**: the post-burst blocking ack-listen `CTRL_ACK_LISTEN_MS`
   widened `200 → 300 ms` to cover the burst.
 

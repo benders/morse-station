@@ -321,6 +321,20 @@ status board live in `wio-tracker-port.md`.
       with the V4 FEM PA (ties into the open per-board EIRP-calc TODO under
       Stage 3). *Field note 5 (`????` at edge of range) is working-as-intended —
       no action; field note 7 is the real fix for canned-message edge loss.*
+- [x] **Always-ACK-at-MAX (field note 4, 2026-06-19).** Remote command of the fox
+      worked every time, but the ACK was only received when the instructor was
+      close: the command reaches the fox at its good RX sensitivity, but the ACK
+      went out at the fox's *current* TX power (typically **Low** for open-field
+      play) and died at distance. The multi-ACK burst (`ACK_REPEATS=4`) only fixed
+      the BLE-preemption loss — four *weak* copies are still weak. **Fix:** the ACK
+      path (`control_rx_try`, `src/main.cpp` ~L1682) now saves `pwr_idx`/`g_pa_on`,
+      bumps to `MAX` (`set_tx_power(PWR_LEVELS[N_PWR-1])` + `set_pa(true)`) strictly
+      around the `ACK_REPEATS` burst, then restores — so command stays at play
+      power, acknowledgement goes at full power, and the fox never keeps keying its
+      *message* at MAX afterward. Tiny infrequent packet → negligible duty-cycle /
+      §15.249 cost. Builds heltec_v4 (FEM) + cardputer_adv. **Not yet HW-validated
+      at field distance.** (Matched-power ACK alternative declined — more protocol
+      surface for little gain; revisit only to probe link margin at a chosen level.)
 - [ ] **Sticky alert + fox halt on alert (field note 6, 2026-06-19).** Today the
       instructor banner is transient (`set_banner` arms `BCAST_SHOW_MS` ≈ 15 s,
       `banner_active` checks a timeout) and display-only — the fox keeps keying

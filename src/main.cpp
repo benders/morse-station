@@ -1682,10 +1682,26 @@ static bool control_rx_try(const uint8_t* buf, size_t n, uint32_t now) {
     uint8_t ackbuf[proto::CTRL_HDR_LEN + proto::ACK_STATUS_MAX];
     size_t  alen = proto::encode_ack(config::station_id(), c.src_id, c.seq,
                                      status, ackbuf);
+
+    // Always ACK at MAX. The command reaches the fox fine at play power (good RX
+    // sensitivity), but the return ACK goes out at the fox's *current* TX power —
+    // typically LO for open-field play — and dies at distance, so the instructor
+    // only hears it up close. The ACK is a tiny, infrequent packet, so sending it
+    // hot costs almost nothing on duty cycle / §15.249: command at play power,
+    // acknowledgement at full power so the instructor always copies it. Save,
+    // bump, restore strictly around the burst (no early returns between) so the
+    // fox never keeps keying its *message* at MAX afterward.
+    const int  saved_pwr_idx = pwr_idx;
+    const bool saved_pa      = g_pa_on;
+    radio::set_tx_power(PWR_LEVELS[N_PWR - 1].dbm);   // MAX
+    radio::set_pa(true);                              // engage FEM PA (no-op w/o FEM)
     for (uint8_t i = 0; i < ACK_REPEATS; ++i) {
         radio::send(ackbuf, alen);
         if (i + 1 < ACK_REPEATS) delay(ACK_GAP_MS);
     }
+    radio::set_tx_power(PWR_LEVELS[saved_pwr_idx].dbm);
+    radio::set_pa(saved_pa);
+
     radio::start_receive();
     return true;
 }
