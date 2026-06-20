@@ -335,10 +335,19 @@ status board live in `wio-tracker-port.md`.
       §15.249 cost. Builds heltec_v4 (FEM) + cardputer_adv. **Not yet HW-validated
       at field distance.** (Matched-power ACK alternative declined — more protocol
       surface for little gain; revisit only to probe link margin at a chosen level.)
-- [ ] **Sticky alert + fox halt on alert (field note 6, 2026-06-19).** Today the
-      instructor banner is transient (`set_banner` arms `BCAST_SHOW_MS` ≈ 15 s,
-      `banner_active` checks a timeout) and display-only — the fox keeps keying
-      through it. Wanted:
+- [x] **Sticky alert + fox halt on alert (field note 6, 2026-06-19).** DONE +
+      HW-VALIDATED 17/17 (commits 693a4b1 firmware, 77e8754 delivery, 09a62e3
+      test; branch feat/sticky-alert-fox-halt). A received alert carrying the new
+      `proto::BCAST_FLAG_STICKY` latches: `banner_active()` short-circuits on
+      `g_alert_latched` (never expires), the panel is held awake, and a Fox/Live-
+      Key node halts TX (`g_tx_halted`). Released only by `alert clear`, `start`
+      (TX only — keeps the banner), or reset (RAM-only). The instructor does NOT
+      latch its own panel (must stay usable to send the clear). Local presses
+      can't dismiss a latched alert. KEY FIX (77e8754): the fire-and-forget alert
+      burst missed the Fox's once-per-cycle RX window, so the campaign is now
+      listen-synced (bursts on the fox Listen beacon) + time-bounded
+      (ALERT_CAMPAIGN_MS) — reaches the Fox for both halt and clear. Test:
+      `scripts/alert_sticky_test.py`. Design as built (was wanted):
       - **Sticky alert mode.** Distinguish a routine *broadcast banner* (keep the
         transient behaviour) from a latched **alert** that ignores the timeout
         and stays up until an explicit clear. Add a `g_alert_latched` bool (or a
