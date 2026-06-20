@@ -310,6 +310,38 @@ status board live in `wio-tracker-port.md`.
 
 ## Stage 6 — Fox-hunt integration
 
+- [ ] **Siting / power operating procedure (field note 1, 2026-06-19).** Range is
+      good on **Low** in the open. Operating rule from the field test: *open
+      ground → Low/Med; fox indoors or across the whole camp → High.* Default the
+      fox to **Low** for open-field play and step up only for building
+      penetration / cross-camp distance (RSSI saturates at Med/High close in, so
+      Low keeps a usable volume/strength gradient). No change to the power
+      *levels* — this is a procedure note; document it (README / `docs/protocol.md`
+      operating section) and log the intended EIRP per siting when running High
+      with the V4 FEM PA (ties into the open per-board EIRP-calc TODO under
+      Stage 3). *Field note 5 (`????` at edge of range) is working-as-intended —
+      no action; field note 7 is the real fix for canned-message edge loss.*
+- [ ] **Sticky alert + fox halt on alert (field note 6, 2026-06-19).** Today the
+      instructor banner is transient (`set_banner` arms `BCAST_SHOW_MS` ≈ 15 s,
+      `banner_active` checks a timeout) and display-only — the fox keeps keying
+      through it. Wanted:
+      - **Sticky alert mode.** Distinguish a routine *broadcast banner* (keep the
+        transient behaviour) from a latched **alert** that ignores the timeout
+        and stays up until an explicit clear. Add a `g_alert_latched` bool (or a
+        `g_banner_until == UINT32_MAX` sentinel) that `banner_active()` treats as
+        never-expiring (`src/main.cpp`).
+      - **`alert clear` + over-the-air clear.** Add an `alert` verb that latches
+        (or reuse `bcast -a` semantics) and make the instructor's clear reach
+        every station the same way the alert did (empty-text dismissal already
+        exists in `set_banner`).
+      - **Halt the fox on alert.** A node in `MODE_FOX` that receives a latched
+        alert drops out of its TX loop (sets the existing `g_tx_halted` gate in
+        `loop_fox`) and goes quiet. Resume only on device reset, `alert clear`,
+        or an explicit `start`/`relay <fox> start` (explicit instructor command
+        wins over a latched alert).
+      - **Decisions settled in the field note:** RAM-only (reset clears it — do
+        NOT persist to NVS); single latched alert (a new alert replaces the
+        current banner text).
 - [ ] **New "standby" mode — radio off, BLE alive.** A mode that neither
       transmits nor receives on the SX1262 and powers down the radio + RF
       amplifiers (SX1262 to sleep; on the Heltec drop VFEM/FEM, on the Cardputer
@@ -333,6 +365,16 @@ status board live in `wio-tracker-port.md`.
 
 ## Stage 7 — Range & polish
 
+- [ ] **Text-frame canned-message mode (field note 7, 2026-06-19).** A second
+      message mode for canned clues: transmit the clue as a plaintext `MAGIC_TEXT`
+      frame + retransmit burst (like the ACK/broadcast bursts) and render Morse
+      *locally* on the hunter, instead of streaming `EdgeEvent` timing edges that
+      lose a character to a single dropped edge (field note §5). Keep `EdgeEvent`
+      for live keying — this is an additional mode, default off, opt in via a new
+      `msgmode keyed|text` config. Full design (protocol/struct, config, fox TX,
+      hunter RX render, the ControlCmd⊕text-MSG convergence option, files +
+      classes + test plan) in **`docs/plan-text-message-mode.md`**. Land after the
+      §4 always-MAX ACK and §6 sticky-alert fixes.
 - [ ] Field-test low-power range across the camp area.
 - [ ] **Later phase, only if range falls short:** FHSS — 50-channel hop table +
       RX scan-and-lock for §15.247 full-power operation. Design sketch in
