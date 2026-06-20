@@ -488,11 +488,16 @@ static uint32_t g_ack_show_until = 0;
 
 // Instructor broadcast banner (docs/plan-instructor-broadcast.md). A short
 // plaintext message the instructor pushes to EVERY station's screen, distinct
-// from `relay` (which runs a console command silently). Fire-and-forget: no ack,
-// just a fixed small repeat count for delivery probability.
-static constexpr uint32_t BCAST_REPEATS   = 5;       // burst the same seq this many times
-static constexpr uint32_t BCAST_SHOW_MS   = 60000;   // how long a banner stays on the panel (1 min)
-static constexpr uint32_t BCAST_INTERVAL  = CTRL_PROBE_INTERVAL;  // gap between repeats
+// from `relay` (which runs a console command silently). Fire-and-forget: no ack.
+// Hunters are always in RX so a periodic burst reaches them at once; a Fox only
+// listens in the tail of its inter-message pause, so the campaign runs for
+// ALERT_CAMPAIGN_MS — long enough to outlast one fox message cycle (msg airtime +
+// REPEAT_PAUSE) — and bursts immediately when it hears a fox Listen beacon (§6).
+// This is what makes the §6 fox-halt (and its `alert clear` resume) reliably
+// reach a Fox, not just the always-listening hunters.
+static constexpr uint32_t BCAST_SHOW_MS     = 60000;  // how long a banner stays on the panel (1 min)
+static constexpr uint32_t BCAST_INTERVAL    = CTRL_PROBE_INTERVAL;  // periodic burst gap
+static constexpr uint32_t ALERT_CAMPAIGN_MS = 20000;  // campaign length (> one fox cycle)
 
 // Shared banner state: set by the RX handler (broadcast_rx_try) or locally when
 // the instructor stages its own send; consumed by each mode's draw via
@@ -525,7 +530,7 @@ struct BcastPending {
     uint8_t  flags        = 0;
     char     text[proto::BCAST_TEXT_MAX + 1] = {0};
     uint32_t last_tx      = 0;       // last repeat send (for the inter-repeat gap)
-    uint8_t  repeats_left = 0;
+    uint32_t until        = 0;       // campaign deadline (millis); runs while now < until
 };
 static BcastPending g_bcast;
 
@@ -827,9 +832,10 @@ static bool handle_setup_command(const char* line, Print& out) {
         // message to EVERY station's screen AND sound an attention tone there —
         // distinct from `relay`, which runs a console command silently. Every
         // alert beeps (overriding a receiver's mute); `alert clear` dismisses any
-        // showing banner everywhere (and is silent). Fire-and-forget: no ack, just
-        // BCAST_REPEATS repeats from loop_instructor(). The actual bursting happens
-        // there; here we just stage it. Instructor-mode only.
+        // showing banner everywhere (and is silent). Fire-and-forget: no ack; the
+        // ALERT_CAMPAIGN_MS listen-synced burst from loop_instructor() reaches both
+        // hunters and the Fox. The actual bursting happens there; here we just stage
+        // it. Instructor-mode only.
         const char* arg = line + 5;
         while (*arg == ' ') arg++;
         bool clear = !strcmp(arg, "clear");
@@ -853,7 +859,8 @@ static bool handle_setup_command(const char* line, Print& out) {
             strncpy(g_bcast.text, arg, proto::BCAST_TEXT_MAX);
             g_bcast.text[proto::BCAST_TEXT_MAX] = '\0';
             g_bcast.last_tx      = 0;            // send the first repeat immediately
-            g_bcast.repeats_left = BCAST_REPEATS;
+            g_bcast.until        = millis() + ALERT_CAMPAIGN_MS;
+            g_fox_listening      = false;        // fresh campaign: re-sync to a beacon
             // The instructor sees its own banner (it does not RX its own send) and
             // hears the same tone; `alert clear` (empty text) stays silent. It does
             // NOT latch its own panel (sticky=false) — the instructor must stay
@@ -2296,11 +2303,14 @@ static bool instructor_service_rx(uint32_t now) {
                 g_ctrl.active = false;     // unicast done
             }
         }
-    } else if (g_ctrl.active && proto::decode_listen(buf, n, l) &&
-               l.station_id == g_ctrl.target_id) {
-        // The target fox explicitly announced its RX window — burst NOW, no
-        // CTRL_SILENCE_MS wait. g_fox_heard so the sync path is taken even if we
-        // caught the beacon before any heartbeat.
+    } else if (proto::decode_listen(buf, n, l) &&
+               ((g_ctrl.active && l.station_id == g_ctrl.target_id) ||
+                g_bcast.active)) {
+        // A fox announced its RX window — burst NOW, no CTRL_SILENCE_MS wait. For a
+        // relay (g_ctrl) only the target fox's beacon counts; for an alert campaign
+        // (g_bcast, all-stations §6) ANY fox's beacon does, so the alert lands in
+        // its listen window. g_fox_heard so the sync path is taken even if we caught
+        // the beacon before any heartbeat.
         g_fox_heard        = true;
         g_fox_listening    = true;
         g_fox_listen_until = now + l.window_ms;
@@ -2338,27 +2348,35 @@ static void loop_instructor(uint32_t now) {
     // own traffic (silence tracking).
     instructor_service_rx(now);
 
-    // Broadcast banner campaign (docs/plan-instructor-broadcast.md): fire-and-
-    // forget, independent of the relay/ack path. Burst the same seq BCAST_REPEATS
-    // times, BCAST_INTERVAL apart, then stop — no acks to wait for. Takes priority
-    // over the relay/idle draw while active (the campaign is short, ~7.5 s).
+    // Broadcast banner / alert campaign (docs/plan-instructor-broadcast.md, §6):
+    // fire-and-forget, independent of the relay/ack path. Runs until g_bcast.until,
+    // bursting the same seq every BCAST_INTERVAL (prompt for always-listening
+    // hunters) AND immediately whenever a fox announces its RX window via a Listen
+    // beacon (so the alert/halt — and its `alert clear` resume — reliably reaches a
+    // Fox, which only listens in its inter-message pause). Takes priority over the
+    // relay/idle draw while active.
     if (g_bcast.active) {
-        if (now - g_bcast.last_tx >= BCAST_INTERVAL) {
+        bool listening = g_fox_listening && (int32_t)(g_fox_listen_until - now) > 0;
+        bool due       = (now - g_bcast.last_tx >= BCAST_INTERVAL);
+        if (listening || due) {
             g_bcast.last_tx = now;
+            if (listening) g_fox_listening = false;   // consume: one burst per window
             uint8_t bbuf[proto::BCAST_HDR_LEN + proto::BCAST_TEXT_MAX];
             size_t  blen = proto::encode_bcast(proto::INSTRUCTOR_ID, g_bcast.seq,
                                                g_bcast.flags, g_bcast.text, bbuf);
             radio::send(bbuf, blen);
             radio::start_receive();
-            if (g_bcast.repeats_left) g_bcast.repeats_left--;
-            if (g_bcast.repeats_left == 0) g_bcast.active = false;
             char l1[24];
             snprintf(l1, sizeof(l1), "ALERT seq %u", g_bcast.seq);
             display::instructor(PWR_LEVELS[pwr_idx].label, l1, g_bcast.text, true);
             last_draw = now;
             if (g_debug)
-                Serial.printf("TX B seq=%u left=%u text=%s\n",
-                              g_bcast.seq, g_bcast.repeats_left, g_bcast.text);
+                Serial.printf("TX B seq=%u %s text=%s\n", g_bcast.seq,
+                              listening ? "sync" : "probe", g_bcast.text);
+        }
+        if ((int32_t)(now - g_bcast.until) >= 0) {   // campaign window elapsed
+            g_bcast.active  = false;
+            g_fox_listening = false;
         }
         return;
     }
