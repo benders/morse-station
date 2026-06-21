@@ -19,7 +19,7 @@ their persisted mode).
 
 Topology (one bench; from scripts/devices.sh --usb):
   - Fox      = stn42  /dev/cu.usbmodem22301  Heltec V4   (flashed, REQUIRED)
-  - Hunter A = stn43  /dev/cu.usbmodem21401  Heltec V4   (flashed, REQUIRED)
+  - Hunter A = stn38  /dev/cu.usbserial-0001  Heltec V3   (flashed, REQUIRED)
   - Hunter B = stn115 /dev/cu.usbmodem20301  Wio nRF52   (flashed, BEST-EFFORT)
   - Instr.   = stn73  /dev/cu.usbmodem21101  Cardputer   (NOT flashed: fwd-compat)
 
@@ -38,8 +38,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PORTS = {
     "fox":     dict(port="/dev/cu.usbmodem22301", dtr=False, sid=42,
                     env="heltec_v4", required=True),
-    "hunterA": dict(port="/dev/cu.usbmodem21401", dtr=False, sid=43,
-                    env="heltec_v4", required=True),
+    "hunterA": dict(port="/dev/cu.usbserial-0001", dtr=False, sid=38,
+                    env="heltec_v3", required=True),
     "hunterB": dict(port="/dev/cu.usbmodem20301", dtr=True,  sid=115,
                     env="wio_tracker_l1", required=False),
     "instr":   dict(port="/dev/cu.usbmodem21101", dtr=False, sid=73,

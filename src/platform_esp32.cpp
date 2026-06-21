@@ -55,17 +55,30 @@ void restart() {
 // so 80 MHz is ample; the lower clock cuts active-mode current materially. The
 // APB/peripheral clocks (UART, I2C, SPI) track the change transparently in
 // arduino-esp32, so the serial console, OLED and radio SPI keep working.
+//
+// IPC-task overflow hazard (timing-sensitive): IDF dispatches some cross-core
+// work (interrupt allocation during driver install, BLE controller bring-up,
+// flash cache-disable for NVS writes) onto the per-core IPC task (ipc1), whose
+// stack is a fixed ~1 KB (CONFIG_ESP_IPC_TASK_STACK_SIZE, baked into the
+// precompiled framework). That budget is thin, and running the *boot init*
+// window at 80 MHz widens the timing windows enough that two such dispatches can
+// nest and overflow it — caught at the next context switch as an asynchronous
+// "Stack canary watchpoint triggered (ipc1)" panic ~2 s into boot, with a
+// corrupted vTaskSwitchContext/_frxt_dispatch backtrace (a ~2 s boot-loop).
+// HW-confirmed deterministic on stn42 (V4.2). The mitigation is to call this at
+// the END of setup() (see main.cpp), so all boot-time cross-core dispatch runs
+// at 240 MHz; only the steady-state loop runs at 80 MHz. Use the `ipc` console
+// command to check the live ipc0/ipc1 high-water margin.
 void set_cpu_low_power() {
 #if defined(DEVICE_CARDPUTER_ADV)
     // The Cardputer's M5Unified stack registers an APB-frequency-change callback
     // for its I2S/peripheral clocks. Dropping the core to 80 MHz re-enters that
-    // registration (addApbChangeCallback "duplicate func") and trips a
-    // stack-canary panic in the IPC task — the board boot-loops ~10 s in. Keep
-    // the M5 board at its 240 MHz default; its idle floor is dominated by the
-    // LCD/codec, not the core clock, so 80 MHz buys little here anyway. The
-    // Heltec V3/V4 have no such stack and run fine at 80 MHz.
+    // registration (addApbChangeCallback "duplicate func") and trips the same
+    // IPC-task stack-canary panic unconditionally — the board boot-loops ~10 s
+    // in. Its idle floor is dominated by the LCD/codec, not the core clock, so
+    // 80 MHz buys little here; keep the M5 board at its 240 MHz default.
 #else
-    setCpuFrequencyMhz(80);
+    setCpuFrequencyMhz(80);   // Heltec V3/V4: 80 MHz, applied late in setup()
 #endif
 }
 

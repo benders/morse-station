@@ -1100,6 +1100,21 @@ static bool handle_setup_command(const char* line, Print& out) {
         out.printf("  screen   = %s  idle %lu ms / 60000 ms\n",
                    display::blanked() ? "BLANKED" : "on",
                    (unsigned long)display::idle_ms());
+#ifdef ESP_PLATFORM
+    } else if (!strcmp(line, "ipc")) {
+        // DIAG (ipc1 stack-canary boot-loop, field 2026-06-21): report the
+        // per-core IDF IPC task stack headroom. esp_ipc_call dispatches cross-core
+        // work (e.g. interrupt allocation) onto these 1 KB tasks; the 80 MHz V4
+        // boot-loop is one of them overflowing. uxTaskGetStackHighWaterMark is the
+        // *minimum free bytes ever seen* on that stack — a small number = near
+        // overflow. Run this on a stable build to quantify the margin.
+        for (const char* nm : {"ipc0", "ipc1"}) {
+            TaskHandle_t h = xTaskGetHandle(nm);
+            if (h) out.printf("  %s free=%u bytes (min ever)\n",
+                              nm, (unsigned)uxTaskGetStackHighWaterMark(h));
+            else   out.printf("  %s not found\n", nm);
+        }
+#endif
     } else if (!strcmp(line, "bootlog")) {
         // Dump the boot/crash reason ring — diagnoses crashes after the fact when
         // no serial was attached at reset time (e.g. the native-USB panic loop).
@@ -1272,10 +1287,11 @@ void setup() {
     uint32_t t0 = millis();
     while (!Serial && (millis() - t0) < 500) { delay(10); }
 
-    // Battery saver: drop to the low-power core clock before anything else runs
-    // (80 MHz on ESP32-S3, no-op on nRF52). arduino-esp32 retracks the UART so
-    // the 115200 console above keeps working across the change.
-    platform::set_cpu_low_power();
+    // NOTE: the 80 MHz battery-saver clock drop (platform::set_cpu_low_power) used
+    // to run HERE, first thing. It now runs at the END of setup() instead — see
+    // the call site below for why (ipc1 cross-core-dispatch overflow at 80 MHz
+    // during boot init). Boot init runs at the 240 MHz default; the drop happens
+    // once everything is up.
 
 #ifndef GIT_REV
 #define GIT_REV "unknown"
@@ -1419,6 +1435,16 @@ void setup() {
 
     // Radio and run mode are up — let BLE provisioning apply changes live.
     g_live_apply = true;
+
+    // Battery saver: drop to the low-power core clock (80 MHz on ESP32-S3, no-op
+    // on nRF52) now that boot init is done. Deliberately LAST: every boot-time
+    // cross-core IPC dispatch (driver interrupt allocation, NimBLE controller
+    // bring-up, NVS flash writes) has already run at the 240 MHz default, where
+    // it stays within the ~1 KB ipc1 stack budget. Running that init window at
+    // 80 MHz is what overflowed ipc1 and boot-looped the V4 (see
+    // platform::set_cpu_low_power). From here only the steady-state loop runs at
+    // 80 MHz. arduino-esp32 retracks the UART so the console keeps working.
+    platform::set_cpu_low_power();
 
     // Arm the hardware watchdog now that boot is done (the splash delays and the
     // blocking run_menu() above would have tripped it). From here loop() must
