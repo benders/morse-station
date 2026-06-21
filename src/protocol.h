@@ -317,4 +317,52 @@ inline bool decode_bcast(const uint8_t* buf, size_t len, BroadcastMsg& b) {
     return true;
 }
 
+// Text-frame canned-message mode (field note §7, docs/plan-text-message-mode.md).
+// For the canned-clue fox loop (NOT live keying), the fox sends the whole clue as
+// one short plaintext frame instead of streaming dozens of MAGIC_EDGE timing
+// edges. A short frame either arrives or doesn't, and a retransmit burst (the
+// pattern we already use for ACKs/broadcasts) drives delivery near-certain; at
+// the edge of range this beats an edge stream where any single lost edge punches
+// a '?' hole (field note §5). The hunter renders Morse LOCALLY from the text at
+// the fox's announced timing (proto::Ident), so audio is crisp and the decoded
+// text is shown verbatim with no decode ambiguity. Distinguished by MAGIC_TEXT so
+// hunters that only match MAGIC/MAGIC_IDENT/MAGIC_EDGE ignore it for free (mixed
+// fleets keep working). Live keying still streams EdgeEvent — different problem.
+constexpr uint8_t MAGIC_TEXT    = 0x54;   // 'T' — canned clue as plaintext
+constexpr size_t  TEXT_HDR_LEN  = 4;      // magic, station_id, seq, flags
+constexpr size_t  TEXT_MSG_MAX  = 96;     // == config FOX_MSG_MAX
+
+struct __attribute__((packed)) TextMsg {
+    uint8_t station_id;                    // the fox sending the clue
+    uint8_t seq;                           // wraps; dedup across the repeat burst
+    uint8_t flags;                         // reserved (0); unknown bits ignored
+    char    text[TEXT_MSG_MAX + 1];        // NUL-terminated ASCII clue
+};
+
+// Encode a text frame. Writes TEXT_HDR_LEN + strlen(text) bytes (text truncated
+// to TEXT_MSG_MAX). Largest frame = 4 + 96 = 100 B, within the 128 B RX buffers.
+inline size_t encode_text(uint8_t station_id, uint8_t seq, uint8_t flags,
+                          const char* text, uint8_t* buf) {
+    buf[0] = MAGIC_TEXT;
+    buf[1] = station_id;
+    buf[2] = seq;
+    buf[3] = flags;
+    size_t i = 0;
+    for (; text && text[i] && i < TEXT_MSG_MAX; ++i)
+        buf[TEXT_HDR_LEN + i] = (uint8_t)text[i];
+    return TEXT_HDR_LEN + i;
+}
+
+inline bool decode_text(const uint8_t* buf, size_t len, TextMsg& m) {
+    if (len < TEXT_HDR_LEN || buf[0] != MAGIC_TEXT) return false;
+    m.station_id = buf[1];
+    m.seq        = buf[2];
+    m.flags      = buf[3];
+    size_t body = len - TEXT_HDR_LEN;
+    if (body > TEXT_MSG_MAX) body = TEXT_MSG_MAX;
+    for (size_t i = 0; i < body; ++i) m.text[i] = (char)buf[TEXT_HDR_LEN + i];
+    m.text[body] = '\0';
+    return true;
+}
+
 } // namespace proto

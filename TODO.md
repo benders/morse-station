@@ -388,7 +388,7 @@ status board live in `wio-tracker-port.md`.
 
 ## Stage 7 — Range & polish
 
-- [ ] **Text-frame canned-message mode (field note 7, 2026-06-19).** A second
+- [~] **Text-frame canned-message mode (field note 7, 2026-06-19).** A second
       message mode for canned clues: transmit the clue as a plaintext `MAGIC_TEXT`
       frame + retransmit burst (like the ACK/broadcast bursts) and render Morse
       *locally* on the hunter, instead of streaming `EdgeEvent` timing edges that
@@ -398,6 +398,15 @@ status board live in `wio-tracker-port.md`.
       hunter RX render, the ControlCmd⊕text-MSG convergence option, files +
       classes + test plan) in **`docs/plan-text-message-mode.md`**. Land after the
       §4 always-MAX ACK and §6 sticky-alert fixes.
+      **Option A IMPLEMENTED (2026-06-20), builds heltec_v4 + cardputer_adv +
+      wio_tracker_l1; NOT HW-validated.** `proto::TextMsg`/`MAGIC_TEXT` +
+      `encode_text`/`decode_text` (`src/protocol.h`); `config::msgmode`/`set_msgmode`
+      NVS-backed default keyed; `g_msgmode` + boot restore + `msgmode keyed|text`
+      console verb + `show` line; `tx_text()` (`TEXT_REPEATS`=4 @ `TEXT_GAP_MS`=50)
+      + `loop_fox` text-cycle branch (Ident + burst, gated by rx-window/`g_tx_halted`,
+      fox still silent); `loop_hunter` `decode_text` branch dedups by seq and renders
+      via a hunter-side `morse::Player`. Option B (ControlCmd⊕text merge) deferred.
+      TODO: bench + edge-of-range HW validation, then evaluate Option B.
 - [ ] Field-test low-power range across the camp area.
 - [ ] **Later phase, only if range falls short:** FHSS — 50-channel hop table +
       RX scan-and-lock for §15.247 full-power operation. Design sketch in

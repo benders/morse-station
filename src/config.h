@@ -42,6 +42,16 @@ void    set_char_wpm(uint8_t wpm);
 uint8_t keymode();
 void    set_keymode(uint8_t mode);
 
+// Fox canned-message delivery mode (field note §7, docs/plan-text-message-mode.md):
+// 0 = keyed (stream the clue as edge/compat keying, default) / 1 = text (send the
+// clue as a single MAGIC_TEXT frame + retransmit burst; hunter renders Morse
+// locally). Persisted like keymode so a fox flipped over the air comes back up the
+// same; restored into g_msgmode at boot (main.cpp). Applies to the canned loop_fox
+// cycle only — MODE_LIVEKEY always keys edges. Default 0 so behaviour is unchanged
+// unless opted in.
+uint8_t msgmode();
+void    set_msgmode(uint8_t mode);
+
 // Last-selected boot mode (the Mode enum in main.cpp, stored as a raw uint8_t).
 // The boot menu starts highlighted on this and persists the chosen mode, so a
 // unit powers back up in whatever it was last used as. Default 0 (Hunter).

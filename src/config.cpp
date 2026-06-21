@@ -12,6 +12,7 @@ char    cached_msg[config::FOX_MSG_MAX + 1]   = "DE N0CALL FOX NEAR THE BIG OAK 
 uint8_t cached_wpm      = 15;     // overall (effective) speed
 uint8_t cached_char_wpm = 18;     // Farnsworth character speed
 uint8_t cached_keymode  = 0;      // 0=compat (KeyState stream), 1=edge (EdgeEvent)
+uint8_t cached_msgmode  = 0;      // 0=keyed (edge/compat keying), 1=text (TextMsg frame)
 uint8_t cached_boot_mode = 0;     // last-selected boot mode (Mode enum, 0=Hunter)
 uint8_t cached_fox_pwr_idx = 0;   // last-selected fox TX power level (PWR_LEVELS index, 0=LO)
 bool    cached_muted = false;     // sidetone mute (silent node), persisted
@@ -50,6 +51,7 @@ constexpr const char* KEY_MSG   = "fox_msg";
 constexpr const char* KEY_WPM   = "wpm";
 constexpr const char* KEY_CWPM  = "char_wpm";
 constexpr const char* KEY_KMODE = "keymode";
+constexpr const char* KEY_MMODE = "msgmode";
 constexpr const char* KEY_BMODE = "boot_mode";
 constexpr const char* KEY_FPWR  = "fox_pwr_idx";
 constexpr const char* KEY_MUTE  = "muted";
@@ -91,6 +93,9 @@ void begin() {
 
     if (prefs.isKey(KEY_KMODE))
         cached_keymode = prefs.getUChar(KEY_KMODE, cached_keymode) ? 1 : 0;
+
+    if (prefs.isKey(KEY_MMODE))
+        cached_msgmode = prefs.getUChar(KEY_MMODE, cached_msgmode) ? 1 : 0;
 
     if (prefs.isKey(KEY_BMODE))
         cached_boot_mode = prefs.getUChar(KEY_BMODE, cached_boot_mode);
@@ -173,6 +178,17 @@ void set_keymode(uint8_t mode) {
     cached_keymode = m;
     prefs.begin(NS, false);
     prefs.putUChar(KEY_KMODE, m);
+    prefs.end();
+}
+
+uint8_t msgmode() { return cached_msgmode; }
+
+void set_msgmode(uint8_t mode) {
+    uint8_t m = mode ? 1 : 0;
+    if (m == cached_msgmode) return;   // avoid a needless flash write
+    cached_msgmode = m;
+    prefs.begin(NS, false);
+    prefs.putUChar(KEY_MMODE, m);
     prefs.end();
 }
 

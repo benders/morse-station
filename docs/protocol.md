@@ -59,6 +59,31 @@ and the inter-packet rate no longer corrupt timing.
   versa; a fox flips per-unit with `keymode edge` (persisted). Default `compat`
   keeps fresh/legacy units byte-for-byte unchanged.
 
+## Model — text-frame canned message (`msgmode text`)
+
+For the **canned-clue** fox loop (not live keying), `msgmode text` sends the whole
+clue as **one short plaintext frame** (`MAGIC_TEXT` = `'T'`) instead of streaming
+dozens of `EdgeEvent` timing edges. The hunter renders Morse **locally** from the
+received text at the fox's announced timing and shows the decoded text verbatim.
+See `plan-text-message-mode.md` (field note §7).
+
+- **Robust at the edge of range.** A short frame either arrives or doesn't — there
+  is no per-edge loss to punch `?` holes (field note §5). The fox bursts the frame
+  `TEXT_REPEATS` copies ~`TEXT_GAP_MS` apart (the same idiom as the ACK/broadcast
+  bursts); the hunter dedups by `seq`, so one surviving copy delivers the clue.
+- **Clean local audio.** The hunter drives a `morse::Player` from the text to
+  generate the sidetone (no decode ambiguity), seeded by the fox's `Ident`
+  wpm/char_wpm (still sent at each cycle top).
+- **Second mode, not a replacement.** Live keying's signal *is* the real-time edge
+  stream, so `EdgeEvent` stays for `MODE_LIVEKEY` and any keyed fox. `msgmode`
+  applies to the canned `loop_fox` cycle only and is persisted per-unit. Default
+  `keyed` — behaviour is unchanged unless opted in.
+- **Forward-compatible.** A node that predates `MAGIC_TEXT` ignores the frame for
+  free (every `decode_*` is magic-gated), so mixed fleets keep working.
+
+Frame: `magic, station_id, seq, flags` (4 B) + NUL-terminated ASCII clue (≤ 96 B,
+== `FOX_MSG_MAX`); `flags` reserved (0). See `src/protocol.h` `TextMsg`.
+
 ## Physical layer (SX1262 GFSK)
 
 All values from `src/radio.cpp`. Identical on both platforms (the radio is an
