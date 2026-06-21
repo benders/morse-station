@@ -245,6 +245,15 @@ static size_t ditdah_len = 0;
 static int  rx_station_id = -1;      // station id from last packet, -1 = none
 static bool g_showtext = false;       // false = dit/dah (default), true = decoded text
 
+// Last text-frame the hunter received (field note §7). Surfaced in `show` so the
+// text-mode render can be validated over either serial OR BLE (the per-event
+// Serial trace is not mirrored to the BLE NUS). g_rx_text_elems = key-down
+// elements the LOCAL player sounded for the most recent clue.
+static char     g_rx_text[97]   = "";   // == TEXT_MSG_MAX + 1
+static int      g_rx_text_seq   = -1;
+static uint16_t g_rx_text_elems = 0;
+static uint32_t g_rx_text_count = 0;    // frames accepted (post-dedup)
+
 // Hunter sidetone volume, cycled by the USER/PRG button: MUTE -> LOW -> MED ->
 // HIGH, persisted across power cycles. The three loudness steps map onto the
 // config volume scale (GAIN_Q15/1024 units, the same the `vol` command uses); the
@@ -1012,6 +1021,9 @@ static bool handle_setup_command(const char* line, Print& out) {
                    g_msgmode == MSGMODE_TEXT ? "text" : "keyed",
                    g_tx_halted ? "halted" : "running",
                    config::fox_message());
+        out.printf("  rxtext   = \"%s\" seq=%d elems=%u rx=%lu\n",
+                   g_rx_text, g_rx_text_seq, g_rx_text_elems,
+                   (unsigned long)g_rx_text_count);
         out.printf("  model    = %s  chip=%s  soc=%s\n",
                    board_model_str(), platform::chip_id_str(), platform::soc_str());
         out.printf("  build    = %s\n", GIT_REV);
@@ -2136,6 +2148,9 @@ static void loop_hunter(uint32_t now) {
     static morse::Player text_player;
     static bool          text_playing  = false;
     static int           last_text_seq = -1;
+    static bool          text_prev_down = false;  // for render key-down edge count
+    static uint16_t      text_elems     = 0;      // key-down elements rendered (debug)
+    static char          rendering_text[97] = ""; // clue the player is sounding now
 
     // Signal-loss watchdog (T_silence) — mode-aware (E4, docs/edge-events.md
     // "Loss handling"):
@@ -2299,10 +2314,27 @@ static void loop_hunter(uint32_t now) {
                 }
                 last_code = now;
                 Serial.println(tm.text);
-                // Render the clue audibly at the fox's announced speed.
-                text_player.begin(rx_wpm, rx_char_wpm);
-                text_player.start(tm.text);
-                text_playing = true;
+                // Record for `show` (validatable over serial OR BLE).
+                strncpy(g_rx_text, tm.text, sizeof(g_rx_text) - 1);
+                g_rx_text[sizeof(g_rx_text) - 1] = '\0';
+                g_rx_text_seq = tm.seq;
+                g_rx_text_count++;
+                // Render the clue audibly at the fox's announced speed. The fox
+                // re-sends the SAME clue (new seq) every REPEAT_PAUSE, which can be
+                // SHORTER than the clue's render time — so don't restart a render
+                // that's already sounding this exact text (that would stutter and
+                // never complete). Re-render only when the player is free, or
+                // immediately if the clue text actually changed.
+                bool changed = strncmp(tm.text, rendering_text,
+                                       sizeof(rendering_text)) != 0;
+                if (!text_playing || changed) {
+                    strncpy(rendering_text, tm.text, sizeof(rendering_text) - 1);
+                    rendering_text[sizeof(rendering_text) - 1] = '\0';
+                    text_player.begin(rx_wpm, rx_char_wpm);
+                    text_player.start(tm.text);
+                    text_playing = true;
+                    text_prev_down = false; text_elems = 0;
+                }
                 if (g_debug)
                     Serial.printf("RX T %u seq=%u text=%s\n",
                                   tm.station_id, tm.seq, tm.text);
@@ -2354,10 +2386,24 @@ static void loop_hunter(uint32_t now) {
     // Keep presence alive across the render so the RSSI/RECV display doesn't blink
     // out during a long clue (the burst itself is over in ~150 ms).
     if (text_playing) {
-        text_player.update(now);
-        if (text_player.finished()) text_playing = false;
-        else { last_signal = now; display::activity(); }
-        set_tone(text_player.down());
+        // Drive the player off millis() (the same clock start() used) — not the
+        // loop's cached `now`, which was sampled BEFORE start() this iteration and
+        // would underflow `now - seg_start_` on the first update, finishing the
+        // render instantly with no tone.
+        text_player.update(millis());
+        bool pd = text_player.down();
+        if (pd && !text_prev_down) text_elems++;   // count rendered key-down edges
+        text_prev_down = pd;
+        if (text_player.finished()) {
+            text_playing = false;
+            g_rx_text_elems = text_elems;   // surfaced in `show` (serial + BLE)
+            // Test observable (gated on g_debug): proves the hunter generated key
+            // state locally from the text (elems = dits+dahs sounded).
+            if (g_debug) Serial.printf("RX T render done elems=%u\n", text_elems);
+        } else {
+            last_signal = now; display::activity();
+        }
+        set_tone(pd);
     } else {
         set_tone(rx_down);
     }

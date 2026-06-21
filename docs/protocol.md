@@ -73,7 +73,10 @@ See `plan-text-message-mode.md` (field note §7).
   bursts); the hunter dedups by `seq`, so one surviving copy delivers the clue.
 - **Clean local audio.** The hunter drives a `morse::Player` from the text to
   generate the sidetone (no decode ambiguity), seeded by the fox's `Ident`
-  wpm/char_wpm (still sent at each cycle top).
+  wpm/char_wpm (still sent at each cycle top). It does not restart a render that
+  is already sounding the same clue (a long clue can take longer to render than
+  the fox's resend interval), so the audio plays out cleanly and re-renders once
+  the player is free.
 - **Second mode, not a replacement.** Live keying's signal *is* the real-time edge
   stream, so `EdgeEvent` stays for `MODE_LIVEKEY` and any keyed fox. `msgmode`
   applies to the canned `loop_fox` cycle only and is persisted per-unit. Default

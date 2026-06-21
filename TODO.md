@@ -388,7 +388,7 @@ status board live in `wio-tracker-port.md`.
 
 ## Stage 7 — Range & polish
 
-- [~] **Text-frame canned-message mode (field note 7, 2026-06-19).** A second
+- [x] **Text-frame canned-message mode (field note 7, 2026-06-19).** A second
       message mode for canned clues: transmit the clue as a plaintext `MAGIC_TEXT`
       frame + retransmit burst (like the ACK/broadcast bursts) and render Morse
       *locally* on the hunter, instead of streaming `EdgeEvent` timing edges that
@@ -406,7 +406,17 @@ status board live in `wio-tracker-port.md`.
       + `loop_fox` text-cycle branch (Ident + burst, gated by rx-window/`g_tx_halted`,
       fox still silent); `loop_hunter` `decode_text` branch dedups by seq and renders
       via a hunter-side `morse::Player`. Option B (ControlCmd⊕text merge) deferred.
-      TODO: bench + edge-of-range HW validation, then evaluate Option B.
+      **HW-VALIDATED 2026-06-20, 18/18** via `scripts/msg_text_test.py` (flashes
+      fox stn42 + hunter stn43 Heltec V4 over serial, hunter stn115 Wio nRF52 over
+      BLE NUS fallback, leaves Cardputer stn73 on old fw as a forward-compat
+      witness): verbatim clue with zero `?`, local render (`show` `rxtext` elems>0)
+      on BOTH ESP32 + nRF52, burst dedup, `stop`/`start` halt gating, NVS persist
+      across reboot, old-fw node ignores MAGIC_TEXT. Two bugs found+fixed in
+      validation: (1) local player started+updated same loop → `now-seg_start_`
+      underflow finished it instantly w/ no audio (drive player off millis()); (2)
+      clue render (~16s) outlasts REPEAT_PAUSE(12s) so each resend restarted it →
+      never completed (don't restart a render already sounding the same clue).
+      Option B (ControlCmd⊕text merge) still deferred.
 - [ ] Field-test low-power range across the camp area.
 - [ ] **Later phase, only if range falls short:** FHSS — 50-channel hop table +
       RX scan-and-lock for §15.247 full-power operation. Design sketch in
