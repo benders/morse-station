@@ -34,10 +34,16 @@ no continuous RSSI for DF, per-character not per-element display). Design:
 - [x] **S4** Hunter `loop_hunter`: `decode_sync` branch — presence/RSSI refresh,
       timing adopt, free-run + slack-bounded `resync` (slack = one dit via
       `morse::unit_ms(rx_wpm)`), `want_text_seq` mid-join + seek to live `pos_ms`
-      on the next `TextMsg`. `RX S` / `RX T mid-join` debug lines. Builds
-      heltec_v4 + rak4631 + cardputer_adv; NOT yet HW-validated. **Resume here.**
-      Validation TODO: 2-hunter unison; antenna-pull free-run/recover; power-on
-      mid-clue join; RSSI continuity across a full cycle.
+      on the next `TextMsg`. `RX S` / `RX T mid-join` debug lines (aa70561). HW-
+      VALIDATED 11/11 via `scripts/sync_beacon_test.py` (stn42 fox + stn38/stn26
+      hunters): beacon cadence ~212ms median across render+pause (DF continuity),
+      both hunters slave the same clue seqs with |drift| within one dit, mid-join
+      seek to live pos after reboot. Manual-only (need a human at the bench):
+      audible unison by ear, antenna-pull free-run/recover.
+      **S3 BUG FOUND + FIXED here (66fe8b8):** fox master clock used `player.update(now)`
+      with the loop's stale cached `now` → underflow → render finished instantly
+      → every beacon carried POS_IDLE. Fixed to `millis()` (same gotcha the hunter
+      path documents). All 6 bench units reflashed with the fix. **Resume here → S5.**
 - [ ] **S5** Per-element `reveal_to()`: push one `.`/`-` per key-down element
       (text line stays per-char). Independent of S1–S4.
 
