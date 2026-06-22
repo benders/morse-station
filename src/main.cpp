@@ -726,11 +726,11 @@ static bool handle_setup_command(const char* line, Print& out) {
         // FSK receive-bandwidth filter (SX1262 DSB). `rxbw <khz>` sets it live and
         // persists; `rxbw` / `rxbw show` just reports. RadioLib snaps the request
         // to the nearest supported step (4.8..467 kHz) and `show`/this line report
-        // the value actually programmed. The 78.2 kHz default is wide for
-        // frequency-offset headroom, but the CW/SDR drift test put every unit
-        // <1 ppm (~<1 kHz) apart, so against the ~15 kHz Carson signal width there
-        // is room to narrow for ~3 dB/octave more sensitivity. Narrow past the
-        // signal width and you start clipping edges — A/B with the round-robin.
+        // the value actually programmed. The default is 23.4 kHz: the CW/SDR drift
+        // test put every unit <1 ppm (~<1 kHz) apart, so against the ~15 kHz Carson
+        // signal width 78.2 kHz was needlessly wide and was narrowed for ~3 dB/octave
+        // more sensitivity. Narrow past the signal width and you start clipping
+        // edges — A/B with the round-robin.
         const char* arg = line + 4;
         while (*arg == ' ') arg++;
         if (*arg && strcmp(arg, "show")) {

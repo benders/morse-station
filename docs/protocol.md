@@ -82,7 +82,7 @@ SX1262 either way — see `components/sx1262.md`).
 | Centre frequency | **905.0 MHz** | single fixed channel, no hopping |
 | Bit rate | **4.8 kbps** | sweet spot: sensitivity vs. per-packet airtime |
 | Frequency deviation | **5.0 kHz** | |
-| RX bandwidth | **78.2 kHz** | widened from 39.0 for board-to-board TCXO offset headroom (see note) |
+| RX bandwidth | **23.4 kHz** | runtime-settable/NVS via `rxbw`; narrowed from 78.2 once SDR showed <1 ppm drift (see note) |
 | Preamble | **16 bits** | |
 | Sync word | **`{0x2D, 0xD4}`** | identifies our net; foreign traffic rejected in HW |
 | TCXO voltage | **1.8 V** | confirmed on Heltec V4 and the Cap LoRa-1262 |
@@ -92,19 +92,18 @@ SX1262 either way — see `components/sx1262.md`).
 Per-packet airtime at these settings is ~12 ms; edge keying transmits only on key
 transitions (plus a 700 ms idle heartbeat), so the channel sits mostly idle.
 
-**RX bandwidth note (frequency-offset headroom).** The Carson minimum for 4.8k/5k
-GFSK is only ~15 kHz, and we originally ran 39 kHz. Bench testing (2026-06-08)
-found the RAK4631→Wio link **100% deaf at every power level** — a −13 dBm signal
-was invisible — because these SX1262 modules' TCXO trims differ enough to put a
-**~12–31 kHz relative carrier offset** (≈13–34 ppm at 905 MHz) between nRF52
-units. A 39 kHz filter tolerates only ~±12 kHz of offset, so the link fell
-outside it; widening the RX filter to **78.2 kHz** (≈±31 kHz tolerance) restored
-it (verified: 39 kHz dead, 78.2 & 156.2 kHz work). Cost is ~3 dB sensitivity vs
-39 kHz. Mesh firmwares avoid this class of bug by running wide LoRa (Meshtastic
-LongFast = 250 kHz), which also tolerates ~25 % of BW in offset; narrow FSK does
-not. A tighter long-term alternative is per-board frequency calibration (measure
-each unit's carrier with an SDR and trim `FREQ_MHZ`), trading robustness for the
-3 dB.
+**RX bandwidth note.** The Carson minimum for 4.8k/5k GFSK is only ~15 kHz. An
+early bench result (2026-06-08) found the RAK4631→Wio link deaf at 39 kHz and
+blamed a **~12–31 kHz relative carrier offset** from differing SX1262 TCXO trims,
+so the filter was opened wide to 78.2 kHz as headroom. A later CW/SDR drift
+measurement refuted that: every unit sits **<1 ppm (<~1 kHz)** apart, so the
+"12–31 kHz" figure was demod error, not real offset, and a round-robin link test
+(`scripts/foxhunt_roundrobin.py --rxbw`) showed **0–3 % loss on every pair at
+78.2 / 39.0 / 23.4 / 19.5 kHz alike** — including the RAK↔Wio link. The default
+is therefore now **23.4 kHz** (~Carson 15 kHz + ~9.5 ppm cushion, ≈5 dB more
+sensitivity than 78.2) at no measured bench cost. It is runtime-settable and
+NVS-persisted via the `rxbw <khz>` console command (snaps to the nearest SX1262
+step). See `frequency-drift.md` for the measurement detail.
 
 ## Packet formats
 
