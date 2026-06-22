@@ -17,6 +17,33 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[?]` needs a decision
 
 ---
 
+## Text-mode sync/DF beacon + per-element reveal (field note §8)
+
+Fixes the three field regressions `msgmode text` introduced (hunters out of sync,
+no continuous RSSI for DF, per-character not per-element display). Design:
+`docs/plan-text-sync-beacon.md`. Branch `feat/text-sync-beacon`.
+
+- [x] **S1** `morse::Player` absolute-position refactor: `position_ms()` +
+      `resync(now, pos_ms)`. No callers; keyed/§7 paths byte-identical. (d1f01ae)
+- [x] **S2** `proto::Sync` / `MAGIC_SYNC` (0x53) / `POS_IDLE` + `encode_sync` /
+      `decode_sync`. Magic-gated, forward-compatible. (678e570)
+- [x] **S3** Fox `loop_fox` text branch: silent master render clock, `tx_sync()`
+      beacon every `BEACON_MS`=200 ms across render+pause, `TextMsg` re-send every
+      `TEXT_RESEND_MS`=2 s, `tx_text` split into fixed-seq core + cycle wrapper.
+      Debug emits `TX S seq=N pos=P`. (faed020)
+- [~] **S4** Hunter `loop_hunter`: `decode_sync` branch — presence/RSSI refresh,
+      free-run + slack-bounded `resync` (slack ≈ one dit), `want_text_seq`
+      mid-join + seek to live `pos_ms`, seq-change restart. **Resume here.**
+      Validation: 2-hunter unison; antenna-pull free-run/recover; power-on
+      mid-clue join; RSSI continuity across a full cycle. Add an `RX S` debug line.
+- [ ] **S5** Per-element `reveal_to()`: push one `.`/`-` per key-down element
+      (text line stays per-char). Independent of S1–S4.
+
+Baseline: all 6 bench units flashed with S3 (fox beacons on air; hunters still
+§7-render, forward-compat) as a known-good state before S4.
+
+---
+
 ## Multi-target port — Phase 2 (RAK4631 / nRF52840 cross-MCU port)
 
 - [x] **P2.1** Vendored `boards/wiscore_rak4631.json` (verbatim from the plan)
