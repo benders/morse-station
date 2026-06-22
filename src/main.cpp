@@ -2003,7 +2003,12 @@ static void loop_fox(uint32_t now) {
 
         bool down = false;
         if (text_rendering) {
-            player.update(now);
+            // Drive off millis(), NOT the loop's cached `now`: `now` was sampled
+            // at the top of loop() BEFORE player.start() ran this iteration, so
+            // `now - started_at_` underflows on the first update and finishes the
+            // render instantly (pos_ms would stick at POS_IDLE forever — same
+            // gotcha the hunter render documents). millis() is current here.
+            player.update(millis());
             down = player.down();                // cosmetic "*" on the panel
             // Re-burst the SAME clue periodically for any mid-message joiner.
             if (!g_tx_halted && !rx_window && now - last_resend >= TEXT_RESEND_MS) {
@@ -2454,16 +2459,20 @@ static void loop_hunter(uint32_t now) {
             // nothing — the next one re-aligns within one dit.
             const uint32_t RESYNC_SLACK_MS = morse::unit_ms(rx_wpm);
 
+            int32_t  sync_drift = 0;     // local vs fox position (debug only)
+            bool     sync_seek  = false; // a hard resync fired this beacon (debug)
             if (sy.pos_ms == proto::POS_IDLE) {
                 // Fox is between clues: presence/DF only, no render action.
             } else if (text_playing &&
                        (uint8_t)sy.seq == (uint8_t)last_text_seq) {
                 // We're rendering this very clue: slave to the fox's position.
-                int32_t drift = (int32_t)text_player.position_ms() -
-                                (int32_t)sy.pos_ms;
-                if (drift < 0) drift = -drift;
-                if ((uint32_t)drift > RESYNC_SLACK_MS) {
+                sync_drift = (int32_t)text_player.position_ms() -
+                             (int32_t)sy.pos_ms;
+                uint32_t mag = sync_drift < 0 ? (uint32_t)-sync_drift
+                                              : (uint32_t)sync_drift;
+                if (mag > RESYNC_SLACK_MS) {
                     text_player.resync(millis(), sy.pos_ms);
+                    sync_seek = true;
                 }
             } else if (!text_playing && last_text_seq >= 0 &&
                        (uint8_t)sy.seq == (uint8_t)last_text_seq) {
@@ -2479,8 +2488,9 @@ static void loop_hunter(uint32_t now) {
             }
 
             if (g_debug)
-                Serial.printf("RX S %u seq=%u pos=%u wpm=%u rssi=%d\n",
-                              sy.station_id, sy.seq, sy.pos_ms, sy.wpm, (int)r);
+                Serial.printf("RX S %u seq=%u pos=%u drift=%ld seek=%u wpm=%u rssi=%d\n",
+                              sy.station_id, sy.seq, sy.pos_ms, (long)sync_drift,
+                              sync_seek ? 1 : 0, sy.wpm, (int)r);
         }
     }
 
