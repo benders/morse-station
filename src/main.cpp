@@ -2227,10 +2227,14 @@ static void loop_hunter(uint32_t now) {
     // player sounds it, so the display builds up in lock-step with the audio and
     // visibly wipes-then-rebuilds on every message repeat (a clear "new message"
     // cue for learners). text_reveal_pos = next char in rendering_text to show;
-    // text_reveal_need = cumulative key-down elements that must have sounded
-    // before that char is due. Both reset when a new render (re)starts.
+    // text_reveal_need = cumulative key-down elements sounded BEFORE the current
+    // char started; text_reveal_k = how many of the current char's elements have
+    // been pushed to the dit/dah line already (field note §8 per-element reveal:
+    // each '.'/'-' appears as its beep sounds, not the whole letter at once). All
+    // reset when a new render (re)starts.
     static size_t        text_reveal_pos  = 0;
     static uint16_t      text_reveal_need = 0;
+    static uint16_t      text_reveal_k    = 0;
 
     // Sync/DF beacon slaving (field note §8, docs/plan-text-sync-beacon.md). The
     // fox emits a MAGIC_SYNC beacon every BEACON_MS carrying the live render
@@ -2397,7 +2401,7 @@ static void loop_hunter(uint32_t now) {
                     // partially-revealed line each cycle.
                     text_buf[0] = '\0';   text_len = 0;
                     ditdah_buf[0] = '\0'; ditdah_len = 0;
-                    text_reveal_pos = 0;  text_reveal_need = 0;
+                    text_reveal_pos = 0;  text_reveal_need = 0;  text_reveal_k = 0;
                     strncpy(rendering_text, tm.text, sizeof(rendering_text) - 1);
                     rendering_text[sizeof(rendering_text) - 1] = '\0';
                     text_player.begin(rx_wpm, rx_char_wpm);
@@ -2548,12 +2552,13 @@ static void loop_hunter(uint32_t now) {
         if (pd && !text_prev_down) text_elems++;   // count rendered key-down edges
         text_prev_down = pd;
 
-        // Progressive reveal: surface each character once the player has sounded
-        // its key-down elements, so the copy line builds up in step with the audio
-        // (and stays blank for the first few seconds of every message — the wipe
-        // cue). `avail` is the count of key-down edges heard so far; on the final
-        // flush (0xFFFF) any trailing char/space is released. ' ' carries no
-        // elements, so it appears as soon as its preceding character is revealed.
+        // Progressive reveal (field note §8 per-element): the dit/dah line gets
+        // ONE '.'/'-' per key-down element as it sounds, so a learner watches each
+        // symbol light up in lock-step with its beep; the text line still shows a
+        // whole letter only once it is fully sent (a letter isn't "known" until
+        // complete). `avail` is the count of key-down edges heard so far; on the
+        // final flush (0xFFFF) any trailing element/char/space is released. ' '
+        // carries no elements, so it appears as soon as its preceding char is done.
         auto reveal_to = [&](uint16_t avail) {
             while (rendering_text[text_reveal_pos]) {
                 char c = rendering_text[text_reveal_pos];
@@ -2562,13 +2567,28 @@ static void loop_hunter(uint32_t now) {
                     text_reveal_pos++;
                     continue;
                 }
-                const char* p = morse::pattern(c);
-                uint16_t need = text_reveal_need + (p ? (uint16_t)strlen(p) : 0);
-                if (avail < need) break;          // not sounded yet — wait
+                const char* p   = morse::pattern(c);
+                uint16_t    len = p ? (uint16_t)strlen(p) : 0;
+                // Push each element of this char that has now sounded (element k is
+                // due once avail reaches text_reveal_need + k + 1).
+                while (text_reveal_k < len &&
+                       avail >= (uint16_t)(text_reveal_need + text_reveal_k + 1)) {
+                    char sym[2] = { p[text_reveal_k], '\0' };
+                    ditdah_push(sym);
+                    // Mirror the edge path's per-element "EL" trace: one line per
+                    // symbol as it sounds, so the per-element reveal is observable
+                    // over serial (ditdah_buf is OLED-only). Gated on g_debug.
+                    if (g_debug) Serial.printf("TEL %c\n", sym[0]);
+                    text_reveal_k++;
+                }
+                if (text_reveal_k < len) break;   // char not fully sounded yet
+                // Char complete: reveal the decoded letter + a gap on the dit/dah
+                // line, then advance to the next char.
                 text_push(c);
-                if (p) { ditdah_push(p); ditdah_push(" "); }
-                text_reveal_need = need;
+                if (len) ditdah_push(" ");
+                text_reveal_need += len;
                 text_reveal_pos++;
+                text_reveal_k = 0;
             }
         };
         reveal_to(text_elems);
