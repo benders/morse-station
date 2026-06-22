@@ -78,6 +78,15 @@ static constexpr uint32_t ACK_GAP_MS  = 50;
 static constexpr uint8_t  TEXT_REPEATS = 4;
 static constexpr uint32_t TEXT_GAP_MS  = 50;
 
+// Text-render sync / DF beacon (field note §8, docs/plan-text-sync-beacon.md).
+// In msgmode=text the fox emits a MAGIC_SYNC beacon every BEACON_MS across the
+// WHOLE loop (render + inter-message pause) so RSSI never dies for DF and every
+// hunter slaves its local render to the fox's position. While a clue renders the
+// fox also re-bursts the TextMsg every TEXT_RESEND_MS so a station that tuned in
+// mid-message picks up the clue text (existing hunters dedup the resend by seq).
+static constexpr uint32_t BEACON_MS      = 200;   // sync/DF cadence (<=250 ms req)
+static constexpr uint32_t TEXT_RESEND_MS = 2000;  // re-burst clue for mid-joiners
+
 // Callsign and fox message live in NVS (config), set via the boot serial console
 // (see run_setup_console). The callsign is sent in the periodic station-ID
 // packet; include it in the fox message text too for an audible CW ID.
@@ -1656,17 +1665,42 @@ static void send_ident(uint32_t now) {
 // the edge of range. Caller gates this on !g_tx_halted/!rx_window like the other
 // TX paths. The text frame carries no timing — the fox still sends Ident at the
 // cycle top so the hunter renders at the fox's wpm/char_wpm.
-static void tx_text(uint32_t now) {
-    static uint8_t text_seq = 0;
+static uint8_t g_text_seq = 0;   // current clue's seq; advanced once per cycle
+
+// Burst the clue as TEXT_REPEATS copies with a CALLER-CHOSEN seq. A fresh cycle
+// passes a new seq (via tx_text); a mid-render re-send (field note §8) reuses the
+// cycle's seq so existing hunters dedup it while a mid-joiner picks up the text.
+static void tx_text_seq(uint8_t seq) {
     uint8_t buf[proto::TEXT_HDR_LEN + proto::TEXT_MSG_MAX];
-    size_t len = proto::encode_text(config::station_id(), text_seq,
+    size_t len = proto::encode_text(config::station_id(), seq,
                                     /*flags=*/0, config::fox_message(), buf);
     for (uint8_t i = 0; i < TEXT_REPEATS; ++i) {
         radio::send(buf, len);
         if (i + 1 < TEXT_REPEATS) delay(TEXT_GAP_MS);
     }
-    if (g_debug) Serial.printf("TX T seq=%u len=%u\n", text_seq, (unsigned)len);
-    text_seq++;
+    if (g_debug) Serial.printf("TX T seq=%u len=%u\n", seq, (unsigned)len);
+}
+
+// Start a new clue cycle: advance the seq and burst it. Returns the seq used so
+// the caller can re-send and beacon with the same seq for the rest of the cycle.
+static uint8_t tx_text(uint32_t now) {
+    (void)now;
+    uint8_t seq = g_text_seq++;
+    tx_text_seq(seq);
+    return seq;
+}
+
+// Emit one text-render sync / DF beacon (field note §8, docs/plan-text-sync-
+// beacon.md). Single send (not a burst) — the next beacon is BEACON_MS away, so a
+// lost one self-heals. pos_ms is the fox's render position, or POS_IDLE between
+// clues. Carries the fox's wpm/char_wpm so a mid-joiner renders without an Ident.
+static void tx_sync(uint32_t now, uint8_t seq, uint16_t pos_ms) {
+    (void)now;
+    uint8_t buf[proto::SYNC_LEN];
+    proto::encode_sync(config::station_id(), seq, config::wpm(),
+                       config::char_wpm(), pos_ms, buf);
+    radio::send(buf, proto::SYNC_LEN);
+    if (g_debug) Serial.printf("TX S seq=%u pos=%u\n", seq, pos_ms);
 }
 
 // Announce the RX window as the fox opens it, so an instructor bursts at once
@@ -1929,25 +1963,75 @@ static void loop_fox(uint32_t now) {
             platform::keyer_stop();
             g_keyer_active = false; g_keyer_starting = false;
         }
-        bool down = false;
         set_tone(false);   // fox is silent (a beeping fox is easy to find by ear)
-        if (!rx_window && now >= pause_until) {
+
+        // Master render clock (field note §8): the fox advances a SILENT local
+        // Player mirroring the render each hunter performs, so the sync beacon can
+        // carry an accurate render position (pos_ms). text_rendering is true from a
+        // cycle's clue burst until that render finishes; the inter-message pause
+        // (pause_until) follows, during which beacons keep flowing with POS_IDLE.
+        static bool     text_rendering = false;
+        static uint8_t  clue_seq       = 0;
+        static uint32_t last_beacon    = 0;
+        static uint32_t last_resend    = 0;
+
+        // Cycle top: a new clue (only once the previous render AND its pause are
+        // done). Announce timing, burst the clue, and start the silent render clock
+        // at the fox's wpm so pos_ms tracks the hunters' local renders.
+        if (!rx_window && now >= pause_until && !text_rendering) {
             if (!g_tx_halted) {
-                send_ident(now);   // announce wpm/char_wpm for local rendering
-                tx_text(now);      // burst the clue (TEXT_REPEATS copies)
-                seq++;             // advance the on-screen cycle counter — text
-                                   // mode never reaches the keyed seq++ path
-            } else if (g_debug) {
-                static uint32_t last_skip_log = 0;
-                if (now - last_skip_log >= 1000) {
-                    last_skip_log = now;
-                    Serial.println("TX SKIP (halted) text");
+                send_ident(now);                 // announce wpm/char_wpm
+                clue_seq = tx_text(now);         // burst clue; capture its seq
+                seq++;                           // on-screen cycle counter (text
+                                                 // mode never hits the keyed path)
+                player.begin(config::wpm(), config::char_wpm());
+                player.start(config::fox_message());
+                text_rendering = true;
+                last_resend = now;
+            } else {
+                if (g_debug) {
+                    static uint32_t last_skip_log = 0;
+                    if (now - last_skip_log >= 1000) {
+                        last_skip_log = now;
+                        Serial.println("TX SKIP (halted) text");
+                    }
                 }
+                // Keep cycling quietly so `start` resumes cleanly next cycle.
+                pause_until = now + REPEAT_PAUSE;
             }
-            // Open the inter-message pause either way, so a halted fox keeps
-            // cycling quietly and `start` resumes cleanly next cycle.
-            pause_until = now + REPEAT_PAUSE;
         }
+
+        bool down = false;
+        if (text_rendering) {
+            player.update(now);
+            down = player.down();                // cosmetic "*" on the panel
+            // Re-burst the SAME clue periodically for any mid-message joiner.
+            if (!g_tx_halted && !rx_window && now - last_resend >= TEXT_RESEND_MS) {
+                last_resend = now;
+                tx_text_seq(clue_seq);
+            }
+            if (player.finished()) {             // render done → open the pause
+                text_rendering = false;
+                pause_until = now + REPEAT_PAUSE;
+            }
+        }
+
+        // Sync / DF beacon every BEACON_MS across the WHOLE loop — render AND pause
+        // — so RSSI never dies and all hunters slave to pos_ms. Suppressed only
+        // while halted or inside the instructor RX window (half-duplex: can't TX
+        // while listening). pos_ms is the live render position, clamped below the
+        // POS_IDLE sentinel, or POS_IDLE between clues.
+        if (!g_tx_halted && !rx_window && now - last_beacon >= BEACON_MS) {
+            last_beacon = now;
+            uint16_t pos = proto::POS_IDLE;
+            if (text_rendering) {
+                uint32_t p = player.position_ms();
+                pos = (p >= proto::POS_IDLE) ? (uint16_t)(proto::POS_IDLE - 1)
+                                             : (uint16_t)p;
+            }
+            tx_sync(now, clue_seq, pos);
+        }
+
         if (now - last_draw >= 100) {
             last_draw = now;
             if (banner_active(now)) draw_banner();
