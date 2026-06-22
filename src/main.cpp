@@ -2219,8 +2219,6 @@ static void loop_hunter(uint32_t now) {
     static morse::Player text_player;
     static bool          text_playing  = false;
     static int           last_text_seq = -1;
-    static bool          text_prev_down = false;  // for render key-down edge count
-    static uint16_t      text_elems     = 0;      // key-down elements rendered (debug)
     static char          rendering_text[97] = ""; // clue the player is sounding now
     // Progressive-reveal cursor (field note §7): the clue is NOT dumped to the
     // copy buffers on receipt. Instead each character is surfaced as the local
@@ -2407,7 +2405,6 @@ static void loop_hunter(uint32_t now) {
                     text_player.begin(rx_wpm, rx_char_wpm);
                     text_player.start(tm.text);
                     text_playing = true;
-                    text_prev_down = false; text_elems = 0;
                     // Mid-join (field note §8): if a beacon already announced this
                     // seq while we lacked the text, we're joining a render that's
                     // been sounding on the other hunters for last_beacon_pos ms.
@@ -2549,16 +2546,22 @@ static void loop_hunter(uint32_t now) {
         // render instantly with no tone.
         text_player.update(millis());
         bool pd = text_player.down();
-        if (pd && !text_prev_down) text_elems++;   // count rendered key-down edges
-        text_prev_down = pd;
+        // Reveal clock = the player's OWN element count (seek-safe), NOT a
+        // free-running edge counter: a sync-beacon resync() can jump the render
+        // forward or back, and a counter would over/under-count across the jump,
+        // desyncing the dit/dah line from the audio (observed: backward seeks made
+        // the counter overshoot the total, the cursor ran off the string end, and
+        // the display froze while the tone kept beeping). elems_elapsed() is
+        // derived from the active segment, so it tracks the true position exactly.
+        uint16_t elems = text_player.elems_elapsed();
 
         // Progressive reveal (field note §8 per-element): the dit/dah line gets
         // ONE '.'/'-' per key-down element as it sounds, so a learner watches each
         // symbol light up in lock-step with its beep; the text line still shows a
         // whole letter only once it is fully sent (a letter isn't "known" until
-        // complete). `avail` is the count of key-down edges heard so far; on the
-        // final flush (0xFFFF) any trailing element/char/space is released. ' '
-        // carries no elements, so it appears as soon as its preceding char is done.
+        // complete). `avail` is the count of elements sounded so far; on the final
+        // flush (0xFFFF) any trailing element/char/space is released. ' ' carries
+        // no elements, so it appears as soon as its preceding char is done.
         auto reveal_to = [&](uint16_t avail) {
             while (rendering_text[text_reveal_pos]) {
                 char c = rendering_text[text_reveal_pos];
@@ -2578,7 +2581,8 @@ static void loop_hunter(uint32_t now) {
                     // Mirror the edge path's per-element "EL" trace: one line per
                     // symbol as it sounds, so the per-element reveal is observable
                     // over serial (ditdah_buf is OLED-only). Gated on g_debug.
-                    if (g_debug) Serial.printf("TEL %c\n", sym[0]);
+                    if (g_debug) Serial.printf("TEL %c p=%lu\n", sym[0],
+                                               (unsigned long)text_player.position_ms());
                     text_reveal_k++;
                 }
                 if (text_reveal_k < len) break;   // char not fully sounded yet
@@ -2591,15 +2595,15 @@ static void loop_hunter(uint32_t now) {
                 text_reveal_k = 0;
             }
         };
-        reveal_to(text_elems);
+        reveal_to(elems);
 
         if (text_player.finished()) {
             reveal_to(0xFFFF);              // flush any trailing char/space
             text_playing = false;
-            g_rx_text_elems = text_elems;   // surfaced in `show` (serial + BLE)
+            g_rx_text_elems = elems;        // surfaced in `show` (serial + BLE)
             // Test observable (gated on g_debug): proves the hunter generated key
             // state locally from the text (elems = dits+dahs sounded).
-            if (g_debug) Serial.printf("RX T render done elems=%u\n", text_elems);
+            if (g_debug) Serial.printf("RX T render done elems=%u\n", elems);
         } else {
             last_signal = now; display::activity();
         }

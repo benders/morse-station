@@ -124,6 +124,19 @@ void Player::resync(uint32_t now_ms, uint32_t pos_ms) {
     down_       = segs_[idx_].on;
 }
 
+uint16_t Player::elems_elapsed() const {
+    // Count "on" segments whose key-down has started: those at index < idx_ have
+    // fully sounded, and segs_[idx_] (the active one) is counted too if it is an
+    // element currently sounding. When finished, idx_ == segs_.size() so every
+    // element is counted (the total). Recomputed from idx_, so a resync() seek
+    // yields the correct count immediately.
+    uint16_t c = 0;
+    size_t end = idx_ < segs_.size() ? idx_ + 1 : segs_.size();
+    for (size_t i = 0; i < end; i++)
+        if (segs_[i].on) c++;
+    return c;
+}
+
 // ---- Decoder --------------------------------------------------------------
 
 void Decoder::begin(uint8_t wpm, uint8_t char_wpm) {

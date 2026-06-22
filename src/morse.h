@@ -39,6 +39,15 @@ public:
     // caller compare its local playback position against an external clock.
     uint32_t position_ms() const { return pos_ms_; }
 
+    // Number of key-down ("on") elements whose tone has STARTED at the current
+    // position — i.e. how many dits/dahs have sounded so far. Derived from the
+    // active segment index, so it stays correct across resync() seeks (a
+    // free-running edge counter would over/under-count when the render jumps).
+    // The per-element display reveal slaves to this so the dit/dah line never
+    // desyncs from the audio (docs/plan-text-sync-beacon.md). Equals the total
+    // element count once finished.
+    uint16_t elems_elapsed() const;
+
     // Slave the render to an external clock: align playback so the position is
     // `pos_ms` at wall time `now_ms`, jumping the active segment/key state to
     // match. Used to keep a hunter's local render locked to the fox's sync

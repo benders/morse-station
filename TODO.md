@@ -43,9 +43,27 @@ no continuous RSSI for DF, per-character not per-element display). Design:
       **S3 BUG FOUND + FIXED here (66fe8b8):** fox master clock used `player.update(now)`
       with the loop's stale cached `now` → underflow → render finished instantly
       → every beacon carried POS_IDLE. Fixed to `millis()` (same gotcha the hunter
-      path documents). All 6 bench units reflashed with the fix. **Resume here → S5.**
-- [ ] **S5** Per-element `reveal_to()`: push one `.`/`-` per key-down element
-      (text line stays per-char). Independent of S1–S4.
+      path documents). All 6 bench units reflashed with the fix.
+- [x] **S5** Per-element `reveal_to()` (f84194b): pushes one `.`/`-` per key-down
+      element via an intra-char cursor `text_reveal_k`; text line stays per-char.
+      Adds a per-symbol `TEL <.|->` debug line (mirrors edge `EL`). HW-VALIDATED
+      via `scripts/sync_reveal_test.py` (stn42 fox + stn38 hunter): TEL stream ==
+      clue's 63-element Morse, intra-letter element gaps median 213ms (vs ~0ms
+      per-char). All 7 bench units reflashed with S5.
+- [x] **S5-fix** Display-freeze regression (field-reported): under sync-beacon
+      `resync()` seeks the per-element reveal froze (audio kept beeping, dit/dah
+      line stuck) until the next render. Cause: reveal clock was a free-running
+      key-down counter that over/under-counted across a seek — a backward seek
+      pushed it past the total, the cursor ran off the string end. Fix: drive the
+      reveal off `morse::Player::elems_elapsed()` (count of on-segments at the
+      current position, seek-safe and bounded by the total). Host unit test
+      `scripts/morse_elems_test.sh` (deterministic) + per-element reveal re-
+      validated. All 7 units reflashed.
+
+**§8 COMPLETE** (S1–S5 + freeze-fix done & HW-validated; manual-only left: audible
+2-hunter unison by ear, antenna-pull free-run/recover). Tests:
+`scripts/sync_beacon_test.py` (S4, 11/11), `scripts/sync_reveal_test.py` (S5),
+`scripts/morse_elems_test.sh` (freeze regression).
 
 Baseline: all 6 bench units flashed with S3 (fox beacons on air; hunters still
 §7-render, forward-compat) as a known-good state before S4.
