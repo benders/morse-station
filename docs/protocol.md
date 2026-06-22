@@ -71,6 +71,40 @@ path; live keying (`MODE_LIVEKEY`) always keys edges regardless of `msgmode`.
 Frame: `magic, station_id, seq, flags` (4 B) + NUL-terminated ASCII clue (≤ 96 B,
 == `FOX_MSG_MAX`); `flags` reserved (0). See `src/protocol.h` `TextMsg`.
 
+### Sync/DF beacon (`MAGIC_SYNC` = `'S'`, field note §8)
+
+Text mode delivers a clean clue but goes quiet (~150 ms of `TextMsg` then ~12 s
+idle), which leaves nothing for hunters to **slave their render to** (so several
+hunters in earshot beep out of unison) and nothing to **DF by RSSI** between
+bursts. To fix both with one packet, in `msgmode text` the fox emits a small
+`Sync` beacon every `BEACON_MS` (≈200 ms) across the **whole** loop — during the
+clue render *and* the inter-message pause — so the air carries a fixed-cadence
+(≤250 ms) signal the entire time. See `plan-text-sync-beacon.md`.
+
+The fox runs a **master render clock** (a silent local `morse::Player` mirroring
+the render each hunter performs) and the beacon carries its live render position:
+
+`Sync` — 7 B (`src/protocol.h`): `magic, station_id, seq, wpm, char_wpm, pos_ms` (`pos_ms` u16 LE).
+
+- `seq` matches the `TextMsg.seq` of the clue being rendered (so a hunter knows
+  which clue, and detects a new one).
+- `wpm`/`char_wpm` let a station that missed the `Ident` still render.
+- `pos_ms` is the elapsed ms into the render, or `POS_IDLE` (`0xFFFF`) between
+  clues; clamped to `POS_IDLE-1` for any clue that would exceed ~65 s.
+
+Each hunter **free-runs** its local `Player` between beacons (smooth audio) and
+only **hard-seeks** (`Player::resync`) when its position drifts past ~one dit, so
+all hunters lock to the fox's clock without audible stutter. The beacon is
+**advisory**: lost beacons cost nothing (the render finishes from local text +
+timing); when present they tighten every hunter onto the fox. A station tuning in
+mid-clue gets a beacon (seq + pos + timing), then the next `TextMsg` re-send
+(≤`TEXT_RESEND_MS` ≈ 2 s) supplies the text and it **seeks to the live position**
+to join in sync. `MODE_LIVEKEY` and `msgmode keyed` already put a real keyed
+carrier on the air, so they carry sync + RSSI intrinsically and emit no beacons.
+
+**Forward-compatible.** A node predating `MAGIC_SYNC` ignores the beacon for free
+and keeps rendering from `TextMsg` alone (unsynced, bursty RSSI) — no misparse.
+
 ## Physical layer (SX1262 GFSK)
 
 All values from `src/radio.cpp`. Identical on both platforms (the radio is an
@@ -108,7 +142,8 @@ step). See `frequency-drift.md` for the measurement detail.
 ## Packet formats
 
 The keying/identity packets are disambiguated by their first byte (the "magic"):
-`Ident` (`'I'`) and `EdgeEvent` (`'E'`), plus the canned-clue `TextMsg` (`'T'`)
+`Ident` (`'I'`) and `EdgeEvent` (`'E'`), plus the canned-clue `TextMsg` (`'T'`),
+the text-mode `Sync`/DF beacon (`'S'`, see *Model — text-frame canned message*),
 and the instructor `Listen`/control/broadcast packets (see `src/protocol.h`). A
 receiver ignores any packet whose magic it doesn't parse, so unknown traffic is
 dropped for free. All are little-endian (native ESP32-S3 layout). (The removed

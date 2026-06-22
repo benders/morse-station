@@ -1,6 +1,10 @@
 # Plan — text-mode sync/DF beacon + per-element reveal (field note §8)
 
-Status: **planned, not started.** Follow-on to `plan-text-message-mode.md` (field
+Status: **IMPLEMENTED & HW-validated** (S1–S5 + freeze-fix; branch
+`feat/text-sync-beacon`). See the field-note §8 status block in
+`FIELD-NOTES-20260619.md` for per-step commits and the validating tests
+(`scripts/sync_beacon_test.py`, `sync_reveal_test.py`, `morse_elems_test.sh`).
+Follow-on to `plan-text-message-mode.md` (field
 note §7, now landed and HW-validated). Text mode fixed *received-message clarity*
 (the clue arrives as ground-truth ASCII, no `?` holes) but broke three things in
 the field that edge keying gave for free:

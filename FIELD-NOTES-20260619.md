@@ -309,15 +309,24 @@ absent, each hunter degrades to today's free-running-but-correct local render.
 Includes mid-message join (a late station gets text from the 2 s `TextMsg`
 re-send, then seeks to the live `pos_ms`).
 
-**Implementation status (branch `feat/text-sync-beacon`):**
+**Implementation status: COMPLETE & HW-validated (branch `feat/text-sync-beacon`).**
 - S1 ✅ `morse::Player::position_ms()`/`resync()` seek API (commit d1f01ae).
 - S2 ✅ `proto::Sync`/`MAGIC_SYNC`/`POS_IDLE` + encode/decode (commit 678e570).
 - S3 ✅ fox master render clock + `tx_sync()` beacons + 2 s clue re-send (faed020).
-- S4 ⬜ **next** — hunter `decode_sync` slave/seek/mid-join (see plan).
-- S5 ⬜ per-element `reveal_to()` (independent; can land any time).
+  Note: S3 had a stale-`now` underflow that left the clock stuck (every beacon
+  `POS_IDLE`); fixed in 66fe8b8 (drive the fox render off `millis()`).
+- S4 ✅ hunter `decode_sync` slave/seek/mid-join (aa70561). Validated 11/11 via
+  `scripts/sync_beacon_test.py`: beacon ~212 ms median across render+pause,
+  hunters slave the same clue, mid-join seeks to the live position.
+- S5 ✅ per-element `reveal_to()` (f84194b) — one `.`/`-` per element as it sounds;
+  `scripts/sync_reveal_test.py`.
+- S5-fix ✅ display-freeze under `resync()` seeks (74ce5db): the reveal now slaves
+  to `morse::Player::elems_elapsed()` (position-derived, seek-safe) instead of a
+  free-running counter that could overshoot the total and strand the cursor.
+  `scripts/morse_elems_test.sh`.
 
-All 6 bench units flashed with the S3 baseline (fox beacons on the air; hunters
-still §7-render, forward-compat) as a known-good state before S4.
+Manual-only checks remaining: audible 2-hunter unison by ear, antenna-pull
+free-run/recover (both verified at the bench).
 
 ## Priority for next iteration
 
