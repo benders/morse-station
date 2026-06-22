@@ -17,6 +17,59 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[?]` needs a decision
 
 ---
 
+## Text-mode sync/DF beacon + per-element reveal (field note §8)
+
+Fixes the three field regressions `msgmode text` introduced (hunters out of sync,
+no continuous RSSI for DF, per-character not per-element display). Design:
+`docs/plan-text-sync-beacon.md`. Branch `feat/text-sync-beacon`.
+
+- [x] **S1** `morse::Player` absolute-position refactor: `position_ms()` +
+      `resync(now, pos_ms)`. No callers; keyed/§7 paths byte-identical. (d1f01ae)
+- [x] **S2** `proto::Sync` / `MAGIC_SYNC` (0x53) / `POS_IDLE` + `encode_sync` /
+      `decode_sync`. Magic-gated, forward-compatible. (678e570)
+- [x] **S3** Fox `loop_fox` text branch: silent master render clock, `tx_sync()`
+      beacon every `BEACON_MS`=200 ms across render+pause, `TextMsg` re-send every
+      `TEXT_RESEND_MS`=2 s, `tx_text` split into fixed-seq core + cycle wrapper.
+      Debug emits `TX S seq=N pos=P`. (faed020)
+- [x] **S4** Hunter `loop_hunter`: `decode_sync` branch — presence/RSSI refresh,
+      timing adopt, free-run + slack-bounded `resync` (slack = one dit via
+      `morse::unit_ms(rx_wpm)`), `want_text_seq` mid-join + seek to live `pos_ms`
+      on the next `TextMsg`. `RX S` / `RX T mid-join` debug lines (aa70561). HW-
+      VALIDATED 11/11 via `scripts/sync_beacon_test.py` (stn42 fox + stn38/stn26
+      hunters): beacon cadence ~212ms median across render+pause (DF continuity),
+      both hunters slave the same clue seqs with |drift| within one dit, mid-join
+      seek to live pos after reboot. Manual-only (need a human at the bench):
+      audible unison by ear, antenna-pull free-run/recover.
+      **S3 BUG FOUND + FIXED here (66fe8b8):** fox master clock used `player.update(now)`
+      with the loop's stale cached `now` → underflow → render finished instantly
+      → every beacon carried POS_IDLE. Fixed to `millis()` (same gotcha the hunter
+      path documents). All 6 bench units reflashed with the fix.
+- [x] **S5** Per-element `reveal_to()` (f84194b): pushes one `.`/`-` per key-down
+      element via an intra-char cursor `text_reveal_k`; text line stays per-char.
+      Adds a per-symbol `TEL <.|->` debug line (mirrors edge `EL`). HW-VALIDATED
+      via `scripts/sync_reveal_test.py` (stn42 fox + stn38 hunter): TEL stream ==
+      clue's 63-element Morse, intra-letter element gaps median 213ms (vs ~0ms
+      per-char). All 7 bench units reflashed with S5.
+- [x] **S5-fix** Display-freeze regression (field-reported): under sync-beacon
+      `resync()` seeks the per-element reveal froze (audio kept beeping, dit/dah
+      line stuck) until the next render. Cause: reveal clock was a free-running
+      key-down counter that over/under-counted across a seek — a backward seek
+      pushed it past the total, the cursor ran off the string end. Fix: drive the
+      reveal off `morse::Player::elems_elapsed()` (count of on-segments at the
+      current position, seek-safe and bounded by the total). Host unit test
+      `scripts/morse_elems_test.sh` (deterministic) + per-element reveal re-
+      validated. All 7 units reflashed.
+
+**§8 COMPLETE** (S1–S5 + freeze-fix done & HW-validated; manual-only left: audible
+2-hunter unison by ear, antenna-pull free-run/recover). Tests:
+`scripts/sync_beacon_test.py` (S4, 11/11), `scripts/sync_reveal_test.py` (S5),
+`scripts/morse_elems_test.sh` (freeze regression).
+
+Baseline: all 6 bench units flashed with S3 (fox beacons on air; hunters still
+§7-render, forward-compat) as a known-good state before S4.
+
+---
+
 ## Multi-target port — Phase 2 (RAK4631 / nRF52840 cross-MCU port)
 
 - [x] **P2.1** Vendored `boards/wiscore_rak4631.json` (verbatim from the plan)
