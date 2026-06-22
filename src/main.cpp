@@ -2227,6 +2227,18 @@ static void loop_hunter(uint32_t now) {
     static size_t        text_reveal_pos  = 0;
     static uint16_t      text_reveal_need = 0;
 
+    // Sync/DF beacon slaving (field note §8, docs/plan-text-sync-beacon.md). The
+    // fox emits a MAGIC_SYNC beacon every BEACON_MS carrying the live render
+    // position (pos_ms) of the clue currently sounding. Each hunter free-runs its
+    // local text_player between beacons (smooth audio) and only hard-seeks when its
+    // position drifts past RESYNC_SLACK_MS — so every hunter in earshot beeps in
+    // unison. want_text_seq = a clue seq a beacon announced before we had its text
+    // (mid-join / lost burst); last_beacon_pos = the position to seek to once that
+    // text arrives, so we join the in-progress render in lock-step (-1/POS_IDLE =
+    // none pending).
+    static int           want_text_seq   = -1;
+    static uint16_t      last_beacon_pos  = proto::POS_IDLE;
+
     // Signal-loss watchdog (T_silence) — edge keying (docs/edge-events.md "Loss
     // handling"): heartbeats arrive every HEARTBEAT_MS even while the key sits
     // steady, so 2.5x that bounds T_silence above any legit gap between heartbeats
@@ -2247,6 +2259,7 @@ static void loop_hunter(uint32_t now) {
         proto::Ident     id;
         proto::EdgeEvent ev;
         proto::TextMsg   tm;
+        proto::Sync      sy;
         if (broadcast_rx_try(buf, n, now)) {
             // Instructor broadcast banner: painted inside broadcast_rx_try. Count
             // it as signal so the presence bar doesn't blink. No ack/re-arm needed
@@ -2386,6 +2399,24 @@ static void loop_hunter(uint32_t now) {
                     text_player.start(tm.text);
                     text_playing = true;
                     text_prev_down = false; text_elems = 0;
+                    // Mid-join (field note §8): if a beacon already announced this
+                    // seq while we lacked the text, we're joining a render that's
+                    // been sounding on the other hunters for last_beacon_pos ms.
+                    // Seek straight to that position so we land in lock-step instead
+                    // of beeping the start of the clue mid-word. The progressive
+                    // reveal still counts from the join point (we only surface the
+                    // tail we actually sounded) — a late joiner sees a partial line,
+                    // which is honest. Normal cycle-top renders have want_text_seq
+                    // for the PREVIOUS seq (or -1), so they start at pos 0 as before.
+                    if (want_text_seq >= 0 &&
+                        (uint8_t)want_text_seq == (uint8_t)tm.seq &&
+                        last_beacon_pos != proto::POS_IDLE) {
+                        text_player.resync(millis(), last_beacon_pos);
+                        if (g_debug)
+                            Serial.printf("RX T mid-join seq=%u seek=%u\n",
+                                          tm.seq, last_beacon_pos);
+                    }
+                    want_text_seq = -1;
                 }
                 if (g_debug)
                     Serial.printf("RX T %u seq=%u text=%s\n",
@@ -2393,6 +2424,63 @@ static void loop_hunter(uint32_t now) {
             }
             // A duplicate seq (the burst's redundant copies) is silently dropped;
             // the player keeps rendering the copy already in flight.
+        } else if (proto::decode_sync(buf, n, sy) &&
+                   fox_lock(sy.station_id, locked_fox, last_fox_rx, now)) {
+            // Sync/DF beacon (field note §8, docs/plan-text-sync-beacon.md). Two
+            // jobs in one packet: (1) keep the DF/presence bar alive — a beacon
+            // lands every <=250 ms across the whole fox loop, render AND pause,
+            // unlike the bursty TextMsg; (2) slave the local render to the fox's
+            // master clock so all hunters beep in unison.
+            rx_station_id = sy.station_id;
+            last_signal = now;
+            last_rx = now;
+            display::activity();
+            rssi = r;
+            rssi_valid = true;
+
+            // Adopt the beacon's timing if it changed (lets a mid-joiner that
+            // missed the Ident still render). Don't disturb a render already in
+            // flight — the Ident leads each cycle, so wpm is normally set before
+            // the clue starts; this only catches a station that came up on a sync.
+            if (sy.wpm && sy.char_wpm &&
+                (sy.wpm != rx_wpm || sy.char_wpm != rx_char_wpm)) {
+                rx_wpm = sy.wpm;
+                rx_char_wpm = sy.char_wpm;
+                decoder.begin(sy.wpm, sy.char_wpm);
+            }
+
+            // RESYNC_SLACK_MS ~ one dit: below this we let the player free-run (no
+            // audible stutter); above it we hard-seek. A missed beacon costs
+            // nothing — the next one re-aligns within one dit.
+            const uint32_t RESYNC_SLACK_MS = morse::unit_ms(rx_wpm);
+
+            if (sy.pos_ms == proto::POS_IDLE) {
+                // Fox is between clues: presence/DF only, no render action.
+            } else if (text_playing &&
+                       (uint8_t)sy.seq == (uint8_t)last_text_seq) {
+                // We're rendering this very clue: slave to the fox's position.
+                int32_t drift = (int32_t)text_player.position_ms() -
+                                (int32_t)sy.pos_ms;
+                if (drift < 0) drift = -drift;
+                if ((uint32_t)drift > RESYNC_SLACK_MS) {
+                    text_player.resync(millis(), sy.pos_ms);
+                }
+            } else if (!text_playing && last_text_seq >= 0 &&
+                       (uint8_t)sy.seq == (uint8_t)last_text_seq) {
+                // Already finished this clue's render locally — nothing to do; just
+                // hold presence until the next clue's TextMsg arrives.
+            } else {
+                // A clue is rendering that we have no text for (powered on mid-clue,
+                // or the cycle-top TextMsg burst was lost). Remember the seq + live
+                // position; the next TextMsg re-send (<= TEXT_RESEND_MS) completes
+                // the mid-join and seeks the player here.
+                want_text_seq   = sy.seq;
+                last_beacon_pos = sy.pos_ms;
+            }
+
+            if (g_debug)
+                Serial.printf("RX S %u seq=%u pos=%u wpm=%u rssi=%d\n",
+                              sy.station_id, sy.seq, sy.pos_ms, sy.wpm, (int)r);
         }
     }
 

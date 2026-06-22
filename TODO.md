@@ -31,11 +31,13 @@ no continuous RSSI for DF, per-character not per-element display). Design:
       beacon every `BEACON_MS`=200 ms across render+pause, `TextMsg` re-send every
       `TEXT_RESEND_MS`=2 s, `tx_text` split into fixed-seq core + cycle wrapper.
       Debug emits `TX S seq=N pos=P`. (faed020)
-- [~] **S4** Hunter `loop_hunter`: `decode_sync` branch — presence/RSSI refresh,
-      free-run + slack-bounded `resync` (slack ≈ one dit), `want_text_seq`
-      mid-join + seek to live `pos_ms`, seq-change restart. **Resume here.**
-      Validation: 2-hunter unison; antenna-pull free-run/recover; power-on
-      mid-clue join; RSSI continuity across a full cycle. Add an `RX S` debug line.
+- [x] **S4** Hunter `loop_hunter`: `decode_sync` branch — presence/RSSI refresh,
+      timing adopt, free-run + slack-bounded `resync` (slack = one dit via
+      `morse::unit_ms(rx_wpm)`), `want_text_seq` mid-join + seek to live `pos_ms`
+      on the next `TextMsg`. `RX S` / `RX T mid-join` debug lines. Builds
+      heltec_v4 + rak4631 + cardputer_adv; NOT yet HW-validated. **Resume here.**
+      Validation TODO: 2-hunter unison; antenna-pull free-run/recover; power-on
+      mid-clue join; RSSI continuity across a full cycle.
 - [ ] **S5** Per-element `reveal_to()`: push one `.`/`-` per key-down element
       (text line stays per-char). Independent of S1–S4.
 
