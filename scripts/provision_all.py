@@ -5,11 +5,11 @@ Unlike provision.py (single board, boot setup REPL, reset required), this drives
 the firmware's non-blocking runtime serial console (serial_console_process in
 main.cpp) on every /dev/cu.usbmodem* in parallel-ish sequence. No reset: the
 station keeps running its current mode while the commands are applied. Both
-consoles share handle_setup_command(), so call/wpm/farns/mute/keymode all write
+consoles share handle_setup_command(), so call/wpm/farns/mute/msgmode all write
 through to NVS and survive a power cycle.
 
 Examples:
-    scripts/provision_all.sh --wpm 5 --farns 13 --call KC8HOB --mute on --keymode edge
+    scripts/provision_all.sh --wpm 5 --farns 13 --call KC8HOB --mute on --msgmode text
     scripts/provision_all.sh --show          # just read back every board
 
 nRF52840 boards (Wio/RAK) use native USB CDC and echo a command behind; the
@@ -57,8 +57,8 @@ def build_cmds(args: argparse.Namespace) -> list[str]:
         cmds.append(f"id {args.id}")
     if args.mute is not None:
         cmds.append(f"mute {args.mute}")
-    if args.keymode is not None:
-        cmds.append(f"keymode {args.keymode}")
+    if args.msgmode is not None:
+        cmds.append(f"msgmode {args.msgmode}")
     cmds.append("show")          # always read back, last
     return cmds
 
@@ -96,7 +96,8 @@ def main() -> int:
     p.add_argument("--wpm", type=int, default=None, help="overall keying speed, 5..40")
     p.add_argument("--farns", type=int, default=None, help="Farnsworth char speed, >= --wpm")
     p.add_argument("--mute", choices=["on", "off"], default=None, help="sidetone mute")
-    p.add_argument("--keymode", choices=["compat", "edge"], default=None, help="keying mode")
+    p.add_argument("--msgmode", choices=["keyed", "text"], default=None,
+                   help="fox canned-message delivery mode")
     p.add_argument("--show", action="store_true", help="read back values only")
     p.add_argument("--quiet", type=float, default=1.2,
                    help="per-command idle-drain seconds (raise for slow nRF52 CDC)")
@@ -104,9 +105,9 @@ def main() -> int:
 
     have_setting = any(v is not None for v in
                        (args.call, args.msg, args.id, args.wpm, args.farns,
-                        args.mute, args.keymode))
+                        args.mute, args.msgmode))
     if not have_setting and not args.show:
-        p.error("nothing to do: pass --call/--msg/--id/--wpm/--farns/--mute/--keymode or --show")
+        p.error("nothing to do: pass --call/--msg/--id/--wpm/--farns/--mute/--msgmode or --show")
 
     ports = find_ports()
     if not ports:

@@ -7,7 +7,7 @@ re-enumerates the moment the host opens the port, so the ~2 s setup-console
 window is gone before the host re-attaches and edge_test.py's
 provision_over_setup() never sees "for setup console". The runtime console uses
 the same command handler (serial_console_process) and accepts msg/wpm/farns/
-keymode/mode/reboot live, so we drive it there and let `reboot` apply the
+mode/reboot live, so we drive it there and let `reboot` apply the
 persisted mode.
 
 Adds, on top of edge_test scoring, a `dn` distribution analysis of the hunter's
@@ -40,8 +40,7 @@ from edge_test import (  # noqa: E402
 RXE_RE = re.compile(r"RX E (\d+) seq=(\d+) lvl=(\d+) hb=(\d+) dn=(\d+)")
 
 
-def provision_fox_runtime(port: str, msg: str, wpm: int, farns: int | None,
-                          keymode: str) -> bool:
+def provision_fox_runtime(port: str, msg: str, wpm: int, farns: int | None) -> bool:
     """Provision the fox over the RUNTIME console, then reboot into Fox mode.
 
     The runtime console answers the same command set as the setup console; we
@@ -60,13 +59,13 @@ def provision_fox_runtime(port: str, msg: str, wpm: int, farns: int | None,
         cmds = [f"msg {msg}", f"wpm {wpm}"]
         if farns is not None:
             cmds.append(f"farns {farns}")
-        cmds += [f"keymode {keymode}", "mode 1"]
+        cmds += ["mode 1"]
         for c in cmds:
             print(f"  [fox] > {c}")
             s.write((c + "\n").encode())
             s.flush()
             # >= ~1.2s: the nRF52 (Wio/RAK) LittleFS NVS commit is slow; a 0.4s
-            # gap lets `reboot` fire before wpm/keymode flush, reverting config.
+            # gap lets `reboot` fire before wpm flush, reverting config.
             time.sleep(1.3)
             s.read(s.in_waiting or 1)
         print("  [fox] > reboot")
@@ -172,7 +171,6 @@ def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--fox", type=int, required=True)
     p.add_argument("--hunters", required=True)
-    p.add_argument("--keymode", choices=["compat", "edge"], default="edge")
     p.add_argument("--msg", default="PARIS PARIS PARIS")
     p.add_argument("--wpm", type=int, default=18)
     p.add_argument("--farns", type=int, default=None)
@@ -184,14 +182,14 @@ def main() -> int:
     hunter_ids = [int(x) for x in args.hunters.split(",") if x.strip()]
     log_path = args.log or f"/tmp/fox-timing-{int(time.time())}.log"
     print(f"# fox_timing_run: fox={args.fox} hunters={hunter_ids} "
-          f"keymode={args.keymode} msg={args.msg!r} wpm={args.wpm} "
+          f"msg={args.msg!r} wpm={args.wpm} "
           f"duration={args.duration}s log={log_path}")
 
     ports = resolve_ports([args.fox] + hunter_ids)
 
     print(f"\n# provisioning fox {args.fox} @ {ports[args.fox]} (runtime console)")
     if not provision_fox_runtime(ports[args.fox], args.msg, args.wpm,
-                                 args.farns, args.keymode):
+                                 args.farns):
         sys.stderr.write("error: fox provisioning failed; aborting\n")
         return 2
 

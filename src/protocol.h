@@ -2,17 +2,18 @@
 #include <stdint.h>
 #include <stddef.h>
 
-// Keystate-broadcast protocol (design-notes approach A): the transmitter sends
-// the current key-down/up state every TX_INTERVAL_MS. Receivers reconstruct
-// timing from the stream and drive their sidetone. No ACKs, no retries — a
-// dropped packet is corrected by the next one. This carries live keying and
-// the canned fox loop identically.
+// Edge-keying protocol: the transmitter sends a packet only on each key edge,
+// carrying the TX-measured duration of the segment that just ended (see
+// EdgeEvent and docs/edge-events.md). Receivers feed those exact durations to
+// their element classifier, decoupling decode timing from lossy/jittered radio
+// arrival. This carries live keying and the canned (keyed) fox loop identically;
+// the canned fox can alternatively send whole-text frames (see TextMsg / the
+// `msgmode text` model below). The legacy keystate-broadcast transport ("compat")
+// was removed — see the historical note at the bottom of docs/protocol.md.
 
 namespace proto {
 
 constexpr uint8_t  BROADCAST_ID   = 255;
-constexpr uint32_t TX_INTERVAL_MS = 30;
-constexpr uint8_t  MAGIC          = 0x4D;   // 'M' — KeyState sanity/version byte
 constexpr uint8_t  MAGIC_IDENT    = 0x49;   // 'I' — station-ID packet
 
 // Station identification cadence. A licensed "fox" running under Part 97 must
@@ -23,19 +24,10 @@ constexpr uint32_t IDENT_INTERVAL_MS = 8UL * 60UL * 1000UL;   // 8 minutes
 
 constexpr size_t   CALLSIGN_MAX = 10;       // null-padded in the packet
 
-struct __attribute__((packed)) KeyState {
-    uint8_t  magic;       // MAGIC
-    uint8_t  station_id;
-    uint8_t  key_down;    // 0/1
-    uint16_t seq;         // wraps; for loss/ordering diagnostics
-};
-
-constexpr size_t PACKET_LEN = sizeof(KeyState);   // 5 bytes
-
 // Dedicated station-ID packet (approach 2): carries the operator callsign and
 // the fox's keying speeds, transmitted periodically (and at the top of each fox
-// message loop) rather than in every KeyState. Distinguished from KeyState by
-// MAGIC_IDENT, so hunters that only parse KeyState simply ignore it. The speeds
+// message loop) rather than in every edge. Distinguished by MAGIC_IDENT, so
+// nodes that don't parse it simply ignore it. The speeds
 // let a hunter seed its decoder thresholds to the fox's actual timing instead
 // of its own config — needed for correct decode of slow/Farnsworth sending.
 struct __attribute__((packed)) Ident {
@@ -54,7 +46,7 @@ constexpr size_t IDENT_LEN = sizeof(Ident);   // 14 bytes
 // CTRL_SILENCE_MS to guess the window) with an explicit trigger, so the burst
 // fires immediately and the whole window is usable. Silence-sync remains the
 // fallback when the beacon is lost. Distinguished by MAGIC_LISTEN so hunters
-// (which only match MAGIC/MAGIC_IDENT/MAGIC_EDGE) ignore it. window_ms lets the
+// (which only match MAGIC_IDENT/MAGIC_EDGE) ignore it. window_ms lets the
 // instructor bound the burst to the announced deadline.
 constexpr uint8_t MAGIC_LISTEN = 0x4C;   // 'L' — fox -> "entering RX window now"
 
@@ -82,12 +74,11 @@ inline bool decode_listen(const uint8_t* buf, size_t len, Listen& l) {
     return true;
 }
 
-// Edge-event keying (docs/edge-events.md): instead of sampling key state every
-// TX_INTERVAL_MS, the transmitter sends a packet only when the key *changes*,
-// carrying the TX-measured duration of the segment that just ended. The
-// receiver reconstructs exact element timing from those durations rather than
-// from jittered local arrival times. Distinguished by MAGIC_EDGE so legacy
-// nodes (which only match MAGIC) ignore it.
+// Edge-event keying (docs/edge-events.md): the transmitter sends a packet only
+// when the key *changes*, carrying the TX-measured duration of the segment that
+// just ended. The receiver reconstructs exact element timing from those durations
+// rather than from jittered local arrival times. Distinguished by MAGIC_EDGE so
+// nodes that don't parse it ignore it.
 constexpr uint8_t MAGIC_EDGE = 0x45;   // 'E'
 
 // Idle heartbeat: when the key has been steady this long, re-send the current
@@ -133,26 +124,6 @@ inline bool decode_edge(const uint8_t* buf, size_t len, EdgeEvent& e) {
     e.flags       = buf[3];
     e.dur_now_ms  = (uint16_t)buf[4] | ((uint16_t)buf[5] << 8);
     e.dur_prev_ms = (uint16_t)buf[6] | ((uint16_t)buf[7] << 8);
-    return true;
-}
-
-// Serialize/parse. encode writes PACKET_LEN bytes. decode validates MAGIC and
-// length. Both little-endian (native ESP32-S3 layout).
-inline size_t encode(const KeyState& ks, uint8_t* buf) {
-    buf[0] = ks.magic;
-    buf[1] = ks.station_id;
-    buf[2] = ks.key_down;
-    buf[3] = (uint8_t)(ks.seq & 0xFF);
-    buf[4] = (uint8_t)(ks.seq >> 8);
-    return PACKET_LEN;
-}
-
-inline bool decode(const uint8_t* buf, size_t len, KeyState& ks) {
-    if (len < PACKET_LEN || buf[0] != MAGIC) return false;
-    ks.magic      = buf[0];
-    ks.station_id = buf[1];
-    ks.key_down   = buf[2];
-    ks.seq        = (uint16_t)buf[3] | ((uint16_t)buf[4] << 8);
     return true;
 }
 
@@ -326,7 +297,7 @@ inline bool decode_bcast(const uint8_t* buf, size_t len, BroadcastMsg& b) {
 // a '?' hole (field note §5). The hunter renders Morse LOCALLY from the text at
 // the fox's announced timing (proto::Ident), so audio is crisp and the decoded
 // text is shown verbatim with no decode ambiguity. Distinguished by MAGIC_TEXT so
-// hunters that only match MAGIC/MAGIC_IDENT/MAGIC_EDGE ignore it for free (mixed
+// hunters that only match MAGIC_IDENT/MAGIC_EDGE ignore it for free (mixed
 // fleets keep working). Live keying still streams EdgeEvent — different problem.
 constexpr uint8_t MAGIC_TEXT    = 0x54;   // 'T' — canned clue as plaintext
 constexpr size_t  TEXT_HDR_LEN  = 4;      // magic, station_id, seq, flags

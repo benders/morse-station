@@ -17,8 +17,8 @@ and wraps). RSSI is the hunter's raw chip getRSSI() (a valid relative proxy at
 matched distance; absolute values are NOT comparable across receiver families —
 e.g. nRF52 boards read lower than Heltec, see the RSSI-offset note).
 
-All stations are configured for the **edge** keymode and identical traffic
-(message/wpm) up front so only the radio path differs between rounds.
+All stations are configured with identical traffic (message/wpm) up front so
+only the radio path differs between rounds.
 
 Raw per-packet rows are written to CSV; a summary table is printed at the end.
 Every station is returned to **Hunter** mode before exit.
@@ -123,7 +123,7 @@ def set_mode_reboot(station_id: int, port: str, mode: int) -> str:
 
 def configure(station_id: int, port: str, msg: str, wpm: int, pwr: int,
               rxbw: float | None = None) -> None:
-    """Persist edge keymode + identical traffic on a station (no reboot).
+    """Persist identical traffic on a station (no reboot).
 
     When `rxbw` is given, also set the FSK receive bandwidth (kHz) so the whole
     set runs the same filter; the firmware snaps to the nearest supported step
@@ -131,7 +131,7 @@ def configure(station_id: int, port: str, msg: str, wpm: int, pwr: int,
     s = open_port(port)
     try:
         time.sleep(0.4)
-        cmds = [f"keymode edge", f"wpm {wpm}", f"msg {msg}", f"pwr {pwr}"]
+        cmds = [f"wpm {wpm}", f"msg {msg}", f"pwr {pwr}"]
         if rxbw is not None:
             cmds.append(f"rxbw {rxbw}")
         for c in cmds:
@@ -275,7 +275,7 @@ def main() -> int:
     print("  " + ", ".join(f"{i}->{idmap[i].rsplit('/', 1)[-1]}" for i in ids))
 
     rxbw_note = f", rxbw {args.rxbw} kHz" if args.rxbw is not None else ""
-    print(f"\n# configuring edge keymode + identical traffic{rxbw_note} ...")
+    print(f"\n# configuring identical traffic{rxbw_note} ...")
     for sid in ids:
         configure(sid, idmap[sid], args.msg, args.wpm, args.pwr, args.rxbw)
 

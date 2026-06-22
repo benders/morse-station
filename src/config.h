@@ -34,21 +34,13 @@ void    set_wpm(uint8_t wpm);
 uint8_t char_wpm();
 void    set_char_wpm(uint8_t wpm);
 
-// Keying transmit mode: 0 = compat (legacy KeyState stream), 1 = edge
-// (EdgeEvent on key edges — see docs/edge-events.md). Persisted so a fox flipped
-// to edge over the air comes back up in edge mode. Restored into g_keymode at
-// boot (main.cpp); the `keymode` console command sets it live and writes through
-// here. Default 0 (compat) so a fresh/legacy unit behaves exactly as before.
-uint8_t keymode();
-void    set_keymode(uint8_t mode);
-
 // Fox canned-message delivery mode (field note §7, docs/plan-text-message-mode.md):
-// 0 = keyed (stream the clue as edge/compat keying, default) / 1 = text (send the
-// clue as a single MAGIC_TEXT frame + retransmit burst; hunter renders Morse
-// locally). Persisted like keymode so a fox flipped over the air comes back up the
-// same; restored into g_msgmode at boot (main.cpp). Applies to the canned loop_fox
-// cycle only — MODE_LIVEKEY always keys edges. Default 0 so behaviour is unchanged
-// unless opted in.
+// 0 = keyed (key the clue as edge Morse over the air) / 1 = text (send the clue as
+// a single MAGIC_TEXT frame + retransmit burst; hunter renders Morse locally).
+// Persisted so a fox flipped over the air comes back up the same; restored into
+// g_msgmode at boot (main.cpp). Applies to the canned loop_fox cycle only —
+// MODE_LIVEKEY always keys edges. Default 1 (text): it is robust at the edge of
+// range; `msgmode keyed` is available for testing the keyed path.
 uint8_t msgmode();
 void    set_msgmode(uint8_t mode);
 

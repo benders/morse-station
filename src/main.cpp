@@ -19,11 +19,14 @@
 //
 // Boot menu (PRG/BOOT button): short press cycles the highlighted mode, a long
 // press (>=600 ms) selects it; auto-selects after 8 s. Modes:
-//   HUNTER  — receive keystate, play Morse sidetone, show decoded text + RSSI.
-//   FOX     — loop the canned location message, transmit keystate every 30 ms.
-//   LIVEKEY — transmit a live telegraph key, play local sidetone.
+//   HUNTER  — receive edge keying (or a text frame), play Morse sidetone, show
+//             decoded text + RSSI.
+//   FOX     — loop the canned location message: key it as edge Morse, or (default)
+//             send it as a text frame the hunter renders locally.
+//   LIVEKEY — transmit a live telegraph key as edge events, play local sidetone.
 //
-// One protocol (proto::KeyState) carries both FOX and LIVEKEY to any HUNTER.
+// Edge keying (proto::EdgeEvent) carries both FOX (keyed) and LIVEKEY to any
+// HUNTER; the canned fox can instead send a proto::TextMsg (msgmode text).
 
 static constexpr uint32_t TONE_HZ      = 750;
 // Gap after a full message before it repeats; long enough for a hunter to
@@ -145,23 +148,17 @@ static MorseKey       key;
 static bool g_live_apply = false;
 
 static uint16_t seq = 0;
-static uint32_t last_tx = 0;
-
-// Runtime keying-protocol toggle (E3): "compat" streams KeyState every
-// TX_INTERVAL_MS (current behavior, the default — no change unless flipped);
-// "edge" emits EdgeEvents only on key transitions plus an idle heartbeat. Not
-// yet NVS-persisted (E5) — a fresh boot always starts in compat.
-enum KeyMode { KEYMODE_COMPAT = 0, KEYMODE_EDGE = 1 };
-static uint8_t g_keymode = KEYMODE_COMPAT;
 
 // Fox canned-message delivery mode (field note §7, docs/plan-text-message-mode.md):
-// "keyed" streams the clue as edge/compat keying (the existing behavior); "text"
-// sends the clue as one MAGIC_TEXT frame + retransmit burst and the hunter renders
-// Morse locally. Restored from config::msgmode() at boot; the `msgmode` console
-// command sets it live. Applies to the canned loop_fox cycle only — MODE_LIVEKEY
-// always keys edges.
+// "keyed" keys the clue as edge Morse over the air; "text" sends the clue as one
+// MAGIC_TEXT frame + retransmit burst and the hunter renders Morse locally.
+// Restored from config::msgmode() at boot; the `msgmode` console command sets it
+// live. Applies to the canned loop_fox cycle only — MODE_LIVEKEY always keys
+// edges. Default "text" (robust at range); "keyed" is for testing the keyed path.
+// All keying uses the edge transport (EdgeEvent); the legacy keystate-broadcast
+// "compat" transport was removed (see docs/protocol.md historical note).
 enum MsgMode { MSGMODE_KEYED = 0, MSGMODE_TEXT = 1 };
-static uint8_t g_msgmode = MSGMODE_KEYED;
+static uint8_t g_msgmode = MSGMODE_TEXT;
 static uint32_t last_ident = 0;
 
 // Unattended-test instrumentation (E4, docs/edge-events.md "Unattended test
@@ -188,7 +185,7 @@ static uint32_t last_draw = 0;
 // ---------------------------------------------------------------------------
 // Fox keying timebase (TODO-fox-timing.md mitigation #1).
 //
-// In MODE_FOX + KEYMODE_EDGE the player-advance, edge-detection and duration
+// In MODE_FOX (keyed) the player-advance, edge-detection and duration
 // measurement run on platform::keyer_*'s fixed 2 ms cadence (esp_timer task on
 // ESP32, a FreeRTOS task on nRF52), NOT from loop(). A slow LCD/audio/BLE frame
 // can therefore no longer stretch a measured element/gap (the bug). The keyer
@@ -933,32 +930,11 @@ static bool handle_setup_command(const char* line, Print& out) {
         else                          g_showtext = !g_showtext;   // toggle
         last_draw = 0;   // refresh the hunter copy line on the next draw
         out.printf("  showtext = %s\n", g_showtext ? "on" : "off");
-    } else if (!strcmp(line, "keymode") || !strcmp(line, "keymode show") ||
-               !strncmp(line, "keymode ", 8)) {
-        // Runtime toggle between the compat KeyState stream (default — no
-        // behavior change) and EdgeEvent emission (E3). NVS-persisted (E5) and
-        // restored into g_keymode at boot, so a fox flipped to edge over the air
-        // comes back up in edge mode. See docs/edge-events.md.
-        const char* arg = line + 7;
-        while (*arg == ' ') arg++;
-        if (!*arg || !strcmp(arg, "show")) {
-            // report only
-        } else if (!strcmp(arg, "compat")) {
-            g_keymode = KEYMODE_COMPAT;
-            config::set_keymode(g_keymode);
-        } else if (!strcmp(arg, "edge")) {
-            g_keymode = KEYMODE_EDGE;
-            config::set_keymode(g_keymode);
-        } else {
-            out.println("  ? keymode <compat|edge>");
-            return false;
-        }
-        out.printf("  keymode  = %s\n", g_keymode == KEYMODE_EDGE ? "edge" : "compat");
     } else if (!strcmp(line, "msgmode") || !strcmp(line, "msgmode show") ||
                !strncmp(line, "msgmode ", 8)) {
         // Fox canned-message delivery (field note §7, docs/plan-text-message-mode.md):
-        // "keyed" (default) streams the clue as edge/compat keying; "text" sends it
-        // as one MAGIC_TEXT frame + retransmit burst and the hunter renders Morse
+        // "keyed" keys the clue as edge Morse over the air; "text" (default) sends
+        // it as one MAGIC_TEXT frame + retransmit burst and the hunter renders Morse
         // locally — robust at the edge of range where a single lost edge becomes a
         // '?'. NVS-persisted and restored into g_msgmode at boot. Canned loop_fox
         // only; MODE_LIVEKEY always keys edges.
@@ -1013,11 +989,10 @@ static bool handle_setup_command(const char* line, Print& out) {
         uint8_t bm = config::boot_mode();
         const char* mn = (bm < 5) ? mnames[bm] : "?";
         out.printf("  id=%u call=%s wpm=%u farns=%u vol=%u mute=%s mode=%s "
-                   "keymode=%s msgmode=%s tx=%s msg=\"%s\"\n",
+                   "msgmode=%s tx=%s msg=\"%s\"\n",
                    config::station_id(), config::callsign(),
                    config::wpm(), config::char_wpm(), config::volume(),
                    config::muted() ? "on" : "off", mn,
-                   g_keymode == KEYMODE_EDGE ? "edge" : "compat",
                    g_msgmode == MSGMODE_TEXT ? "text" : "keyed",
                    g_tx_halted ? "halted" : "running",
                    config::fox_message());
@@ -1172,7 +1147,7 @@ static bool handle_setup_command(const char* line, Print& out) {
                     "farns <n> | pwr <0..3> | ipwr <0..3> | pa <on|off> | lna <on|off> | "
                     "rxbw <khz> | mode <0..2> | "
                     "vol <1..32> | mute [on|off] | showtext [on|off] | "
-                    "keymode <compat|edge> | "
+                    "msgmode <keyed|text> | "
                     "relay <id|255> <cmd> | alert <text> | "
                     "model | debug [on|off] | show | screen [on|off] | power | "
                     "bootlog [clear] | btn | stall [secs] | reboot | hibernate | done");
@@ -1324,11 +1299,8 @@ void setup() {
     }
 
     config::begin();
-    // Restore the persisted keying mode (compat/edge) so a fox flipped to edge
-    // over the air stays in edge across reboots. Default is compat.
-    g_keymode = config::keymode() ? KEYMODE_EDGE : KEYMODE_COMPAT;
     // Restore the persisted canned-message delivery mode (keyed/text, field note
-    // §7) so a fox flipped to text mode over the air stays there. Default keyed.
+    // §7) so a fox flipped between modes over the air stays there. Default text.
     g_msgmode = config::msgmode() ? MSGMODE_TEXT : MSGMODE_KEYED;
     // Restore the last-used fox TX power level (clamp in case the table shrank).
     pwr_idx = config::fox_pwr_idx();
@@ -1455,32 +1427,12 @@ void setup() {
     platform::watchdog_begin(8000);
 }
 
-// Send the current key state as a packet on the 30 ms cadence.
-static void tx_keystate(uint32_t now, bool down) {
-    if (now - last_tx < proto::TX_INTERVAL_MS) return;
-    last_tx = now;
-    proto::KeyState ks{proto::MAGIC, config::station_id(), (uint8_t)down, seq++};
-    uint8_t buf[proto::PACKET_LEN];
-    proto::encode(ks, buf);
-    radio::send(buf, proto::PACKET_LEN);
-    // Observable TX proof for unattended tests (rate-limited, gated on g_debug
-    // so it costs nothing in normal operation). Pairs with the "TX SKIP" log in
-    // loop_fox to prove the stop/start gate on a serial capture.
-    if (g_debug) {
-        static uint32_t last_tx_log = 0;
-        if (now - last_tx_log >= 1000) {
-            last_tx_log = now;
-            Serial.printf("TX K seq=%u lvl=%u\n", ks.seq, down ? 1 : 0);
-        }
-    }
-}
-
-// Edge-event TX (E3, docs/edge-events.md): send a packet only when the key
+// Edge-event TX (docs/edge-events.md): send a packet only when the key
 // changes level, carrying the *measured* duration of the segment that just
 // ended plus the one before it (self-heals a single lost packet), and an idle
 // heartbeat re-asserting the current level so a receiver has presence/re-anchor
-// even when the key sits still for a long gap. Mirrors tx_keystate's role in
-// the compat path but is timed by the key, not a fixed cadence.
+// even when the key sits still for a long gap. This is the sole keying TX path,
+// timed by the key, not a fixed cadence.
 static void tx_edge(uint32_t now, bool down) {
     static bool     inited      = false;
     static bool     last_level  = false;  // level of the currently-open segment
@@ -1983,6 +1935,8 @@ static void loop_fox(uint32_t now) {
             if (!g_tx_halted) {
                 send_ident(now);   // announce wpm/char_wpm for local rendering
                 tx_text(now);      // burst the clue (TEXT_REPEATS copies)
+                seq++;             // advance the on-screen cycle counter — text
+                                   // mode never reaches the keyed seq++ path
             } else if (g_debug) {
                 static uint32_t last_skip_log = 0;
                 if (now - last_skip_log >= 1000) {
@@ -2003,12 +1957,11 @@ static void loop_fox(uint32_t now) {
         return;
     }
 
-    // Keying-timebase split (TODO-fox-timing.md mitigation #1): in KEYMODE_EDGE
-    // with a working keyer, the keyer task OWNS the player + measures durations
-    // off-loop, and loop_fox only manages the message lifecycle + drains/sends.
-    // Everything else (compat keymode, or the keyer-start fallback) keeps the
-    // legacy in-loop player.update + tx_edge/tx_keystate path, unchanged.
-    bool use_keyer = (g_keymode == KEYMODE_EDGE) && !g_keyer_fallback;
+    // Keying-timebase split (TODO-fox-timing.md mitigation #1): with a working
+    // keyer, the keyer task OWNS the player + measures durations off-loop, and
+    // loop_fox only manages the message lifecycle + drains/sends. The keyer-start
+    // fallback keeps the legacy in-loop player.update + tx_edge path.
+    bool use_keyer = !g_keyer_fallback;
 
     bool down;
     if (use_keyer) {
@@ -2058,7 +2011,7 @@ static void loop_fox(uint32_t now) {
             }
         }
     } else {
-        // Legacy in-loop path (compat keymode, or keyer fallback).
+        // Legacy in-loop path (keyer-start fallback).
         if (g_keyer_active) {
             platform::keyer_stop();
             g_keyer_active = false; g_keyer_starting = false;
@@ -2076,11 +2029,10 @@ static void loop_fox(uint32_t now) {
         down = player.down();
         // Fox runs SILENT: a transmitter that beeps is easy to find by ear,
         // which defeats the hunt. The fox only keys the radio; hunters hear the
-        // Morse from the received keystate. (Display still shows "*".)
+        // Morse from the received edges. (Display still shows "*".)
         set_tone(false);
         if (!rx_window && !g_tx_halted) {
-            if (g_keymode == KEYMODE_EDGE) tx_edge(now, down);
-            else                           tx_keystate(now, down);
+            tx_edge(now, down);
             tx_ident(now);   // periodic station-ID packet (Part 97 callsign ID)
         } else if (g_tx_halted) {
             static uint32_t last_skip_log = 0;
@@ -2103,10 +2055,7 @@ static void loop_livekey(uint32_t now) {
     bool down = key.down();
     if (down) display::activity();   // active keying = operator present; keep panel awake
     set_tone(down);
-    if (!g_tx_halted) {
-        if (g_keymode == KEYMODE_EDGE) tx_edge(now, down);
-        else                           tx_keystate(now, down);
-    }
+    if (!g_tx_halted) tx_edge(now, down);   // live keying always keys edges
 
     if (now - last_draw >= 100) {
         last_draw = now;
@@ -2132,17 +2081,24 @@ static void loop_hunter(uint32_t now) {
     static float    rssi = 0.0f;
     static bool     rssi_valid = false;
     static uint32_t last_rx = 0;
-    static uint32_t last_signal = 0;   // any decoded packet (keystate or ident)
+    static uint32_t last_signal = 0;   // any decoded packet (edge or ident)
     static uint32_t last_code = 0;     // last newly decoded char/dit-dah element
 
-    // Bilingual RX (E4, docs/edge-events.md): a hunter follows whatever the fox
-    // currently sends, flipping mode packet-by-packet. `rx_is_edge` selects the
-    // decode path below (feed_segment vs update); `last_edge_seq`/`reanchor`
-    // drive the EdgeEvent self-heal (-1 = no anchor yet -> first edge anchors
-    // with no healing attempted).
+    // Edge RX (docs/edge-events.md): `rx_is_edge` is true while receiving edge
+    // keying (vs a text frame); it gates the decode path below (feed_segment) and
+    // the self-heal. `last_edge_seq`/`reanchor` drive the EdgeEvent self-heal
+    // (-1 = no anchor yet -> first edge anchors with no healing attempted).
     static bool rx_is_edge     = false;
     static int  last_edge_seq  = -1;
     static bool reanchor       = false;
+
+    // Text-frame mode mirror of rx_is_edge (field note §7): true once a TextMsg is
+    // received, false again on any EdgeEvent. In text mode the clue is
+    // rendered locally and the copy buffers are filled directly from the frame, so
+    // the polling/edge decoder must NOT also run — otherwise a stale half-built
+    // character left over from a prior edge fox flushes a phantom '?' into the same
+    // buffer (field-observed regression). Guards the decoder step below.
+    static bool rx_is_text     = false;
 
     // Single-fox lock (see fox_lock above): the station this hunter is currently
     // following, and the last time we heard its keying. -1 = unlocked, adopt the
@@ -2177,22 +2133,23 @@ static void loop_hunter(uint32_t now) {
     static bool          text_prev_down = false;  // for render key-down edge count
     static uint16_t      text_elems     = 0;      // key-down elements rendered (debug)
     static char          rendering_text[97] = ""; // clue the player is sounding now
+    // Progressive-reveal cursor (field note §7): the clue is NOT dumped to the
+    // copy buffers on receipt. Instead each character is surfaced as the local
+    // player sounds it, so the display builds up in lock-step with the audio and
+    // visibly wipes-then-rebuilds on every message repeat (a clear "new message"
+    // cue for learners). text_reveal_pos = next char in rendering_text to show;
+    // text_reveal_need = cumulative key-down elements that must have sounded
+    // before that char is due. Both reset when a new render (re)starts.
+    static size_t        text_reveal_pos  = 0;
+    static uint16_t      text_reveal_need = 0;
 
-    // Signal-loss watchdog (T_silence) — mode-aware (E4, docs/edge-events.md
-    // "Loss handling"):
-    //  - compat: TX streams keystate every 30 ms. If we hear nothing for ~one
-    //    dah (3 units at the fast character speed), the link dropped mid-key —
-    //    force key-up so the sidetone doesn't latch and the decoder doesn't
-    //    hang. A real dah is never mistaken for signal loss.
-    //  - edge: the 3-dah-unit rule is too short — at 13 WPM it's ~414 ms, well
-    //    under the 700 ms heartbeat, so it would false-trip mid-dah on a
-    //    perfectly healthy link. Heartbeats arrive every HEARTBEAT_MS even
-    //    while the key sits steady, so 2.5x that bounds T_silence above any
-    //    legit gap between heartbeats while staying under the 3 s presence
-    //    timeout below.
-    uint32_t rx_timeout_ms = rx_is_edge
-        ? (uint32_t)(2.5 * proto::HEARTBEAT_MS)
-        : (1200u / rx_char_wpm) * 3u;
+    // Signal-loss watchdog (T_silence) — edge keying (docs/edge-events.md "Loss
+    // handling"): heartbeats arrive every HEARTBEAT_MS even while the key sits
+    // steady, so 2.5x that bounds T_silence above any legit gap between heartbeats
+    // (a fixed 3-dah-unit rule would be ~414 ms at 13 WPM and false-trip mid-dah)
+    // while staying under the 3 s presence timeout below. If we hear nothing for
+    // this long, force key-up so the sidetone doesn't latch and the decoder hangs.
+    uint32_t rx_timeout_ms = (uint32_t)(2.5 * proto::HEARTBEAT_MS);
 
     // USER/PRG tap cycles the sidetone volume (MUTE -> LOW -> MED -> HIGH,
     // persisted; mute-only on a PAM8403). The decoded-vs-dit/dah copy view is now
@@ -2203,7 +2160,6 @@ static void loop_hunter(uint32_t now) {
     size_t n;
     float r;
     if (radio::poll(buf, sizeof(buf), n, r)) {
-        proto::KeyState  ks;
         proto::Ident     id;
         proto::EdgeEvent ev;
         proto::TextMsg   tm;
@@ -2217,26 +2173,6 @@ static void loop_hunter(uint32_t now) {
             // Count it as signal so the presence bar doesn't blink during a
             // run of control packets. The radio is re-armed by control_rx_try.
             last_signal = now;
-        } else if (proto::decode(buf, n, ks) &&
-                   fox_lock(ks.station_id, locked_fox, last_fox_rx, now)) {
-            // KeyState (compat): a fox sending this is NOT in edge mode, so a
-            // bilingual hunter follows it back to the polling decode path —
-            // byte-identical to pre-E4 behavior once rx_is_edge is false.
-            // (Gated by fox_lock: a competing fox's keying is dropped here.)
-            rx_is_edge = false;
-            rx_down = ks.key_down != 0;
-            rx_station_id = ks.station_id;
-            last_rx = now;
-            last_signal = now;
-            display::activity();   // inbound keying keeps the hunter's panel awake
-            rssi = r;
-            rssi_valid = true;
-            // RSSI no longer modulates loudness — always play the pure tone at
-            // full volume. (The RSSI bar on the display still tracks signal.)
-            if (g_debug) {
-                Serial.printf("RX K %u seq=%u lvl=%u rssi=%d\n",
-                              ks.station_id, ks.seq, rx_down ? 1 : 0, (int)r);
-            }
         } else if (proto::decode_ident(buf, n, id) && id.wpm && id.char_wpm &&
                    fox_lock(id.station_id, locked_fox, last_fox_rx, now)) {
             // Retune the decoder to the fox's announced timing (only on change).
@@ -2259,6 +2195,7 @@ static void loop_hunter(uint32_t now) {
             // ENDED (dur_now_ms) had the OPPOSITE level, and the one before
             // that (dur_prev_ms, the self-heal copy) had `level_down`'s level.
             rx_is_edge = true;
+            rx_is_text = false;
             bool level_down = (ev.flags & proto::EDGE_FLAG_DOWN) != 0;
             bool hb         = (ev.flags & proto::EDGE_FLAG_HEARTBEAT) != 0;
 
@@ -2324,20 +2261,15 @@ static void loop_hunter(uint32_t now) {
             display::activity();   // inbound clue keeps the panel awake
             rssi = r;
             rssi_valid = true;
+            // Text mode owns the copy buffers now; keep the edge/compat decoder
+            // out of them and wipe any half-built char it was holding so it can't
+            // flush a phantom '?' into the clue (begin() resets without emitting).
+            rx_is_edge = false;
+            rx_is_text = true;
+            decoder.begin(rx_wpm, rx_char_wpm);
             bool fresh = (last_text_seq < 0) || ((uint8_t)tm.seq != (uint8_t)last_text_seq);
             if (fresh) {
                 last_text_seq = tm.seq;
-                // Show the decoded text directly; build the dit/dah view from the
-                // clue so the showtext-off display still scrolls elements.
-                text_buf[0] = '\0';   text_len = 0;
-                ditdah_buf[0] = '\0'; ditdah_len = 0;
-                for (size_t i = 0; tm.text[i]; ++i) {
-                    char c = tm.text[i];
-                    text_push(c);
-                    if (c == ' ') { ditdah_push("/ "); continue; }
-                    const char* p = morse::pattern(c);
-                    if (p) { ditdah_push(p); ditdah_push(" "); }
-                }
                 last_code = now;
                 Serial.println(tm.text);
                 // Record for `show` (validatable over serial OR BLE).
@@ -2354,6 +2286,16 @@ static void loop_hunter(uint32_t now) {
                 bool changed = strncmp(tm.text, rendering_text,
                                        sizeof(rendering_text)) != 0;
                 if (!text_playing || changed) {
+                    // A genuinely new render (not just a redundant burst copy):
+                    // wipe the copy buffers and rewind the progressive-reveal
+                    // cursor so the display visibly clears and rebuilds in step
+                    // with the player below. NOT done on every fresh seq — at slow
+                    // speeds a new-seq burst arrives every REPEAT_PAUSE while the
+                    // SAME clue is still sounding; rewinding then would erase the
+                    // partially-revealed line each cycle.
+                    text_buf[0] = '\0';   text_len = 0;
+                    ditdah_buf[0] = '\0'; ditdah_len = 0;
+                    text_reveal_pos = 0;  text_reveal_need = 0;
                     strncpy(rendering_text, tm.text, sizeof(rendering_text) - 1);
                     rendering_text[sizeof(rendering_text) - 1] = '\0';
                     text_player.begin(rx_wpm, rx_char_wpm);
@@ -2400,7 +2342,10 @@ static void loop_hunter(uint32_t now) {
     }
 
     // No fresh decoded code for 10 s → blank the copy lines (text and dit/dah).
-    if (last_code != 0 && (now - last_code) > copy_blank_ms &&
+    // Suppressed while a text clue is actively sounding: the player owns the copy
+    // line and reveals it progressively (below), so the idle-blank must not erase
+    // a line that's still building (last_code only refreshes once per burst).
+    if (!text_playing && last_code != 0 && (now - last_code) > copy_blank_ms &&
         (text_len || ditdah_len)) {
         text_buf[0] = '\0';   text_len = 0;
         ditdah_buf[0] = '\0'; ditdah_len = 0;
@@ -2420,7 +2365,34 @@ static void loop_hunter(uint32_t now) {
         bool pd = text_player.down();
         if (pd && !text_prev_down) text_elems++;   // count rendered key-down edges
         text_prev_down = pd;
+
+        // Progressive reveal: surface each character once the player has sounded
+        // its key-down elements, so the copy line builds up in step with the audio
+        // (and stays blank for the first few seconds of every message — the wipe
+        // cue). `avail` is the count of key-down edges heard so far; on the final
+        // flush (0xFFFF) any trailing char/space is released. ' ' carries no
+        // elements, so it appears as soon as its preceding character is revealed.
+        auto reveal_to = [&](uint16_t avail) {
+            while (rendering_text[text_reveal_pos]) {
+                char c = rendering_text[text_reveal_pos];
+                if (c == ' ') {
+                    text_push(' '); ditdah_push("/ ");
+                    text_reveal_pos++;
+                    continue;
+                }
+                const char* p = morse::pattern(c);
+                uint16_t need = text_reveal_need + (p ? (uint16_t)strlen(p) : 0);
+                if (avail < need) break;          // not sounded yet — wait
+                text_push(c);
+                if (p) { ditdah_push(p); ditdah_push(" "); }
+                text_reveal_need = need;
+                text_reveal_pos++;
+            }
+        };
+        reveal_to(text_elems);
+
         if (text_player.finished()) {
+            reveal_to(0xFFFF);              // flush any trailing char/space
             text_playing = false;
             g_rx_text_elems = text_elems;   // surfaced in `show` (serial + BLE)
             // Test observable (gated on g_debug): proves the hunter generated key
@@ -2434,17 +2406,17 @@ static void loop_hunter(uint32_t now) {
         set_tone(rx_down);
     }
 
-    // Decoder step — branches on mode (E4, docs/edge-events.md "Decode path"):
-    //  - compat: the only timing source is local arrival, so the decoder must
-    //    be polled every loop with the live key state (unchanged from pre-E4 —
-    //    byte-identical when receiving KeyState).
-    //  - edge: the decode already happened on packet arrival via feed_segment
-    //    (TX-measured durations, not jittered local timestamps), so update()
-    //    would double-decode from noisy local timing. Just drain the queue the
-    //    feed_segment calls filled.
-    // take_element() drains the dit/dah view in BOTH modes — it surfaces the
-    // same per-element classification however it was produced.
-    if (rx_is_edge) {
+    // Decoder step (docs/edge-events.md "Decode path"): the decode already
+    // happened on packet arrival via feed_segment (TX-measured durations, not
+    // jittered local timestamps), so here we just drain the queues those calls
+    // filled. take_element() drains the dit/dah view.
+    //
+    // Text mode (§7) is the exception: the copy buffers were filled directly from
+    // the received frame, so skip the decoder entirely — running it would only let
+    // a stale half-built char surface a phantom '?' over the clean clue.
+    if (rx_is_text) {
+        // nothing to decode — the clue render owns text_buf/ditdah_buf
+    } else if (rx_is_edge) {
         char e;
         while ((e = decoder.take_element())) {
             rolling_append(ditdah_buf, ditdah_len, sizeof(ditdah_buf), &e, 1);
@@ -2453,30 +2425,6 @@ static void loop_hunter(uint32_t now) {
         }
         char c;
         while ((c = decoder.take_char())) {
-            last_code = now;
-            text_push(c);
-            Serial.print(c);
-            if (g_debug) Serial.printf("CH %d %c\n", rx_station_id, c);
-            // Separate the dit/dah stream: a single space between letters,
-            // " / " between words (the word-gap char ' ' arrives after the
-            // letter's space).
-            if (c == ' ') ditdah_push("/ ");
-            else          ditdah_push(" ");
-        }
-    } else {
-        char c = decoder.update(rx_down, now);
-
-        // Live dit/dah scroll: push each element ('.'/'-') the instant the
-        // decoder classifies it, so the dit/dah view advances one element at a
-        // time rather than a whole character at once.
-        char e = decoder.take_element();
-        if (e) {
-            rolling_append(ditdah_buf, ditdah_len, sizeof(ditdah_buf), &e, 1);
-            last_code = now;
-            if (g_debug) Serial.printf("EL %d %c\n", rx_station_id, e);
-        }
-
-        if (c) {
             last_code = now;
             text_push(c);
             Serial.print(c);
@@ -2555,8 +2503,8 @@ static bool instructor_service_rx(uint32_t now) {
         g_fox_listening    = true;
         g_fox_listen_until = now + l.window_ms;
     } else if (g_ctrl.active && n >= 2 && buf[1] == g_ctrl.target_id &&
-               (buf[0] == proto::MAGIC || buf[0] == proto::MAGIC_IDENT ||
-                buf[0] == proto::MAGIC_EDGE)) {
+               (buf[0] == proto::MAGIC_IDENT || buf[0] == proto::MAGIC_EDGE ||
+                buf[0] == proto::MAGIC_TEXT)) {
         // Heard the target fox transmitting — it is alive and NOT in its RX
         // window right now. Track the time so a following gap reveals the window.
         g_fox_heard = true;

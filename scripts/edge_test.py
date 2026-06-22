@@ -9,7 +9,7 @@ listening:
      console; no hardcoded port names -- they re-enumerate).
   2. Provision the fox over its *boot setup console* (same flow as
      provision.py: reset -> "for setup console" -> 's' -> `setup>`): message,
-     wpm, farns, keymode, `mode 1` (Fox persisted to NVS), `reboot`.
+     wpm, farns, `mode 1` (Fox persisted to NVS), `reboot`.
   3. Provision each hunter the same way: `mode 0` (Hunter), `reboot`.
   4. Wait for the boot sequence (setup window + splash + 5s menu auto-select)
      to land everyone in their run loop.
@@ -327,8 +327,6 @@ def main() -> int:
     p.add_argument("--fox", type=int, required=True, help="fox station id")
     p.add_argument("--hunters", required=True,
                    help="comma-separated hunter station ids, e.g. 115,42")
-    p.add_argument("--keymode", choices=["compat", "edge"], default="edge",
-                   help="fox keymode to provision (default: edge)")
     p.add_argument("--msg", default="PARIS PARIS PARIS",
                    help="fox message text (default: %(default)r)")
     p.add_argument("--wpm", type=int, default=13, help="overall keying speed")
@@ -352,7 +350,7 @@ def main() -> int:
         p.error("--fox station id must not also appear in --hunters")
 
     log_path = args.log or f"/tmp/edge_test-{int(time.time())}.log"
-    print(f"# edge_test: fox={args.fox} hunters={hunter_ids} keymode={args.keymode} "
+    print(f"# edge_test: fox={args.fox} hunters={hunter_ids} "
           f"msg={args.msg!r} wpm={args.wpm} farns={args.farns} "
           f"duration={args.duration}s log={log_path}")
 
@@ -364,7 +362,7 @@ def main() -> int:
     fox_cmds = [f"msg {args.msg}", f"wpm {args.wpm}"]
     if args.farns is not None:
         fox_cmds.append(f"farns {args.farns}")
-    fox_cmds += [f"keymode {args.keymode}", "mode 1"]   # mode 1 = Fox (persisted)
+    fox_cmds += ["mode 1"]   # mode 1 = Fox (persisted)
     fox_ok = provision_over_setup(ports[args.fox], f"fox {args.fox}", fox_cmds)
     if not fox_ok:
         sys.stderr.write(f"error: failed to provision fox {args.fox}; aborting "
