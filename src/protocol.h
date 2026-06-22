@@ -336,4 +336,56 @@ inline bool decode_text(const uint8_t* buf, size_t len, TextMsg& m) {
     return true;
 }
 
+// Text-render sync / DF beacon (field note §8, docs/plan-text-sync-beacon.md).
+// In msgmode=text the clue is delivered once as a MAGIC_TEXT frame and then
+// rendered LOCALLY on each hunter, so without a shared clock the hunters beep
+// out of step and the air sits idle ~12 s between clues (no RSSI for DF). The fox
+// emits this beacon every BEACON_MS (<=250 ms) across the WHOLE loop — both while
+// a clue renders and during the inter-message pause — to do two jobs at once:
+//   1. presence/DF — a carrier on the air at a fixed cadence to track by RSSI;
+//   2. sync — `pos_ms` is the fox's render position, which a hunter slaves its
+//      local morse::Player to (Player::resync), so all hunters render in unison.
+// `seq` matches the MAGIC_TEXT frame's seq for the clue being rendered, so a
+// hunter knows which clue the position refers to and a station tuning in
+// mid-message can join once it also has the text. wpm/char_wpm let a mid-joiner
+// render without first catching an Ident. `pos_ms == POS_IDLE` means no clue is
+// rendering (the inter-message pause): presence/DF only, no render action.
+// Distinguished by MAGIC_SYNC so older nodes (matching only MAGIC_IDENT/EDGE/
+// TEXT) ignore it for free — they keep rendering from the text frame alone.
+constexpr uint8_t  MAGIC_SYNC = 0x53;   // 'S' — text-render sync / DF beacon
+constexpr uint16_t POS_IDLE   = 0xFFFF; // pos_ms sentinel: no clue rendering now
+constexpr size_t   SYNC_LEN   = 7;      // magic, id, seq, wpm, char_wpm, pos_ms(LE)
+
+struct __attribute__((packed)) Sync {
+    uint8_t  magic;        // MAGIC_SYNC
+    uint8_t  station_id;   // the fox
+    uint8_t  seq;          // == TextMsg.seq of the clue being rendered
+    uint8_t  wpm;          // overall speed (render w/o waiting for an Ident)
+    uint8_t  char_wpm;     // Farnsworth character speed
+    uint16_t pos_ms;       // render position, or POS_IDLE between clues
+};
+
+inline size_t encode_sync(uint8_t station_id, uint8_t seq, uint8_t wpm,
+                          uint8_t char_wpm, uint16_t pos_ms, uint8_t* buf) {
+    buf[0] = MAGIC_SYNC;
+    buf[1] = station_id;
+    buf[2] = seq;
+    buf[3] = wpm;
+    buf[4] = char_wpm;
+    buf[5] = (uint8_t)(pos_ms & 0xFF);
+    buf[6] = (uint8_t)(pos_ms >> 8);
+    return SYNC_LEN;
+}
+
+inline bool decode_sync(const uint8_t* buf, size_t len, Sync& s) {
+    if (len < SYNC_LEN || buf[0] != MAGIC_SYNC) return false;
+    s.magic      = buf[0];
+    s.station_id = buf[1];
+    s.seq        = buf[2];
+    s.wpm        = buf[3];
+    s.char_wpm   = buf[4];
+    s.pos_ms     = (uint16_t)buf[5] | ((uint16_t)buf[6] << 8);
+    return true;
+}
+
 } // namespace proto
