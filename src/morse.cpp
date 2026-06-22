@@ -78,19 +78,50 @@ void Player::start(const char* text) {
         if (!segs_.empty()) segs_.back().ms = ichar_gap_;        // -> char gap
     }
     idx_ = 0;
-    seg_start_ = millis();
+    started_at_ = millis();
+    seg_start_  = started_at_;
+    pos_ms_     = 0;
+    total_ms_   = 0;
+    for (const Seg& s : segs_) total_ms_ += s.ms;
     finished_ = segs_.empty();
     down_ = !finished_ && segs_[0].on;
 }
 
 void Player::update(uint32_t now_ms) {
-    if (finished_) { down_ = false; return; }
+    if (finished_) { down_ = false; pos_ms_ = total_ms_; return; }
     while (now_ms - seg_start_ >= segs_[idx_].ms) {
         seg_start_ += segs_[idx_].ms;
         idx_++;
-        if (idx_ >= segs_.size()) { finished_ = true; down_ = false; return; }
+        if (idx_ >= segs_.size()) { finished_ = true; down_ = false; pos_ms_ = total_ms_; return; }
     }
     down_ = segs_[idx_].on;
+    pos_ms_ = now_ms - started_at_;
+}
+
+void Player::resync(uint32_t now_ms, uint32_t pos_ms) {
+    if (segs_.empty()) return;             // nothing loaded -> no-op
+    if (pos_ms >= total_ms_) {             // at/after the end -> finish the render
+        idx_        = segs_.size();
+        finished_   = true;
+        down_       = false;
+        pos_ms_     = total_ms_;
+        started_at_ = now_ms - total_ms_;
+        seg_start_  = now_ms;
+        return;
+    }
+    // Walk the cumulative timeline to the segment that contains pos_ms.
+    uint32_t cum = 0;
+    size_t   i   = 0;
+    while (i < segs_.size() && cum + segs_[i].ms <= pos_ms) {
+        cum += segs_[i].ms;
+        i++;
+    }
+    idx_        = i;
+    started_at_ = now_ms - pos_ms;         // position 0 maps to this wall time
+    seg_start_  = started_at_ + cum;       // wall time the active segment began
+    pos_ms_     = pos_ms;
+    finished_   = false;
+    down_       = segs_[idx_].on;
 }
 
 // ---- Decoder --------------------------------------------------------------

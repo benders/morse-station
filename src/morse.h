@@ -34,16 +34,32 @@ public:
     bool down() const { return down_; }
     bool finished() const { return finished_; }
 
+    // Elapsed ms into the current render, as of the last update() (0 before the
+    // first update, clamped to the total render length once finished). Lets a
+    // caller compare its local playback position against an external clock.
+    uint32_t position_ms() const { return pos_ms_; }
+
+    // Slave the render to an external clock: align playback so the position is
+    // `pos_ms` at wall time `now_ms`, jumping the active segment/key state to
+    // match. Used to keep a hunter's local render locked to the fox's sync
+    // beacon (docs/plan-text-sync-beacon.md). A `pos_ms` at/after the end
+    // finishes the render; no-op if no timeline is loaded. update()/down()/
+    // finished() are unchanged when resync() is never called.
+    void resync(uint32_t now_ms, uint32_t pos_ms);
+
 private:
     struct Seg { bool on; uint16_t ms; };
     std::vector<Seg> segs_;
-    size_t   idx_       = 0;
-    uint32_t seg_start_ = 0;
-    bool     down_      = false;
-    bool     finished_  = true;
-    uint16_t unit_      = 92;          // dit/dah/intra-char unit (char speed)
-    uint16_t ichar_gap_ = 276;         // inter-character gap (3*unit, stretched)
-    uint16_t iword_gap_ = 644;         // inter-word gap (7*unit, stretched)
+    size_t   idx_        = 0;
+    uint32_t seg_start_  = 0;          // wall time the current segment began
+    uint32_t started_at_ = 0;          // wall time corresponding to position 0
+    uint32_t pos_ms_     = 0;          // elapsed into the render (see position_ms)
+    uint32_t total_ms_   = 0;          // sum of all segment durations
+    bool     down_       = false;
+    bool     finished_   = true;
+    uint16_t unit_       = 92;         // dit/dah/intra-char unit (char speed)
+    uint16_t ichar_gap_  = 276;        // inter-character gap (3*unit, stretched)
+    uint16_t iword_gap_  = 644;        // inter-word gap (7*unit, stretched)
 };
 
 // Timing decoder: feed it the key state on every tick; it emits decoded
