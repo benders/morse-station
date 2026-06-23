@@ -284,6 +284,42 @@ void status(const char* title, const char* line1, const char* line2) {
     push();
 }
 
+// Boot splash: title + two body lines confined to the left half (0..119), a
+// placeholder crest box on the right half (120..239). The placeholder is a
+// stand-in for the real OSG crest art (matching the OLED path's osg_logo.h)
+// until a Cardputer-sized asset is supplied.
+void splash(const char* title, const char* line1, const char* line2) {
+    auto& d = gfx();
+    d.fillScreen(TFT_BLACK);
+    d.setTextSize(2);
+    d.setTextColor(TFT_GREEN, TFT_BLACK);
+    if (title) { d.setCursor(0, 8);  d.print(title); }
+    d.setTextColor(TFT_WHITE, TFT_BLACK);
+    if (line1) { d.setCursor(0, 32); d.print(line1); }
+    if (line2) {
+        // line2 is the station ID alone; set big and centered in the
+        // remaining space so it reads at a glance.
+        d.setTextSize(4);
+        d.setTextColor(TFT_WHITE, TFT_BLACK);
+        int w = d.textWidth(line2);
+        int x = (W / 2 - (int)w) / 2;
+        if (x < 0) x = 0;
+        d.setCursor(x, 80);
+        d.print(line2);
+    }
+
+    constexpr int box_x = W / 2;            // 120
+    constexpr int box_w = W - box_x;        // 120
+    d.drawRect(box_x + 8, 8, box_w - 16, H - 16, TFT_DARKGREY);
+    d.drawLine(box_x + 8, 8, box_x + box_w - 8, H - 8, TFT_DARKGREY);
+    d.drawLine(box_x + box_w - 8, 8, box_x + 8, H - 8, TFT_DARKGREY);
+    d.setTextSize(1);
+    d.setTextColor(TFT_DARKGREY, TFT_BLACK);
+    d.setCursor(box_x + box_w / 2 - 18, H / 2 - 4);
+    d.print("LOGO");
+    push();
+}
+
 // Instructor control view — the Cardputer is the instructor station, so this is
 // its primary screen (relay/broadcast status). Mirrors the Heltec layout via the
 // generic status() frame: a green title, then two white body lines.

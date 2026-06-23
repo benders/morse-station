@@ -6,6 +6,7 @@
 // ST7789V2 driven by M5.Display; see display_cardputer.cpp.
 #include "battery.h"
 #include "config.h"
+#include "osg_logo.h"
 #include "pins.h"
 #include <Arduino.h>
 #include <U8g2lib.h>
@@ -301,6 +302,28 @@ void status(const char* title, const char* line1, const char* line2) {
     if (title) oled.drawStr(0, 14, title);
     if (line1) oled.drawStr(0, 36, line1);
     if (line2) oled.drawStr(0, 54, line2);
+    oled.sendBuffer();
+}
+
+void splash(const char* title, const char* line1, const char* line2) {
+    if (!g_oled_ok) return;
+    oled.clearBuffer();
+    // The crest takes the right 64x64 half of the 128x64 panel exactly; the
+    // left half is left for boot text. title/line1 (name, build rev) use a
+    // small font (4x6, 16 chars/line) stacked at the top; line2 is the station
+    // ID alone, set big and centered in the remaining space so it reads at a
+    // glance.
+    oled.setFont(u8g2_font_4x6_tr);
+    if (title) oled.drawStr(0, 8, title);
+    if (line1) oled.drawStr(0, 18, line1);
+    if (line2) {
+        oled.setFont(u8g2_font_10x20_tr);
+        int w = oled.getStrWidth(line2);
+        int x = (64 - w) / 2;
+        if (x < 0) x = 0;
+        oled.drawStr(x, 58, line2);
+    }
+    oled.drawXBM(128 - osg_logo_w, 0, osg_logo_w, osg_logo_h, osg_logo_bits);
     oled.sendBuffer();
 }
 

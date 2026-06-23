@@ -1332,11 +1332,18 @@ void setup() {
 
     display::begin();
     battery::begin();
+    // Splash text now shares the panel with the crest (left 64x64 half on the
+    // OLED boards), so the rev is capped to fit that narrower column; the full
+    // GIT_REV (incl. -dirty) is always available via the `show` console command.
+    char rev[16];
+    snprintf(rev, sizeof(rev), "%.10s", GIT_REV);
+    char* dirty = strstr(rev, "-dirty");
+    if (dirty) *dirty = 0;
     char splash_id[24];
-    snprintf(splash_id, sizeof(splash_id), "build %s", GIT_REV);
-    char splash_line2[24];
-    snprintf(splash_line2, sizeof(splash_line2), "station id %u", config::station_id());
-    display::status("Morse Station", splash_id, splash_line2);
+    snprintf(splash_id, sizeof(splash_id), "build %s", rev);
+    char splash_line2[8];
+    snprintf(splash_line2, sizeof(splash_line2), "%u", config::station_id());
+    display::splash("Morse Station", splash_id, splash_line2);
     delay(3000);                       // hold the splash so rev + id are readable
 #ifdef DEVICE_CARDPUTER_ADV
     // On-device keyboard provisioning (callsign / fox message). Brief opt-in

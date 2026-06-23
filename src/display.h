@@ -36,6 +36,11 @@ void livekey(uint16_t seq, bool tone_on);
 // an unused body line. Used by bring-up/test sketches. */
 void status(const char* title, const char* line1, const char* line2);
 
+// Boot splash: title + two body lines confined to the left half of the panel,
+// with the OSG crest occupying the right half. Pass nullptr for an unused body
+// line.
+void splash(const char* title, const char* line1, const char* line2);
+
 // Instructor broadcast banner overlay (docs/plan-instructor-broadcast.md). Shows
 // an "INSTRUCTOR" title and the message text: centered when it fits one line,
 // wrapped to two static lines when it fits two, and horizontally scrolled
