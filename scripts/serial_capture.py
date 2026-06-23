@@ -1,9 +1,15 @@
 #!/usr/bin/env python
-# Resilient serial capture for the Cardputer brownout test.
-# Survives USB unplug/replug: when the port vanishes it waits and reopens
-# (the port may re-enumerate to a different usbmodem name). Every received
-# line is timestamped and appended to the log file. Connect/disconnect
-# transitions are marked so battery power-cycles are easy to find.
+# Resilient serial capture that survives a reboot or USB unplug/replug: when the
+# port vanishes it waits and reopens (the port may re-enumerate to a different
+# usbmodem name). Every received line is timestamped and appended to the log
+# file; connect/disconnect transitions are marked.
+#
+# Two uses:
+#   - Cardputer brownout test (battery power-cycles).
+#   - Type-time panic capture (TODO.md C2 / instructor-UI plan Risk B): run this,
+#     then type heavily on the keyboard; if the board reboots, the ESP32
+#     backtrace printed to USB CDC just before reset lands in the log instead of
+#     dying with the re-enumerating port.
 import glob, time, datetime, sys
 
 LOG = sys.argv[1] if len(sys.argv) > 1 else '/tmp/station73_serial.log'

@@ -533,13 +533,18 @@ See `docs/components/cardputer-adv.md` for the hardware facts and lessons.
 - [ ] **Verify on hardware:** keymap/shift correctness (esp. symbols), debounce
       feel, that the opt-in window times out cleanly, and that edited values
       persist + drive the fox loop.
-- [ ] **Intermittent crash while typing a message on the keyboard**, followed by
+- [~] **Intermittent crash while typing a message on the keyboard**, followed by
       several reboots (seen once on HW 2026-05-31, did not reproduce). No serial
       capture of the panic yet — the USB port re-enumerates on the reboot so a
       plain `cat` of the port dies; capture with a reconnecting loop and watch for
       the ESP32 backtrace. Suspects: TCA8418 FIFO handling / keynum decode in
       `keyboard_cardputer.cpp`, or the editor buffer in `config_ui_cardputer.cpp`
       (bounds on append?). The `# boot #N reason` NVS log records the reset reason.
+      Instructor-UI Phase 0 (de-risk): bounded both TCA8418 FIFO drains
+      (`FIFO_DRAIN_MAX`) so a wedged event-count read can't spin loop() into the
+      watchdog; capture tooling is `scripts/serial_capture.py` (reconnects across
+      the reboot). Still need the HW heavy-typing repro-or-rule-out before the
+      text-entry phases build on it.
 - [?] Decide whether keyboard config also covers wpm/farns/id, or those stay
       serial-only (currently serial-only).
 

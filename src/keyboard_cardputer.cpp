@@ -38,6 +38,13 @@ constexpr uint8_t CFG_KE_IEN  = 0x01;
 
 constexpr uint8_t ADDR = I2C_ADDR_TCA8418;   // 0x34
 
+// Hard cap on consecutive FIFO reads in one drain. The TCA8418 event-count
+// nibble maxes at 10 (its FIFO depth), so a healthy drain finishes well under
+// this. The bound exists only so a wedged I2C read that keeps returning a
+// non-zero count can never spin loop() forever and trip the watchdog (a
+// suspected cause of the rare type-time reboot — TODO.md C2 / plan Risk B).
+constexpr uint8_t FIFO_DRAIN_MAX = 32;
+
 // Legend in M5 "picture" coordinates. '\0' = modifier / non-emitting; control
 // codes: '\b' del, '\r' enter, '\t' tab.
 const char KEY_FIRST[4][14] = {
@@ -94,7 +101,9 @@ void begin() {
     wr(REG_KP_GPIO_1 + 2, 0x00);
 
     // Drain any stale events and clear interrupt status, then enable.
-    while ((rd(REG_KEY_LCK_EC) & 0x0F) != 0) { if (rd(REG_KEY_EVENT_A) == 0) break; }
+    for (uint8_t i = 0; i < FIFO_DRAIN_MAX && (rd(REG_KEY_LCK_EC) & 0x0F) != 0; i++) {
+        if (rd(REG_KEY_EVENT_A) == 0) break;
+    }
     (void)rd(REG_GPIO_INT_STAT_1);
     (void)rd(REG_GPIO_INT_STAT_1 + 1);
     (void)rd(REG_GPIO_INT_STAT_1 + 2);
@@ -108,8 +117,9 @@ void begin() {
 
 bool read_char(char& out) {
     // Drain events until one yields a printable char (or the FIFO empties).
-    // Press/release of modifiers are folded in and never returned.
-    while ((rd(REG_KEY_LCK_EC) & 0x0F) != 0) {
+    // Press/release of modifiers are folded in and never returned. The drain is
+    // bounded (FIFO_DRAIN_MAX) so a wedged event-count read can't spin forever.
+    for (uint8_t i = 0; i < FIFO_DRAIN_MAX && (rd(REG_KEY_LCK_EC) & 0x0F) != 0; i++) {
         uint8_t evt = rd(REG_KEY_EVENT_A);
         uint8_t row, col; bool pressed;
         if (!decode(evt, row, col, pressed)) continue;
