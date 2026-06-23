@@ -123,7 +123,11 @@ static bool g_pa_on = false;
 // command selects:
 //   AUTO (default) — BLE follows the panel: lit = advertising, idle-blanked =
 //                    off, so an interacted-with node is reachable and an idle one
-//                    reclaims the ~70 mA 2.4 GHz core.
+//                    reclaims the ~70 mA 2.4 GHz core. EXCEPT Hunter: inbound RX
+//                    keying keeps a Hunter's panel lit indefinitely (its whole
+//                    job), so AUTO there instead follows g_ble_operator_ms (see
+//                    below) and drops BLE after BLE_HUNTER_IDLE_MS of no
+//                    button/console/keyboard touch, regardless of RX traffic.
 //   ON  — force advertising regardless of the panel (e.g. to reach an idle
 //         instructor sitting on its blanked "ready" screen).
 //   OFF — force the core down regardless of the panel.
@@ -132,6 +136,22 @@ static bool g_pa_on = false;
 enum BleMode { BLE_AUTO, BLE_ON, BLE_OFF };
 static BleMode g_ble_mode = BLE_AUTO;
 static bool    g_ble_on   = true;
+
+// Last genuine *operator* touch (button, console/BLE command line, keyboard) —
+// deliberately NOT updated by inbound RX/banner activity, unlike
+// display::activity(). Used only to gate the Hunter BLE-AUTO idle-off above;
+// every other mode's panel already idle-blanks on its own when untouched, so
+// they can keep following display::blanked() directly.
+static uint32_t g_ble_operator_ms = 0;
+static const uint32_t BLE_HUNTER_IDLE_MS = 60000;   // 1 minute
+
+// Stamp both the panel wake and the Hunter BLE idle gate. Call this at sites
+// that are a real operator action; RX/banner-driven display::activity() calls
+// elsewhere stay as-is so they wake the screen without resetting the BLE timer.
+static inline void mark_operator_activity() {
+    g_ble_operator_ms = millis();
+    display::activity();
+}
 
 // Effective board model for `show`/`model`. The Heltec V4 sub-revision is
 // auto-detected from the FEM strap at radio::init() (V4.2 GC1109 vs V4.3
@@ -601,8 +621,9 @@ static void hibernate();   // defined below; reached from the `hibernate` comman
 // end (the "done"/"exit" command). See docs/commands.md.
 static bool handle_setup_command(const char* line, Print& out) {
     // Any console command — over serial, BLE, or an instructor relay — counts as
-    // activity and wakes a blanked panel (display.h idle-blanking).
-    display::activity();
+    // activity and wakes a blanked panel (display.h idle-blanking). It's also a
+    // genuine operator touch, so it resets the Hunter BLE idle gate too.
+    mark_operator_activity();
     if (!strncmp(line, "call ", 5)) {
         config::set_callsign(line + 5);
         out.printf("  callsign = %s\n", config::callsign());
@@ -1742,7 +1763,7 @@ static bool prg_tapped(uint32_t now) {
         // button action (TX-power cycle / volume cycle). When the panel is
         // already on, wake (refresh the idle timer) and let the edge through.
         bool was_blanked = display::blanked();
-        display::activity();
+        mark_operator_activity();   // physical button: real operator touch
         if (was_blanked) edge = false;
         else if (banner_active(now) && !g_alert_latched) {
             // A press while a banner is showing dismisses it instead of doing the
@@ -2878,7 +2899,7 @@ void loop() {
         // A press while blanked is a wake-only press: light the panel and
         // swallow it so it doesn't also toggle mute. (See prg_tapped().)
         bool was_blanked = display::blanked();
-        display::activity();   // any keyboard press wakes the panel
+        mark_operator_activity();   // any keyboard press wakes the panel
         if (!was_blanked && banner_active(now) && !g_alert_latched) {
             g_banner_until = 0;   // dismiss the banner; swallow the key
         } else if (!was_blanked && g_alert_latched) {
@@ -2917,14 +2938,30 @@ void loop() {
     // self-syncs the moment the policy returns to AUTO. ON/OFF pin the core and
     // skip this entirely (use `ble on` to reach an idle, blanked node).
     //
+    // Hunter is the exception: inbound RX keying is THIS mode's whole job and
+    // keeps the panel lit indefinitely (display::activity() fires on every
+    // edge/text/sync packet — see loop_hunter), so following display::blanked()
+    // here would never drop BLE while a fox is on the air. Instead gate on
+    // g_ble_operator_ms (button/console/keyboard only, untouched by RX) so the
+    // ~70 mA 2.4 GHz core still reclaims itself BLE_HUNTER_IDLE_MS after the last
+    // real operator touch, regardless of how busy the radio is. A connected
+    // central is never dropped out from under itself.
+    //
     // Instructors are pinned BLE_ON in setup() so this AUTO branch never runs for
     // them; the explicit mode guard is belt-and-suspenders making that intent
     // local and obvious here — an instructor must stay reachable through a blank.
     if (g_ble_mode == BLE_AUTO && mode != MODE_INSTRUCTOR) {
-        bool want = !display::blanked();
+        bool want;
+        if (mode == MODE_HUNTER) {
+            want = ble_provision::connected() ||
+                   (millis() - g_ble_operator_ms) < BLE_HUNTER_IDLE_MS;
+        } else {
+            want = !display::blanked();
+        }
         if (g_debug && want != g_ble_on)
-            Serial.printf("# ble: AUTO panel %s -> %s\n",
-                          want ? "lit" : "blanked", want ? "up" : "down");
+            Serial.printf("# ble: AUTO %s -> %s\n",
+                          mode == MODE_HUNTER ? "hunter-idle" : "panel",
+                          want ? "up" : "down");
         apply_ble(want);
     }
 }

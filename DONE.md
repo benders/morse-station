@@ -294,6 +294,17 @@ identically). See `docs/protocol.md`.
       HW-validated on V3 (stn38 Fox) and V4 (stn43 Hunter).
       (commits 63d9dc9 / 5781fa6 / ece1e14 / 30f3ac2)
 
+- [x] **Hunter BLE auto-shutdown despite an always-lit panel** (`docs/commands.md`
+      — `ble`). The `ble auto` policy above followed `display::blanked()`, but a
+      Hunter's panel never blanks while receiving (inbound RX keying calls
+      `display::activity()` on every edge/text/sync packet), so BLE never
+      reclaimed its ~70 mA on a busy node. Fix: a separate `g_ble_operator_ms`
+      timer, touched only by genuine operator actions (button, console/BLE
+      command, keyboard) and NOT by RX/banner activity; Hunter's `auto` branch
+      gates on that timer (60 s) instead of the panel, with a connected central
+      exempted. Every other mode is unaffected (still follows the panel).
+      Flashed + booted on all 6 bench units (stn26/38/42/43/73/115).
+
 ---
 
 ## Cardputer ADV port (experimental fox)

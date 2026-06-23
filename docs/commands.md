@@ -33,6 +33,7 @@ command line terminated by CR or LF and read the echoed result.
 | `bootlog` | Dump the boot/crash-reason ring (last 16 boots, oldest first): `#<boot> reason=<n>(<name>)`. A watchdog reboot shows as `TASK_WDT` (ESP32) or `WATCHDOG` (nRF52) — see "Field watchdog" below. Diagnoses crashes after the fact with no serial attached at reset time. `bootlog clear` empties the ring (the monotonic boot counter is kept). | — | reads NVS |
 | `screen [on\|off]` | Idle display-blanking (battery saver). Bare `screen`/`screen show` reports `idle <ms>/60000` and blanked state; `on` forces the panel awake + resets the idle timer; `off` blanks now. The panel also self-blanks after 60 s with no activity and wakes on any button/serial/BLE command (and inbound keying on a hunter). | no (RAM) | yes |
 | `power` | Report the power/clock state for battery-saver verification: running CPU clock (`cpu = <n> MHz`, ESP32-S3 idles at 80 MHz), physical `cores`, and the same `screen`/idle line. Read-only. | — | reads state |
+| `ble [on\|off\|auto]` | BLE-UART (NUS) power policy. `auto` (default) follows the panel — lit = advertising, idle-blanked = off — **except a Hunter**, where inbound RX keeps the panel lit indefinitely, so `auto` instead drops BLE 60 s after the last button/console/keyboard touch (a connected central is never dropped). `on`/`off` pin the core regardless of mode (e.g. reach an idle instructor). Instructors always boot pinned `on`. Bare `ble` / `show` reports state. Reclaims ~70 mA on the V4 when down. | no (RAM) | yes |
 | `hibernate` | Remote power-down: SX1262 to sleep, then MCU deep sleep (same path as the boot-menu Hibernate item). Only a hardware RST — or a bench serial reconnect that pulses auto-reset — wakes the node. | — | yes — node sleeps |
 | `stall [secs]` | **Resiliency self-test.** Deliberately wedge `loop()` by spinning **without feeding the hardware watchdog**, to prove a hung node actually reboots itself in the field. The 8 s watchdog fires first and you never return — next boot's `bootlog` shows the watchdog cause. Optional `secs` (default 30) caps the spin as a backstop; if it ends and prints `# stall ended — watchdog did NOT fire`, the watchdog is disarmed. Always compiled (unlike the debug-only `panic`). See "Field watchdog". | — | yes — wedges the running node |
 | `reboot` / `restart` | Soft-reset the node. The boot menu auto-selects the stored boot mode after its idle timeout, so this applies a `mode <n>` change with **no physical interaction**. | — | — |
@@ -81,7 +82,10 @@ chosen because iOS exposes only BLE GATT (not classic SPP) to third-party apps.
   - **TX** (device → phone, notify): `6E400003-…` — responses, chunked to a safe
     20-byte MTU.
 - **Always-on & reconnectable:** advertising restarts on disconnect, so you can
-  connect, tweak, disconnect, and reconnect throughout an exercise.
+  connect, tweak, disconnect, and reconnect throughout an exercise. The default
+  `ble auto` policy powers the core down when idle to save battery — on a
+  Hunter that's 60 s after the last button/console/keyboard touch, regardless
+  of inbound RX (see the `ble` row above); use `ble on` to reach an idle node.
 - **Thread safety:** the RX `onWrite` callback runs on the NimBLE host task and
   only *queues* completed lines (FreeRTOS queue, depth 4). `ble_provision::process()`
   drains and dispatches them from `loop()` — the same task that reads/writes NVS
