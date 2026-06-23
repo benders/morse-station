@@ -144,21 +144,17 @@ static constexpr int PIN_VBAT_CTRL = 37;
 // Battery gate polarity: V3 gate (GPIO37) is active-HIGH — see battery.cpp.
 #define BATT_GATE_ACTIVE_HIGH 1
 
-// Sidetone — same I2S → MAX98357A path as V4.  The authoritative pin
+// Sidetone: 3-pin self-driven piezo buzzer module (VCC/GND/IO, onboard driver
+// transistor — no external NPN/RC needed) on a single PWM pin, selected by
+// -DSIDETONE_BUZZER (see sidetone.cpp LEDC path). The authoritative pin
 // assignment is in platformio.ini ([env:heltec_v3] build_flags); the #ifndef
-// fallbacks below mirror those values so the header compiles if a flag is
-// missing.  GPIO4/47/48 are clear of the radio (8-14), OLED (17/18/21),
-// VEXT (36), battery (1/37), key (6), boot strap (0), and native USB (19/20).
-#ifndef PIN_I2S_BCLK
-#define PIN_I2S_BCLK 48                     // -> MAX98357A BCLK (bit clock)
+// fallback below mirrors that value so the header compiles if the flag is
+// missing. GPIO4 is clear of the radio (8-14), OLED (17/18/21), VEXT (36),
+// battery (1/37), key (6), boot strap (0), and native USB (19/20).
+#ifndef PIN_SIDETONE_PWM
+#define PIN_SIDETONE_PWM 4
 #endif
-#ifndef PIN_I2S_LRCLK
-#define PIN_I2S_LRCLK 4                     // -> MAX98357A LRC  (word/LR select)
-#endif
-#ifndef PIN_I2S_DIN
-#define PIN_I2S_DIN 47                      // -> MAX98357A DIN  (serial data)
-#endif
-static constexpr int PIN_SIDETONE = PIN_I2S_DIN;  // back-compat alias
+static constexpr int PIN_SIDETONE = PIN_SIDETONE_PWM;
 static constexpr int PIN_KEY      = 6;     // telegraph key -> GND, INPUT_PULLUP
 static constexpr int PIN_MODE_BTN = 0;     // onboard PRG/BOOT button (mode select)
 
