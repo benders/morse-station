@@ -543,8 +543,10 @@ See `docs/components/cardputer-adv.md` for the hardware facts and lessons.
       Instructor-UI Phase 0 (de-risk): bounded both TCA8418 FIFO drains
       (`FIFO_DRAIN_MAX`) so a wedged event-count read can't spin loop() into the
       watchdog; capture tooling is `scripts/serial_capture.py` (reconnects across
-      the reboot). Still need the HW heavy-typing repro-or-rule-out before the
-      text-entry phases build on it.
+      the reboot). HW heavy-typing repro on stn73 (2026-06-23, build 8c417f5):
+      capture ran clean, no crash/reboot — gate cleared for the text-entry
+      phases. Root cause never positively identified, but it has not recurred
+      with the bounded drains.
 - [?] Decide whether keyboard config also covers wpm/farns/id, or those stay
       serial-only (currently serial-only).
 

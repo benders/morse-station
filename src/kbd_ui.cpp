@@ -2,13 +2,17 @@
 
 #include "kbd_ui.h"
 #include "keyboard.h"
+#include "platform.h"
 #include <M5Unified.h>
 #include <string.h>
 
 // Shared keyboard + LCD input primitives for the Cardputer ADV. Extracted from
 // config_ui_cardputer.cpp so the boot editor and the runtime instructor menu
 // share one input layer. Behavior is byte-for-byte the same as the original
-// anonymous-namespace helpers.
+// anonymous-namespace helpers, with one addition: every blocking wait pets the
+// hardware watchdog. The boot editor runs before the watchdog is armed (feed is
+// a no-op then), but the runtime instructor menu blocks inside loop() *after*
+// it is armed (8 s) — without feeding here a modal edit would reboot the node.
 
 namespace kbd_ui {
 
@@ -17,6 +21,7 @@ char wait_key(uint32_t timeout_ms) {
     char c;
     while (millis() - t0 < timeout_ms) {
         if (keyboard::read_char(c)) return c ? c : ' ';
+        platform::watchdog_feed();
         delay(10);
     }
     return 0;
@@ -46,7 +51,7 @@ void edit_field(const char* title, char* buf, size_t cap) {
     draw_field(title, buf);
     for (;;) {
         char c;
-        if (!keyboard::read_char(c)) { delay(8); continue; }
+        if (!keyboard::read_char(c)) { platform::watchdog_feed(); delay(8); continue; }
         if (c == '\r') return;                          // commit
         if (c == '\b') { if (len) buf[--len] = 0; draw_field(title, buf); continue; }
         if (c == '\t') c = ' ';

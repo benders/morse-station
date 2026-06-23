@@ -2755,6 +2755,13 @@ static bool instructor_service_rx(uint32_t now) {
     return true;
 }
 
+// Idle "ready" prompt shown when the instructor has nothing in flight. Factored
+// out because both the idle draw below and the return from the on-device menu
+// land here; Phase 2 extends it to show the configured fox id.
+static void instructor_ready_draw() {
+    display::instructor(PWR_LEVELS[pwr_idx].label, "ready", "relay <id> <cmd>");
+}
+
 static void loop_instructor(uint32_t now) {
     // Re-sample the clock: `now` was captured at the top of loop(), but a `relay`
     // command is staged later in that SAME iteration (serial_console_process runs
@@ -2823,8 +2830,7 @@ static void loop_instructor(uint32_t now) {
                 // Keep the most recent ack on screen for ACK_STICKY_MS before
                 // reverting to the idle prompt.
                 display::instructor(PWR_LEVELS[pwr_idx].label, g_ack_l1, g_ack_l2);
-            else display::instructor(PWR_LEVELS[pwr_idx].label, "ready",
-                                     "relay <id> <cmd>");
+            else instructor_ready_draw();
         }
         return;
     }
@@ -2912,6 +2918,14 @@ void loop() {
             g_banner_until = 0;   // dismiss the banner; swallow the key
         } else if (!was_blanked && g_alert_latched) {
             /* §6 latched alert: swallow the key, keep the banner up */
+        } else if (!was_blanked && mode == MODE_INSTRUCTOR &&
+                   !g_ctrl.active && !g_bcast.active) {
+            // Idle instructor: any real keypress opens the on-device menu
+            // (mirrors how the boot editor opens on any key). The menu is modal
+            // while idle — guarded on !g_ctrl/!g_bcast so it never blocks an
+            // in-flight burst's ACK servicing (plan Risk C) — and returns to the
+            // ready draw when the operator backs out.
+            config_ui::instructor_menu();
         } else if (!was_blanked && (kc == 'm' || kc == 'M')) {
             bool m = !config::muted();
             apply_mute(m);
