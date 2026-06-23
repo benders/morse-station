@@ -299,7 +299,7 @@ void splash(const char* title, const char* line1, const char* line2) {
     if (line2) {
         // line2 is the station ID alone; set big and centered in the
         // remaining space so it reads at a glance.
-        d.setTextSize(4);
+        d.setTextSize(5);
         d.setTextColor(TFT_WHITE, TFT_BLACK);
         int w = d.textWidth(line2);
         int x = (W / 2 - (int)w) / 2;

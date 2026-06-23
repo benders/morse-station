@@ -317,7 +317,7 @@ void splash(const char* title, const char* line1, const char* line2) {
     if (title) oled.drawStr(0, 8, title);
     if (line1) oled.drawStr(0, 18, line1);
     if (line2) {
-        oled.setFont(u8g2_font_10x20_tr);
+        oled.setFont(u8g2_font_logisoso32_tn);
         int w = oled.getStrWidth(line2);
         int x = (64 - w) / 2;
         if (x < 0) x = 0;
