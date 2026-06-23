@@ -144,17 +144,34 @@ static constexpr int PIN_VBAT_CTRL = 37;
 // Battery gate polarity: V3 gate (GPIO37) is active-HIGH — see battery.cpp.
 #define BATT_GATE_ACTIVE_HIGH 1
 
-// Sidetone: 3-pin self-driven piezo buzzer module (VCC/GND/IO, onboard driver
-// transistor — no external NPN/RC needed) on a single PWM pin, selected by
-// -DSIDETONE_BUZZER (see sidetone.cpp LEDC path). The authoritative pin
-// assignment is in platformio.ini ([env:heltec_v3] build_flags); the #ifndef
-// fallback below mirrors that value so the header compiles if the flag is
-// missing. GPIO4 is clear of the radio (8-14), OLED (17/18/21), VEXT (36),
-// battery (1/37), key (6), boot strap (0), and native USB (19/20).
+// Sidetone is an I2S stream into a MAX98357A class-D amp, same backend as the
+// V4 (see sidetone.cpp / docs/components/max98357a.md). The authoritative pin
+// assignment lives in platformio.ini ([env:heltec_v3] build_flags:
+// -DPIN_I2S_BCLK / _LRCLK / _DIN); the #ifndef fallbacks below only let this
+// header compile standalone — they mirror the platformio.ini values. The trio
+// (5/4/7) is clear of the radio (8-14), OLED (17/18/21), VEXT (36), battery
+// (1/37), key (6), boot strap (0) and native USB (19/20); no FEM on V3 so 5/7
+// are otherwise free (on V4 those are FEM control pins).
+#ifndef PIN_I2S_BCLK
+#define PIN_I2S_BCLK 5                      // -> MAX98357A BCLK (bit clock)
+#endif
+#ifndef PIN_I2S_LRCLK
+#define PIN_I2S_LRCLK 4                     // -> MAX98357A LRC  (word/LR select)
+#endif
+#ifndef PIN_I2S_DIN
+#define PIN_I2S_DIN 7                       // -> MAX98357A DIN  (serial data)
+#endif
+#if defined(SIDETONE_BUZZER)
+// Single-pin PWM square wave straight into a passive piezo buzzer (no amp).
 #ifndef PIN_SIDETONE_PWM
 #define PIN_SIDETONE_PWM 4
 #endif
 static constexpr int PIN_SIDETONE = PIN_SIDETONE_PWM;
+#else
+static constexpr int PIN_SIDETONE = PIN_I2S_DIN;  // back-compat alias; the I2S
+                                           // path uses the PIN_I2S_* trio above
+                                           // and ignores the value passed in.
+#endif
 static constexpr int PIN_KEY      = 6;     // telegraph key -> GND, INPUT_PULLUP
 static constexpr int PIN_MODE_BTN = 0;     // onboard PRG/BOOT button (mode select)
 

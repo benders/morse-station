@@ -15,7 +15,7 @@ wiring and the V3-only lessons. Hardware-validated (station 38) 2026-06-11.
 | OLED SDA / SCL / RST | 17 / 18 / 21 | I2C |
 | VEXT peripheral rail | 36 | **active-LOW** — drive LOW to power the OLED |
 | Battery ADC / gate | 1 / 37 | divider on G1, gate G37 **active-LOW** (opposite V4) |
-| I2S sidetone → MAX98357A (BCLK / LRC / DIN) | 48 / 4 / 47 | set in `platformio.ini`; no speaker wired on the in-hand unit |
+| I2S sidetone → MAX98357A (BCLK / LRC / DIN) | 5 / 4 / 7 | set in `platformio.ini`; no FEM on V3 so 5/7 are free (FEM control pins on V4); no speaker wired on the in-hand unit |
 | Telegraph key (→ GND) | 6 | INPUT_PULLUP; no key wired on the in-hand unit |
 | Mode button (PRG/BOOT) | 0 | on-board |
 
