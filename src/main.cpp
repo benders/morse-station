@@ -2896,6 +2896,41 @@ static void loop_instructor(uint32_t now) {
     }
 }
 
+#ifdef DEVICE_CARDPUTER_ADV
+// Handle one Cardputer keypress in loop(). 'm' toggles the sidetone mute — the
+// Cardputer has no volume pot, so this is the local "quiet it now" control for
+// a node sitting near people. The keyboard was brought up in config_ui::run()
+// at boot. Also owns banner-dismiss / latched-alert swallow and the idle-
+// instructor menu entry (any keypress opens the on-device menu, mirroring how
+// the boot editor opens on any key).
+static void handle_cardputer_key(char kc, uint32_t now) {
+    // A press while blanked is a wake-only press: light the panel and
+    // swallow it so it doesn't also toggle mute. (See prg_tapped().)
+    bool was_blanked = display::blanked();
+    mark_operator_activity();   // any keyboard press wakes the panel
+    if (!was_blanked && banner_active(now) && !g_alert_latched) {
+        g_banner_until = 0;   // dismiss the banner; swallow the key
+    } else if (!was_blanked && g_alert_latched) {
+        /* §6 latched alert: swallow the key, keep the banner up */
+    } else if (!was_blanked && mode == MODE_INSTRUCTOR &&
+               !g_ctrl.active && !g_bcast.active) {
+        // Idle instructor: any real keypress opens the on-device menu. The
+        // menu is modal while idle — guarded on !g_ctrl/!g_bcast so it never
+        // blocks an in-flight burst's ACK servicing (plan Risk C). If the
+        // operator picks a send action, it composes a command string and we
+        // feed it here and return to loop() so the existing async path runs
+        // (never block waiting on the ACK).
+        char cmd[128];
+        if (config_ui::instructor_menu(cmd, sizeof cmd))
+            handle_setup_command(cmd, Serial);
+    } else if (!was_blanked && (kc == 'm' || kc == 'M')) {
+        bool m = !config::muted();
+        apply_mute(m);
+        Serial.printf("# mute %s (key)\n", m ? "on" : "off");
+    }
+}
+#endif
+
 void loop() {
     uint32_t now = millis();
     // Pet the hardware watchdog once per pass. If loop() ever wedges (a hung
@@ -2909,33 +2944,8 @@ void loop() {
     // during development (parity with the BLE console). Non-blocking.
     serial_console_process();
 #ifdef DEVICE_CARDPUTER_ADV
-    // 'm' toggles the sidetone mute — the Cardputer has no volume pot, so this
-    // is the local "quiet it now" control for a node sitting near people. The
-    // keyboard was brought up in config_ui::run() at boot.
     char kc;
-    if (keyboard::read_char(kc)) {
-        // A press while blanked is a wake-only press: light the panel and
-        // swallow it so it doesn't also toggle mute. (See prg_tapped().)
-        bool was_blanked = display::blanked();
-        mark_operator_activity();   // any keyboard press wakes the panel
-        if (!was_blanked && banner_active(now) && !g_alert_latched) {
-            g_banner_until = 0;   // dismiss the banner; swallow the key
-        } else if (!was_blanked && g_alert_latched) {
-            /* §6 latched alert: swallow the key, keep the banner up */
-        } else if (!was_blanked && mode == MODE_INSTRUCTOR &&
-                   !g_ctrl.active && !g_bcast.active) {
-            // Idle instructor: any real keypress opens the on-device menu
-            // (mirrors how the boot editor opens on any key). The menu is modal
-            // while idle — guarded on !g_ctrl/!g_bcast so it never blocks an
-            // in-flight burst's ACK servicing (plan Risk C) — and returns to the
-            // ready draw when the operator backs out.
-            config_ui::instructor_menu();
-        } else if (!was_blanked && (kc == 'm' || kc == 'M')) {
-            bool m = !config::muted();
-            apply_mute(m);
-            Serial.printf("# mute %s (key)\n", m ? "on" : "off");
-        }
-    }
+    if (keyboard::read_char(kc)) handle_cardputer_key(kc, now);
 #endif
     // §6: keep the panel awake while a sticky alert is latched so the 60 s idle-
     // blank never hides it (display::activity() just stamps a millis — cheap).
