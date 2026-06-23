@@ -2757,9 +2757,13 @@ static bool instructor_service_rx(uint32_t now) {
 
 // Idle "ready" prompt shown when the instructor has nothing in flight. Factored
 // out because both the idle draw below and the return from the on-device menu
-// land here; Phase 2 extends it to show the configured fox id.
+// land here; shows the configured fox id (or a prompt to set one).
 static void instructor_ready_draw() {
-    display::instructor(PWR_LEVELS[pwr_idx].label, "ready", "relay <id> <cmd>");
+    uint8_t fid = config::fox_id();
+    static char l2[16];
+    if (fid == 0) snprintf(l2, sizeof(l2), "set fox id");
+    else          snprintf(l2, sizeof(l2), "fox %u", fid);
+    display::instructor(PWR_LEVELS[pwr_idx].label, "ready", l2);
 }
 
 static void loop_instructor(uint32_t now) {

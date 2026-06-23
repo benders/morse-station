@@ -93,6 +93,14 @@ void  set_rx_bw_khz(float khz);
 uint8_t ctrl_seq();
 void    set_ctrl_seq(uint8_t seq);
 
+// Session fox station id, persisted so the Instructor menu (Cardputer ADV)
+// doesn't have to be retyped per relay/alert command. Sentinel 0 = unset
+// (the instructor's own id); valid fox ids are 1..254 (255 is broadcast).
+// Set via the Instructor menu's Settings item; instructor_menu() forces this
+// to be set on first run before the menu is usable.
+uint8_t fox_id();
+void    set_fox_id(uint8_t id);
+
 // Compile-time platform name (heltec-v4 / wio-tracker-l1 / ...), ALWAYS correct
 // for the firmware variant. The Heltec V4 sub-revision (V4.2 GC1109 vs V4.3
 // KCT8103L) is NOT pinned here — it is auto-detected from the FEM strap at boot

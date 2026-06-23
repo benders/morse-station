@@ -20,6 +20,7 @@ uint32_t cached_rx_bw_dhz = 234;  // FSK RX bandwidth in deci-kHz (234 = 23.4 kH
                                   // mirrors radio.cpp RX_BW_KHZ default
 uint8_t cached_ctrl_seq = 0;      // instructor control-packet seq (persisted)
 uint8_t cached_volume = 8;        // sidetone level in GAIN_Q15/1024 units (8 -> 8192)
+uint8_t cached_fox_id = 0;        // session fox station id for the instructor menu (0=unset)
 
 // Compile-time platform name — always correct for the firmware variant. This is
 // the default board model; a more specific model (e.g. a Heltec V4 sub-rev that
@@ -57,6 +58,7 @@ constexpr const char* KEY_LNA   = "lna";
 constexpr const char* KEY_RXBW  = "rx_bw_dhz";
 constexpr const char* KEY_CSEQ  = "ctrl_seq";
 constexpr const char* KEY_VOL   = "volume";
+constexpr const char* KEY_FID   = "fox_id";
 
 uint8_t clamp_u8(int v, uint8_t lo, uint8_t hi) {
     if (v < lo) return lo;
@@ -112,6 +114,9 @@ void begin() {
 
     if (prefs.isKey(KEY_VOL))
         cached_volume = clamp_u8(prefs.getUChar(KEY_VOL, cached_volume), VOL_MIN, VOL_MAX);
+
+    if (prefs.isKey(KEY_FID))
+        cached_fox_id = prefs.getUChar(KEY_FID, cached_fox_id);
 
     prefs.end();
 }
@@ -247,6 +252,16 @@ void set_ctrl_seq(uint8_t seq) {
     cached_ctrl_seq = seq;
     prefs.begin(NS, false);
     prefs.putUChar(KEY_CSEQ, seq);
+    prefs.end();
+}
+
+uint8_t fox_id() { return cached_fox_id; }
+
+void set_fox_id(uint8_t id) {
+    if (id == cached_fox_id) return;        // avoid a needless flash write
+    cached_fox_id = id;
+    prefs.begin(NS, false);
+    prefs.putUChar(KEY_FID, id);
     prefs.end();
 }
 

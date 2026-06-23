@@ -1,9 +1,11 @@
 #ifdef DEVICE_CARDPUTER_ADV
 
+#include "config.h"
 #include "config_ui.h"
 #include "kbd_ui.h"
 #include "keyboard.h"
 #include <M5Unified.h>
+#include <stdlib.h>
 
 // Runtime, keyboard-driven Instructor menu for the Cardputer ADV. Distinct from
 // the boot config editor (config_ui_cardputer.cpp): this opens at runtime when an
@@ -45,23 +47,41 @@ void draw_menu() {
     d.print("1-5 select   ENTER back");
 }
 
+// Edit config::fox_id() via the shared line editor. Accepts 1..254; anything
+// else (blank, 0, >=255, non-numeric) is ignored and the stored id is left
+// unchanged. ipwr is out of scope for Phase 2 — fox id only.
+void edit_fox_id() {
+    char buf[4] = "";
+    uint8_t cur = config::fox_id();
+    if (cur != 0) snprintf(buf, sizeof(buf), "%u", cur);
+    kbd_ui::edit_field("Settings -> Fox ID", buf, sizeof(buf));
+    int v = atoi(buf);
+    if (v >= 1 && v <= 254) config::set_fox_id((uint8_t)v);
+}
+
 } // namespace
 
 namespace config_ui {
 
 void instructor_menu() {
+    // First-run forcing: a fresh instructor has no fox id staged, so prompt
+    // for one immediately rather than leaving the ready screen showing
+    // "set fox id" until the operator happens to dig into Settings.
+    if (config::fox_id() == 0) edit_fox_id();
+
     for (;;) {
         draw_menu();
         char c = kbd_ui::wait_key(30000);
         if (c == 0 || c == '\r') return;   // timeout / ENTER -> back to ready draw
         switch (c) {
+            case '5':
+                edit_fox_id();
+                break;
             // Phase 3 wires each of these to a relay/alert command. For now the
             // selections are recognised but do nothing; the menu stays up.
             case '1':   // -> relay <foxid> pwr <n>
             case '2':   // -> relay <foxid> msg <text>
             case '3':   // -> relay 255 mute on|off
-            case '4':   // -> alert <text>
-            case '5':   // -> settings (fox id, ipwr)
             default:
                 break;   // ignore; keep the menu up
         }
