@@ -2224,9 +2224,11 @@ static void loop_hunter(uint32_t now) {
     static uint32_t last_fox_rx = 0;
 
     // Copy-blanking timeout: after this long with no fresh decoded code, wipe the
-    // text and dit/dah copy lines so a stale message doesn't linger. The fox's
-    // inter-message gap (REPEAT_PAUSE) is deliberately longer than this, so the
-    // screen clears between repeats.
+    // text and dit/dah copy lines so a stale message doesn't linger. Edge mode
+    // only — the fox's inter-message gap (REPEAT_PAUSE) is deliberately longer
+    // than this, so the screen clears between repeats. Text mode clears at the
+    // start of the next clue instead (see rx_is_text guard below), giving
+    // students the full inter-message gap to copy the message down.
     const uint32_t copy_blank_ms = 10000;
 
     // Presence timeout: the fox streams keystate every 30 ms and an Ident in the
@@ -2553,11 +2555,17 @@ static void loop_hunter(uint32_t now) {
     }
 
     // No fresh decoded code for 10 s → blank the copy lines (text and dit/dah).
-    // Suppressed while a text clue is actively sounding: the player owns the copy
-    // line and reveals it progressively (below), so the idle-blank must not erase
-    // a line that's still building (last_code only refreshes once per burst).
-    if (!text_playing && last_code != 0 && (now - last_code) > copy_blank_ms &&
-        (text_len || ditdah_len)) {
+    // Edge mode only: in text mode the fox's inter-message gap (REPEAT_PAUSE) can
+    // run longer than this timeout, so this would blank a finished clue well
+    // before the next one starts. Text mode instead clears explicitly at the
+    // start of the next clue (see the `changed` branch above) so the display
+    // holds the last message for students to copy down until then. Also
+    // suppressed while a text clue is actively sounding: the player owns the
+    // copy line and reveals it progressively (below), so the idle-blank must
+    // not erase a line that's still building (last_code only refreshes once
+    // per burst).
+    if (!rx_is_text && !text_playing && last_code != 0 &&
+        (now - last_code) > copy_blank_ms && (text_len || ditdah_len)) {
         text_buf[0] = '\0';   text_len = 0;
         ditdah_buf[0] = '\0'; ditdah_len = 0;
         last_draw = 0;        // force an immediate redraw of the cleared copy
