@@ -35,7 +35,7 @@ void draw_menu() {
     d.setCursor(0, 26); d.print("1 Fox power");
     d.setCursor(0, 44); d.print("2 Fox message");
     d.setCursor(0, 62); d.print("3 Mute hunters");
-    d.setCursor(0, 80); d.print("4 RETURN alert");
+    d.setCursor(0, 80); d.print("4 Bcast alerts");
     d.setCursor(0, 98); d.print("5 Settings");
 
     d.setTextSize(1);
@@ -139,18 +139,53 @@ bool action_mute(char* out, size_t cap) {
 // blank, but never survives a reboot.
 char g_last_alert[proto::BCAST_TEXT_MAX + 1] = "";
 
-// 4 RETURN alert: edit_field seeded from the session-local last alert,
+// Send Alert: edit_field seeded from the session-local last alert,
 // compose "alert <text>". Empty text cancels.
-bool action_alert(char* out, size_t cap) {
+bool action_alert_send(char* out, size_t cap) {
     char buf[proto::BCAST_TEXT_MAX + 1];
     strncpy(buf, g_last_alert, sizeof(buf) - 1);
     buf[sizeof(buf) - 1] = '\0';
-    kbd_ui::edit_field("RETURN alert", buf, sizeof(buf));
+    kbd_ui::edit_field("Send alert", buf, sizeof(buf));
     if (buf[0] == '\0') return false;   // empty -> cancel, nothing sent
     strncpy(g_last_alert, buf, sizeof(g_last_alert) - 1);
     g_last_alert[sizeof(g_last_alert) - 1] = '\0';
     snprintf(out, cap, "alert %s", buf);
     return true;
+}
+
+void draw_alert_menu() {
+    auto& d = M5.Display;
+    d.fillScreen(TFT_BLACK);
+    d.setTextSize(2);
+    d.setTextColor(TFT_GREEN, TFT_BLACK);
+    d.setCursor(0, 2);
+    d.print("BCAST ALERTS");
+    d.setTextColor(TFT_WHITE, TFT_BLACK);
+    d.setCursor(0, 26); d.print("1 Send alert");
+    d.setCursor(0, 44); d.print("2 Clear alert");
+    d.setTextSize(1);
+    d.setTextColor(TFT_GREEN, TFT_BLACK);
+    d.setCursor(0, H - 10);
+    d.print("1-2 select   ENTER back");
+}
+
+// 4 Broadcast alerts: submenu. Send alert -> "alert <text>" (action_alert_send);
+// Clear alert -> "alert clear" (dismisses the sticky banner + releases the
+// fleet's TX halt, §6). Loops until a send composes a command or the operator
+// backs out with ENTER/timeout.
+bool action_alert(char* out, size_t cap) {
+    for (;;) {
+        draw_alert_menu();
+        char c = kbd_ui::wait_key(30000);
+        if (c == 0 || c == '\r') return false;   // timeout / ENTER -> back to main menu
+        if (c == '1') {
+            if (action_alert_send(out, cap)) return true;
+            // empty send cancelled -> fall through, redraw submenu
+        } else if (c == '2') {
+            snprintf(out, cap, "alert clear");
+            return true;
+        }
+    }
 }
 
 } // namespace
