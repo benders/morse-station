@@ -46,8 +46,10 @@ brownout note below.) So:
 - **Sidetone** is `M5.Speaker.tone()` / `.stop()` (`sidetone_cardputer.cpp`),
   same `sidetone_{on,off,set_volume,set_mute}` API as the Heltec LEDC path.
   M5.Speaker runs the I2S/codec on its own RTOS task, so key on/off carries no
-  latency. **Software volume exists here** (`M5.Speaker.setVolume`,
-  0..255) — unlike the Heltec, which has only a hardware pot. The amp is powered
+  latency. **Software volume** is `M5.Speaker.setVolume` (0..255) here, the same
+  dB-linear amplitude control the Heltec gets from the MAX98357A I2S path (see
+  `max98357a.md`); the Heltec's GAIN pin is a fixed hardware strap on top of
+  that, not the runtime control. The amp is powered
   in `sidetone_init()`, *not* in `cardputer_m5_begin()` — see the brownout note
   below.
 - **Battery** is `M5.Power.getBatteryLevel()` / `isCharging()` (`battery.cpp`),

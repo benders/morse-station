@@ -36,7 +36,7 @@ Modes:
   meter) — run the fox at LO power so the signal actually falls off with distance
   and the gradient is audible as you close in. A **short PRG tap cycles the
   sidetone volume** MUTE / LOW / MED / HIGH (remembered across power cycles;
-  buzzer/PAM8403 boards toggle mute only). The copy line shows raw dit/dah
+  boards without software volume toggle mute only). The copy line shows raw dit/dah
   elements by default; switch it to decoded letters with the `showtext on`
   console command (see `docs/commands.md`).
 - **Fox (TX loop)** — repeats the canned location message on the air. A **short
@@ -77,6 +77,8 @@ cycles). To re-pick a mode, reset the board (the menu runs again at boot).
   [Heltec V4](docs/components/heltec-v4.md),
   [Heltec V3](docs/components/heltec-v3.md),
   [Cardputer ADV](docs/components/cardputer-adv.md),
+  [RAK4631](docs/components/rak4631.md),
+  [Wio Tracker L1](docs/components/wio-tracker-l1.md),
   [SX1262](docs/components/sx1262.md),
   [MAX98357A](docs/components/max98357a.md).
 - [`docs/debug-heltec-v4.md`](docs/debug-heltec-v4.md) — capturing panic
