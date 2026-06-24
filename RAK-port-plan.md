@@ -1,6 +1,6 @@
 # Multi-target port plan: Heltec V3, RAK4631 (nRF52840), Feather 32u4 eval
 
-Status board (update as work proceeds — mirror into `TODO.md`):
+Status board (update as work proceeds — mirror into GitHub Issues):
 
 | Phase | Target | State |
 |-------|--------|-------|
@@ -11,7 +11,7 @@ Status board (update as work proceeds — mirror into `TODO.md`):
 
 This file is the implementation spec. It is written so a Sonnet sub-agent can
 execute one phase at a time. **Read `AGENTS.md` first** — its rules bind every
-phase: track in `TODO.md`, datasheets go in `reference/<board>/`, pin maps live
+phase: track in GitHub Issues, datasheets go in `reference/<board>/`, pin maps live
 in `platformio.ini` `build_flags` as `-DPIN_*` (consumed by `src/pins.h` with
 `#ifndef` fallbacks), and work conservatively/incrementally.
 
@@ -273,7 +273,7 @@ Wire-in:
    `show` (config intact), `bootlog`, fox keys / hunter copies, sidetone, mute,
    battery readout. Use `scripts/devices.sh` to map ports↔stations and the
    `--no-stub` flash fallback if the stub upload fails after port churn.
-4. Update `TODO.md` and this file's status board to `[x]` for Phase 0 only.
+4. Update GitHub Issues and this file's status board to `[x]` for Phase 0 only.
 
 Files touched in Phase 0: `platformio.ini`, new `src/platform.h`,
 `src/platform_esp32.cpp`, new `src/kv.h`, `src/kv_esp32.cpp`, edits to
@@ -333,7 +333,7 @@ MAX98357A elsewhere — confirm on hardware.)
 ### P1.5 — Verify
 - Build `-e heltec_v3`. Hardware-validate on a V3 unit: radio TX/RX vs an
   existing hunter, sidetone, battery %, BLE/serial console, bootlog.
-- Update `TODO.md` + status board.
+- Update GitHub Issues + status board.
 
 ---
 
@@ -467,7 +467,7 @@ are fine; the nRF52 uses 1200 bps touch + nrfutil from the board JSON.
   touch). Validate: boot banner, `show`/`bootlog` (LittleFS persistence), radio
   TX/RX against a Heltec hunter on 905.0 MHz, OLED screens, BLE-UART console
   (nRF Connect), battery %. Sidetone silent (expected).
-- Update `TODO.md` + status board.
+- Update GitHub Issues + status board.
 
 ---
 
@@ -498,7 +498,7 @@ Deliverable: `docs/eval-feather-32u4.md`. **No env, no code.** Content outline:
 - **If pursued anyway:** sketch the minimum viable shape (serial-only fox-only,
   U8g2 page mode or no display, EEPROM config, SX1276 GFSK matching `proto.h`)
   and call out the RAM/flash risk explicitly.
-- Cross-link from `TODO.md` and (optionally) `README.md`.
+- Cross-link from GitHub Issues and (optionally) `README.md`.
 
 ---
 
@@ -510,5 +510,5 @@ Deliverable: `docs/eval-feather-32u4.md`. **No env, no code.** Content outline:
 3. **Phase 2** (RAK4631) → build/fit + hardware-validate.
 4. **Phase 3** (32u4 doc) → independent; can be written any time.
 
-Each phase: keep changes minimal and reversible, update `TODO.md` (`[~]`→`[x]`),
+Each phase: keep changes minimal and reversible, update GitHub Issues (`[~]`→`[x]`),
 and save any datasheets pulled into `reference/`.

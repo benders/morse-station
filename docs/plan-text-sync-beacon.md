@@ -293,7 +293,7 @@ incremental `seg_start_` model — a small internal refactor to track an absolut
 | `src/main.cpp` | `BEACON_MS`/`TEXT_RESEND_MS`; fox master render clock + `tx_sync()` + scheduled beacon/text-resend in `loop_fox` text branch; `tx_text` fixed-seq-per-cycle; hunter `decode_sync` branch + slave/seek/mid-join + `want_text_seq`; per-element `reveal_to`. |
 | `docs/protocol.md` | Document `MAGIC_SYNC`/`Sync`, the beacon cadence, and the master-clock/slave model under "Model — text-frame canned message". |
 | `docs/commands.md` | No new command (BEACON_MS is fixed); note beacon behaviour if `debug` dump gains an `RX S` line. |
-| `FIELD-NOTES-20260619.md` / `TODO.md` | Mark §8 in progress. |
+| `FIELD-NOTES-20260619.md` / GitHub Issues | Mark §8 in progress. |
 
 ---
 

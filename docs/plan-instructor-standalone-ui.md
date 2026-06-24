@@ -164,9 +164,9 @@ phase that touches it rather than deferred.
 ### Phase 0 — De-risk text entry (GATING — build nothing on top until done)
 Covers Risk B and the prerequisites for any keyboard-heavy UI. Must precede the
 text-entry phases (3b RETURN alert, 3a fox message).
-- **0a — Panic capture.** Wire the reconnecting-serial panic dump (`TODO.md` C2)
-  so a typing crash is recorded, not just silently rebooted. The reset-reason log
-  already exists.
+- **0a — Panic capture.** Wire the reconnecting-serial panic dump (the Stage C2
+  type-time crash) so a typing crash is recorded, not just silently rebooted. The
+  reset-reason log already exists.
 - **0b — Harden the input layer.** Audit the TCA8418 FIFO drain in
   `keyboard_cardputer.cpp` and the editor buffer bounds in `edit_field()`.
   Exercise heavy typing on HW to reproduce-or-rule-out the C2 crash before
@@ -285,7 +285,7 @@ ESP32-S3 light-sleep is the riskiest single item and the most uncertain.
   exercise day.
 
 ### Risk B — The unexplained keyboard typing crash (HIGH)
-`TODO.md` Stage C2 records an **intermittent crash + reboot while typing on the
+Stage C2 had an **intermittent crash + reboot while typing on the
 keyboard** (seen once on HW 2026-05-31, never reproduced, never root-caused;
 suspects: TCA8418 FIFO/keynum decode in `keyboard_cardputer.cpp`, or the editor
 buffer in `config_ui_cardputer.cpp`). This UI leans **heavily** on the keyboard,

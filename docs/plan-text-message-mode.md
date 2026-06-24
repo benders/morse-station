@@ -203,7 +203,7 @@ field note §7. Out of scope for the first cut.
 | `src/morse.h` / `src/morse.cpp` | No API change expected — reuse `morse::Player` on the hunter side. |
 | `docs/protocol.md` | Document `MAGIC_TEXT`/the unified frame + the `msgmode` parameter. |
 | `docs/commands.md` | Document the `msgmode keyed|text` console command. |
-| `FIELD-NOTES-20260619.md` / `TODO.md` | Mark §7 in progress when implementation starts. |
+| `FIELD-NOTES-20260619.md` / GitHub Issues | Mark §7 in progress when implementation starts. |
 
 ## Classes / symbols
 

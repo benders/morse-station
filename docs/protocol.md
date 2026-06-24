@@ -211,8 +211,8 @@ Sent only on a key edge (or an idle heartbeat). This is the sole keying transpor
   override persists in NVS. See `src/config.cpp`.
 - The fox transmits with its own `station_id`; hunters display it as `RECV <id>`
   and key off the first one they hear.
-- **Open item:** a hunter does not yet filter to a single fox — once locked to
-  one fox it should ignore other stations until timeout (see `TODO.md`).
+- Once a hunter locks to a fox it ignores other stations until the signal times
+  out (`fox_lock()` / `locked_fox` in `src/main.cpp`).
 
 ## Fox TX power levels
 
@@ -242,10 +242,11 @@ FEM gain; +22 dBm is the SX1262 ceiling (`setOutputPower` clamps above it).
 
 **Cross-board disparity (accepted):** because the labels are approximate, the
 same MAX means **~+28 dBm on the Heltec V4** but **+22 dBm on the Wio / no-FEM
-boards**. This is intentional for now. A proper per-board EIRP calculation
-(reading the actual FEM gain per V4 revision, since the V4.3 KCT8103L PA gain
-differs from the V4.2 GC1109) is the **FEM-PA item in `TODO.md`** and
-`components/heltec-v4.md`.
+boards**. This is intentional and accepted as-is (a per-board EIRP calculation
+reading the actual FEM gain per V4 revision was not pursued — see `DONE.md`).
+Equalising the V4.2 (GC1109) and V4.3 (KCT8103L) PA gain to a matched power is
+tracked in [issue #4](https://github.com/benders/morse-station/issues/4); see
+also `components/heltec-v4.md`.
 
 Run the fox at **LO** in a small space: at MED/HI the link saturates RSSI across
 the whole search area and the hunter's "tune for max volume" gradient stops

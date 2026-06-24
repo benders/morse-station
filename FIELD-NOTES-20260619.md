@@ -3,7 +3,7 @@
 Outdoor field test of the fox-hunt system (fox + hunters + instructor remote
 control). Raw observations first, then proposed fixes and open questions for
 each. Nothing here is implemented yet — this is the post-exercise writeup that
-feeds `TODO.md`.
+feeds [GitHub Issues](https://github.com/benders/morse-station/issues).
 
 ---
 

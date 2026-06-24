@@ -12,7 +12,8 @@ command strings* (`relay <id> ...`, `relay 255 mute on|off`, `alert <text>`)
 that the BLE/serial console has always sent, and feeds them to the same
 `handle_setup_command()`. So the faults below live in the **receiving** stations'
 (pre-existing) firmware and were simply exercised for the first time. Nothing
-here is implemented yet — this is the post-exercise writeup that feeds `TODO.md`.
+here is implemented yet — this is the post-exercise writeup that feeds
+[GitHub Issues](https://github.com/benders/morse-station/issues).
 
 Stations involved: instructor = stn73 (Cardputer ADV). Targets = stn43
 (Heltec V4), stn65 (Heltec V3), stn26 + stn115 (nRF52: RAK/Wio).
@@ -190,8 +191,9 @@ on a state change the BLE-AUTO panel-follow policy cycles BLE, and `begin()` aft
 already-initialized SoftDevice and **hangs → 8 s watchdog reset** (not the radio
 RX path). Mitigated by pinning `BLE_CYCLE_UNSAFE` (these boards stay `BLE_ON`
 always); the real fix — making nRF52 `stop()`/`begin()` safe to cycle, then
-dropping the pin — is tracked in `TODO.md` under **"Restore BLE-AUTO idle power
-saving on nRF52 (RAK4631/Wio Tracker L1)"**.
+dropping the pin — is tracked in
+[issue #3](https://github.com/benders/morse-station/issues/3) (**"Restore
+BLE-AUTO idle power saving on nRF52 (RAK4631/Wio Tracker L1)"**).
 
 **Original hypothesis (DISPROVED, kept for the record).** It looked like the
 mute-specific work `apply_mute() → config::set_muted()` — a **LittleFS flash

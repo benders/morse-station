@@ -6,7 +6,7 @@
 #
 # Two uses:
 #   - Cardputer brownout test (battery power-cycles).
-#   - Type-time panic capture (TODO.md C2 / instructor-UI plan Risk B): run this,
+#   - Type-time panic capture (instructor-UI plan Risk B): run this,
 #     then type heavily on the keyboard; if the board reboots, the ESP32
 #     backtrace printed to USB CDC just before reset lands in the log instead of
 #     dying with the re-enumerating port.

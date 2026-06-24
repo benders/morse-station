@@ -113,7 +113,7 @@ dBm) is the true ceiling, no FEM bring-up needed (simpler than the Heltec).
   To diagnose: confirm the RP-SMA antenna is seated, compare raw RSSI cap vs
   Heltec at a fixed distance, recheck RX config (`rxBw`, `setRxBoostedGainMode`),
   and check the shared SPI/SD bus isn't degrading the link. May make the cap
-  fox-only. See `TODO.md`.
+  fox-only. See [issue #11](https://github.com/benders/morse-station/issues/11).
 - **Intermittent crash while typing on the keyboard** (seen once, not yet
   reproduced, no panic capture). Suspects: TCA8418 FIFO/keynum decode, or the
   editor buffer bounds. The `# boot #N reason` NVS log records the reset reason

@@ -45,8 +45,8 @@ Modes:
   pull it down to LO in a small space. MAX is the SX1262 chip ceiling (+22 dBm),
   which still exceeds the Part-15 §15.249 limit, so only use it under an amateur
   license. (On the Heltec V4 a FEM PA could add more, but its PA mode is left
-  unmanaged today — see TODO.md; the Cardputer has no FEM, so +22 dBm is its real
-  antenna ceiling.)
+  unmanaged today — see the [issues](https://github.com/benders/morse-station/issues);
+  the Cardputer has no FEM, so +22 dBm is its real antenna ceiling.)
 - **Live key (TX)** — transmits a telegraph key wired to the key GPIO, with
   local sidetone, so students can key to a hunter.
 - **Instructor (RC)** — remote control over the GFSK radio (not just BLE range).
@@ -85,4 +85,4 @@ cycles). To re-pick a mode, reset the board (the menu runs again at boot).
   discovery (`devices.sh`), console drivers, and the hardware-in-the-loop test
   harnesses (incl. the instructor relay / broadcast tests), with the per-board
   serial gotchas.
-- [`TODO.md`](TODO.md) — open work · [`DONE.md`](DONE.md) — completed work.
+- [GitHub Issues](https://github.com/benders/morse-station/issues) — open work · [`DONE.md`](DONE.md) — completed work.

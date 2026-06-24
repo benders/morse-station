@@ -1,11 +1,12 @@
 # Morse Station — Completed Work
 
-Archive of finished items, moved out of `TODO.md`. The fox-hunt firmware: a
+Archive of finished items. The fox-hunt firmware: a
 stationary **fox** transmits a Morse description of its location; **hunters**
 decode it by ear and on the display. Primary platform **Heltec WiFi LoRa 32 V4**
 (ESP32-S3 + SX1262); the **M5Stack Cardputer ADV** is an experimental second fox
 sharing one `src/` tree. See `docs/` for the protocol, command reference, and
-per-component notes; open items remain in `TODO.md`.
+per-component notes; open work is tracked in
+[GitHub Issues](https://github.com/benders/morse-station/issues).
 
 ---
 
@@ -371,3 +372,241 @@ See `docs/components/cardputer-adv.md`.
       unmute resumes), persisted as `config::muted()`, applied at boot, driven by
       the Cardputer `'m'` key and the BLE/serial `mute [on|off]` command.
       (Graduated `vol <0..n>` still open — see TODO.)
+
+---
+
+## Stage 6 — Fox-hunt integration (more)
+
+- [x] **Always-ACK-at-MAX (field note 4, 2026-06-20).** Remote command of the fox
+      worked every time, but the ACK was only received when the instructor was
+      close: the command reaches the fox at its good RX sensitivity, but the ACK
+      went out at the fox's *current* TX power (typically Low) and died at distance.
+      Fix: the ACK path (`control_rx_try`, `src/main.cpp`) saves `pwr_idx`/`g_pa_on`,
+      bumps to MAX (`set_tx_power(PWR_LEVELS[N_PWR-1])` + `set_pa(true)`) strictly
+      around the `ACK_REPEATS` burst, then restores — command stays at play power,
+      acknowledgement goes at full power. Tiny infrequent packet → negligible
+      §15.249 cost. Builds heltec_v4 (FEM) + cardputer_adv.
+- [x] **Sticky alert + fox halt on alert (field note 6, 2026-06-19).** HW-VALIDATED
+      17/17 (commits 693a4b1 / 77e8754 / 09a62e3, branch feat/sticky-alert-fox-halt).
+      A received alert carrying `proto::BCAST_FLAG_STICKY` latches: `banner_active()`
+      short-circuits on `g_alert_latched` (never expires), the panel is held awake,
+      and a Fox/Live-Key node halts TX (`g_tx_halted`). Released only by
+      `alert clear`, `start` (TX only — keeps the banner), or reset (RAM-only). The
+      instructor does NOT latch its own panel (must stay usable to send the clear);
+      local presses can't dismiss a latched alert. KEY FIX (77e8754): the
+      fire-and-forget alert burst missed the Fox's once-per-cycle RX window, so the
+      campaign is now listen-synced (bursts on the fox Listen beacon) + time-bounded
+      (`ALERT_CAMPAIGN_MS`). Test: `scripts/alert_sticky_test.py`.
+- [x] **RECV id + RSSI bar clear after timeout.** `loop_hunter` (`src/main.cpp`
+      ~L2609) clears `rx_station_id = -1` and the RSSI bar once `now - last_signal`
+      exceeds `signal_timeout_ms` (3 s) — the fox's inter-message gap is longer, so
+      a stale reading doesn't linger after the station goes quiet.
+- [x] **Ignore other stations while locked to one fox.** `loop_hunter` keeps a
+      `locked_fox` id (`src/main.cpp` ~L2290); `fox_lock()` admits packets only
+      from the locked fox until `last_fox_rx` ages past `signal_timeout_ms`, then
+      it re-locks to the next fox heard. So a second station can't hijack the
+      copy while the current fox is live.
+
+## Stage 7 — Range & polish (more)
+
+- [x] **Text-frame canned-message mode (field note 7, 2026-06-20).** HW-VALIDATED
+      18/18 via `scripts/msg_text_test.py`. A second message mode for canned clues:
+      transmit the clue as a plaintext `MAGIC_TEXT` frame + retransmit burst (like
+      the ACK/broadcast bursts) and render Morse *locally* on the hunter, instead of
+      streaming `EdgeEvent` timing edges that lose a character to a single dropped
+      edge (field note §5). `proto::TextMsg`/`MAGIC_TEXT` + `encode_text`/`decode_text`
+      (`src/protocol.h`); `config::msgmode`/`set_msgmode` NVS-backed default keyed;
+      `msgmode keyed|text` console verb; `tx_text()` (`TEXT_REPEATS`=4 @
+      `TEXT_GAP_MS`=50) + `loop_fox` text-cycle branch (gated by rx-window/
+      `g_tx_halted`); `loop_hunter` `decode_text` branch dedups by seq and renders
+      via a hunter-side `morse::Player`. Builds heltec_v4 + cardputer_adv +
+      wio_tracker_l1; forward-compat (old-fw nodes ignore MAGIC_TEXT). Two bugs
+      found+fixed in validation: (1) local player started+updated same loop →
+      `now-seg_start_` underflow finished it instantly w/ no audio (drive player off
+      millis()); (2) clue render (~16 s) outlasts REPEAT_PAUSE(12 s) so each resend
+      restarted it (don't restart a render already sounding the same clue). Design:
+      `docs/plan-text-message-mode.md`. Option B (ControlCmd⊕text merge) deferred.
+
+---
+
+## Text-mode sync/DF beacon + per-element reveal (field note §8)
+
+Fixed the three field regressions `msgmode text` introduced (hunters out of sync,
+no continuous RSSI for DF, per-character not per-element display). Design:
+`docs/plan-text-sync-beacon.md`; branch `feat/text-sync-beacon` (merged c70c4fc).
+**§8 COMPLETE** — S1–S5 + freeze-fix done & HW-validated; manual-only left
+(audible 2-hunter unison by ear, antenna-pull free-run/recover). Tests:
+`scripts/sync_beacon_test.py` (S4, 11/11), `scripts/sync_reveal_test.py` (S5),
+`scripts/morse_elems_test.sh` (freeze regression).
+
+- [x] **S1** `morse::Player` absolute-position refactor: `position_ms()` +
+      `resync(now, pos_ms)`. Keyed/§7 paths byte-identical. (d1f01ae)
+- [x] **S2** `proto::Sync` / `MAGIC_SYNC` (0x53) / `POS_IDLE` + `encode_sync` /
+      `decode_sync`. Magic-gated, forward-compatible. (678e570)
+- [x] **S3** Fox `loop_fox` text branch: silent master render clock, `tx_sync()`
+      beacon every `BEACON_MS`=200 ms across render+pause, `TextMsg` re-send every
+      `TEXT_RESEND_MS`=2 s. (faed020; clock fix 66fe8b8 — render clock must use
+      `millis()`, not the loop's stale cached `now`, or every beacon carries POS_IDLE.)
+- [x] **S4** Hunter `loop_hunter`: `decode_sync` branch — presence/RSSI refresh,
+      timing adopt, free-run + slack-bounded `resync` (slack = one dit),
+      `want_text_seq` mid-join + seek to live `pos_ms` on the next `TextMsg`
+      (aa70561). HW-VALIDATED 11/11 (`scripts/sync_beacon_test.py`): beacon cadence
+      ~212 ms median across render+pause, both hunters slave the same clue seqs
+      with |drift| within one dit, mid-join seek after reboot.
+- [x] **S5** Per-element `reveal_to()` (f84194b): one `.`/`-` per key-down element
+      via an intra-char cursor; adds a per-symbol `TEL` debug line. HW-VALIDATED
+      (`scripts/sync_reveal_test.py`): TEL stream == clue's 63-element Morse,
+      intra-letter element gaps median 213 ms.
+- [x] **S5-fix** Display-freeze regression (74ce5db): under a `resync()` seek the
+      per-element reveal froze until the next render — the reveal clock was a
+      free-running key-down counter that over/under-counted across a seek. Fixed by
+      driving the reveal off `morse::Player::elems_elapsed()` (seek-safe, bounded
+      by the total). Host unit test `scripts/morse_elems_test.sh`.
+
+---
+
+## Instructor-UI field exercise — receive-side fixes (FIELD-NOTES-20260623.md)
+
+First live run of the on-device standalone Cardputer Instructor UI surfaced three
+**receiving-side** firmware faults (the UI itself worked). Writeup +
+root-cause analysis in `FIELD-NOTES-20260623.md`.
+
+- [x] **§1 Heltec V3/V4 reboot-LOOP on first tone after startup.** ROOT-CAUSED +
+      FIXED + HW-VALIDATED 2026-06-23 (commit 9a823d2). Reset reason captured over
+      the V4's native USB: **`prev=9(BROWNOUT)`** — the full-volume first tone
+      (level HIGH=32 ≈ 450 mA into 4 Ω on the shared 3V3 rail) sags the rail below
+      the brownout threshold; the loop persists because mute is saved. **HW fix
+      (validated): a single 100 µF electrolytic across the MAX98357A VDD→GND**, in
+      parallel with the board's 10 µF + 0.1 µF, right at the amp (clean A/B), keeps
+      full volume. **SW safety net (shipped):** brownout loop-breaker — boot muted
+      for that boot only when `reset_reason()==BROWNOUT(9)` (`main.cpp`
+      `g_boot_reset_reason`/`RST_BROWNOUT`). Soft-start amplitude ramp tried, did
+      NOT fix the brownout (proving a current ceiling, not onset slew), kept only
+      as harmless click-suppression.
+- [x] **§1 follow-up: alert-at-MAX + unmute volume restore.** (commits fc35ac6 /
+      1c01364.) (a) normal unmute now re-applies `config::volume()` in
+      `apply_mute()` (was only clearing the mute flag); (b) the alert tone is forced
+      to full level (`sidetone_set_level(32)`) for its duration and restores
+      `config::volume()` on end (`start_alert_tone`/`alert_tone_tick`). With the
+      100 µF cap fitted, a MAX alert tone is supply-safe. Note: alert at MAX does
+      NOT re-arm the first-tone soft-start, so on an un-capped unit an idle→MAX
+      alert is the worst-case brownout path (the loop-breaker still recovers it).
+- [x] **§2 nRF52 (RAK/Wio) reboot on receiving mute.** Root cause was BLE-related,
+      not the LittleFS-in-RX-path hypothesis: the nRF52 `ble_provision` stop()/begin()
+      cycle re-runs `Bluefruit.begin()` against a live SoftDevice and hangs → 8 s
+      watchdog reset. Mitigated 2026-06-23 (commit 9100640) by pinning
+      `BLE_CYCLE_UNSAFE` (BLE_ON always); the proper fix (make stop()/begin() safe
+      to cycle, then drop the pin) is tracked in
+      [issue #3](https://github.com/benders/morse-station/issues/3).
+- [x] **§3 Instructor locked out ~90 s after a broadcast command.** FIXED +
+      HW-VALIDATED 2026-06-23 (commit 1c4ad62, stn73). Broadcast (255) relays can
+      never finish early (no known ack count) so they waited the full
+      `CTRL_BURST_WINDOW`=90 s, blocking the menu guard. Added `CTRL_BCAST_WINDOW`
+      =6000 ms; `loop_instructor()` give-up check now selects the window by target.
+      Menu frees in ~6 s.
+
+---
+
+## Multi-target port — Heltec V3 (Phase 1) + nRF52840 RAK4631 (Phase 2) + Wio Tracker L1 (Phase W)
+
+Phased cross-MCU ports off the Heltec V4 baseline, all sharing one `src/` tree
+behind `platform::`/`kv::`/`ble_provision::` seams introduced in **Phase 0**
+(P0.1–P0.4: ESP32-only flags moved to `[esp32_base]`; `platform.h`/`kv.h` seams;
+`config.cpp`/bootlog ring use `kv::Store`; both ESP32 envs build clean). Per-step
+build logs are in git history + the plan docs; outcomes:
+
+- [x] **Phase 1 — Heltec V3 (ESP32-S3 + SX1262, no FEM).** P1.1–P1.6. Added
+      `[env:heltec_v3]`, a `DEVICE_HELTEC_V3` `pins.h` branch (no `HAS_FEM`,
+      `BATT_GATE_ACTIVE_HIGH=0`), parameterised battery gate polarity, widened the
+      device guards, and added V3 to the radio TCXO guard (1.8 V, same as V4).
+      **HW-validated (station 38, 2026-06-11):** the one fix a real unit needed is
+      that the V3's USB-C is a CP2102/UART0 bridge (not native USB), so the env
+      overrides `-DARDUINO_USB_CDC_ON_BOOT=0`. Confirmed: serial + BLE, `pwr 0..3`,
+      `txcw` at −0.53 ppm, watchdog, battery active-LOW gate. See
+      `docs/components/heltec-v3.md`. (Later switched sidetone to I2S/MAX98357A,
+      commit a0d249b.)
+- [x] **Phase 2 — RAK4631 (nRF52840 + SX1262, no FEM).** P2.1–P2.13. Vendored
+      `boards/wiscore_rak4631.json` + variant (from RAKWireless's
+      `RAK-nRF52-Arduino`; provenance in `reference/rak4631/README.md`); added
+      `[nrf52_base]` + `[env:rak4631]`; nRF52 implementations of `platform_`/`kv_`
+      (LittleFS, one flat file per namespace)/`radio_` (global SPI, `SX126X_POWER_EN`,
+      TCXO 1.8 V)/`ble_provision_` (Adafruit Bluefruit NUS)/`sidetone_` (silent
+      stub)/`battery`/`display` (U8g2, no reset line, no VEXT gating). Build:
+      **185,528 B flash (22.8%) / 27,636 B RAM (11.1%)**. **HW-validated on a real
+      RAK4631 + RAK19007 + RAK1921** (flashed via `nrfutil`): LittleFS persistence,
+      Bluefruit NUS, OLED, on-air RX + CW decode, runtime console. Two boot-hang
+      bugs fixed in bring-up: (1) LittleFS never mounted — `kv_nrf52.cpp` called
+      `InternalFS.open()` without `begin()` (fixed with `ensure_fs()`); (2) I2C
+      OLED init hang — nRF52 TWIM `endTransmission` spin-waits with no timeout when
+      a prior firmware left SDA low (fixed with `i2c_bus_recover()` + a `g_oled_ok`
+      present-flag so a stuck/absent panel degrades to headless). `PIN_BUSY=46`
+      confirmed against the datasheet. Remaining on-hardware work is tracked in
+      [GitHub Issues](https://github.com/benders/morse-station/issues) (label `rak4631`).
+- [x] **Phase W — Wio Tracker L1 Pro (nRF52840 + SX1262, no FEM, buzzer + SH1106).**
+      W1–W9, plan + status in `wio-tracker-port.md`. Vendored
+      `boards/seeed_wio_tracker_l1.json` + variant (from Meshtastic
+      `seeed_wio_tracker_L1`, commit 8c4900a5; pin-map in
+      `reference/wio-tracker-l1-pro/README.md`); `[env:wio_tracker_l1]`
+      (`-DDEVICE_WIO_TRACKER_L1 -DSIDETONE_BUZZER`). Widened the nRF52 guards;
+      Wio-only RF-switch via `setRfSwitchPins(SX126X_RXEN, SX126X_TXEN)` alongside
+      `setDio2AsRfSwitch(true)`; a `-DSIDETONE_BUZZER` NRF_PWM0 backend (note: this
+      variant's `g_ADigitalPinMap` is not identity — translate `PIN_BUZZER` D12 →
+      abs GPIO 32 before `PSEL.OUT[0]`); active-HIGH battery gate; SH1106 (not
+      SSD1306) display. **FULLY HW-VALIDATED 2026-06-07** (stn115). Required a
+      SoftDevice fix first: the unit runs **S140 7.3.0** (not the 6.1.1 W1 pinned),
+      so the app relinked for app-base 0x27000 (vendored `nrf52840_s140_v7.ld`),
+      flashed via the UF2 bootloader. Confirmed: boot/reset-reason, LittleFS, OLED
+      (SH1106 @ 0x3D), battery 4.18 V/99%, on-air RX, buzzer sidetone, buttons, BLE
+      admin over NUS. Two HW bugs fixed: OLED right-edge distortion (SH1106 has a
+      2-col offset, use `U8G2_SH1106_…`); constant buzzer "ticking" (Bluefruit auto
+      conn-LED blinks LED_BLUE which aliases the buzzer pin → `autoConnLed(false)`).
+
+---
+
+## Stage 1 — Audio out (sidetone amp)
+
+- [x] **Amp wired + working.** PAM8403 class-D board (Amazon B0DPMNYR2B) driving a
+      4 Ω speaker (Amazon B0F3DBRXS5), powered from the Heltec 3V3/5V rail, common
+      GND. GPIO4 → ~1 kΩ series + 100 nF → amp L_IN (GPIO4, not GPIO7 — GPIO7 is
+      FEM power on the V4). See `docs/components/pam8403.md`. (Earlier MAX98357A
+      I2S path + its first-tone brownout fix are archived above.)
+
+## Stage 6/7 — Field testing
+
+- [x] **Field-tested at range; power + message cadence tuned.** Range is good on
+      **Low** in the open; operating rule (field note 1, 2026-06-19): open ground →
+      Low/Med, fox indoors or across the whole camp → High. Low-power range across
+      the camp area confirmed adequate for the hunt. (Operating rule: open ground →
+      Low/Med, fox indoors or cross-camp → High; default the fox to Low so the
+      volume/strength gradient stays usable, step up only for penetration/distance.)
+- [x] **Enclosure + antenna build.** Hardware assembled.
+
+---
+
+## Stage 3 — Radio link (more)
+
+- [x] **Heltec V4 FEM PA — engaged in TX modes (closed as-is).** `setup()` engages
+      the FEM PA (`radio::set_pa(true)`) in the transmit run modes (Fox / Live Key)
+      and bypasses it in Hunter (RX); the `pa` console command is a runtime
+      override. LO/MED/HI/MAX labels are verbally approximate, so the same MAX
+      radiates ~+28 dBm on the V4 (chip +22 + ~6 dB FEM PA) vs +22 dBm on the
+      Wio / no-FEM boards (documented in `docs/protocol.md`). Accepted as-is — the
+      long-term refinements (measure per-rev GC1109/KCT8103L PA gain, switch the PA
+      per power level, surface chip-dBm→antenna-EIRP in `pwr`/`show`) are not being
+      pursued. See `docs/components/heltec-v4.md`.
+
+## RAK4631 — hardware bring-up (more)
+
+- [x] **Fox-mode TX verified.** A hunter copies the RAK fox on-air; `setOutputPower`
+      LO/MED/HI/MAX behaves (no FEM → +22 dBm ceiling).
+
+## Cardputer ADV — Fox bring-up (more)
+
+- [x] **On-air TX verified.** A Heltec hunter copies the Cardputer fox on
+      905.0 MHz; `setOutputPower` LO/MED/HI/MAX checked (no FEM → +22 dBm ceiling),
+      G0 tap cycles power.
+- [x] **Keyboard text entry verified on hardware** — done as part of the standalone
+      instructor-mode work: keymap/shift correctness, debounce feel, the opt-in
+      window timing out cleanly, and edited values persisting + driving the fox
+      loop. (The earlier intermittent typing crash could not be reproduced after
+      the TCA8418 FIFO-drain bounding and was dropped.)

@@ -51,7 +51,8 @@ SX1262 and the antenna. Key facts that cost real debugging time:
   SDR several floors away hears us at −80..−90 dBm with no RX gain), so the two
   revisions' real EIRP is **mismatched** (V4.2 ~34 dB hotter). To use the V4 as a
   deliberate higher-power fox, the PA mode pin needs to be driven per level and
-  the two revs equalised to a known EIRP. Not blocking the hunt. See `TODO.md`.
+  the two revs equalised to a known EIRP. Not blocking the hunt. See
+  [issue #4](https://github.com/benders/morse-station/issues/4).
 
 ### Battery ADC gate is active-HIGH (opposite of the V3)
 

@@ -176,7 +176,7 @@ Non-blocking (no `delay`), so the watchdog feed and radio RX are unaffected.
   `# alert: tone` debug log — see below). Consider renaming the scripts to
   `alert_*` for discoverability (optional).
 - `scripts/README.md` — the broadcast test descriptions.
-- `README.md` / `DONE.md` / `TODO.md` — wherever the broadcast banner menu/feature
+- `README.md` / `DONE.md` / GitHub Issues — wherever the broadcast banner menu/feature
   is listed, reflect the rename + audible alert.
 - `CLAUDE.md` / memory note `instructor-broadcast-banner.md` — update the command
   name.

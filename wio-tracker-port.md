@@ -1,6 +1,6 @@
 # Port plan: Seeed Wio Tracker L1 Pro (nRF52840 + SX1262)
 
-Status board (update as work proceeds — mirror into `TODO.md`):
+Status board (update as work proceeds — mirror into GitHub Issues):
 
 | Phase | Scope | State |
 |-------|-------|-------|
@@ -16,7 +16,7 @@ Status board (update as work proceeds — mirror into `TODO.md`):
 
 This file is the implementation spec, written so a **Sonnet sub-agent can execute
 one phase at a time**. **Read `AGENTS.md` first** — its rules bind every phase:
-track in `TODO.md`, datasheets/schematics go in `reference/<board>/`, pin maps
+track in GitHub Issues, datasheets/schematics go in `reference/<board>/`, pin maps
 live in `platformio.ini` `build_flags` as `-DPIN_*` (consumed by `src/pins.h`
 with `#ifndef` fallbacks), and work conservatively/incrementally (smallest change
 that moves one item forward; prove it builds before the next).
@@ -568,7 +568,7 @@ tone-quality tuning (the piezo is inherently buzzy off-resonance — accepted).
    - **Key/menu:** boot-menu nav from the mode button; live-key from the key
      button.
    - **Battery:** `batt` plausible on USB and on battery.
-5. Update `TODO.md` + this file's status board; record the **final** resolved pin
+5. Update GitHub Issues + this file's status board; record the **final** resolved pin
    map in `reference/wio-tracker-l1-pro/README.md`.
 
 **Top unvalidated risks to scrutinize first when a unit is on the bench** (all

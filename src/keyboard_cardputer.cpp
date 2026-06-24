@@ -42,7 +42,8 @@ constexpr uint8_t ADDR = I2C_ADDR_TCA8418;   // 0x34
 // nibble maxes at 10 (its FIFO depth), so a healthy drain finishes well under
 // this. The bound exists only so a wedged I2C read that keeps returning a
 // non-zero count can never spin loop() forever and trip the watchdog (a
-// suspected cause of the rare type-time reboot — TODO.md C2 / plan Risk B).
+// suspected cause of the rare type-time reboot — plan Risk B; that crash could
+// not be reproduced after this bound landed and is no longer tracked).
 constexpr uint8_t FIFO_DRAIN_MAX = 32;
 
 // Legend in M5 "picture" coordinates. '\0' = modifier / non-emitting; control
