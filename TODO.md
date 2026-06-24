@@ -4,14 +4,10 @@ Remaining work toward a working modified fox hunt: a stationary **fox** transmit
 a Morse description of its location; **hunters** carry receivers that decode it by
 ear (and on the display).
 
-Platform: **Heltec WiFi LoRa 32 V4** (ESP32-S3 + SX1262) as the primary unit, with
-the **M5Stack Cardputer ADV** as an experimental second fox sharing one `src/`
-tree. Starting at low power on a single channel — **FHSS postponed**.
-
 Completed items have moved to **`DONE.md`**. Reference material lives in `docs/`:
-- `docs/protocol.md` — over-the-air protocol + parameters (and the regulatory basis / FHSS plan).
-- `docs/commands.md` — the serial / BLE command reference.
-- `docs/components/` — per-component lessons (Heltec V4, Cardputer ADV, SX1262, PAM8403).
+- `docs/protocol.md` — over-the-air protocol + parameters
+- `docs/commands.md` — the serial / BLE command reference
+- `docs/components/` — per-component lessons (Heltec V4, Cardputer ADV, SX1262, PAM8403)
 
 Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[?]` needs a decision
 
@@ -67,6 +63,35 @@ no continuous RSSI for DF, per-character not per-element display). Design:
 
 Baseline: all 6 bench units flashed with S3 (fox beacons on air; hunters still
 §7-render, forward-compat) as a known-good state before S4.
+
+---
+
+## Instructor-UI field exercise — receive-side fixes (FIELD-NOTES-20260623.md)
+
+First live run of the on-device standalone Cardputer Instructor UI surfaced three
+**receiving-side** firmware faults (the UI itself worked). Full writeup +
+root-cause analysis in `FIELD-NOTES-20260623.md`.
+
+- [ ] **§1 Heltec V3/V4 reboot-LOOP on first tone after startup (stn43, stn65).**
+      NOT root-caused; two hypotheses disproved (steady-state supply; boot-transient
+      stack-up — warm-up gate didn't fix it). Blocked on a bench reset-reason
+      capture (`scripts/serial_capture.py`; V4 panic prints to UART0/GPIO43 not
+      USB). Candidate software fixes: first-tone amplitude soft-start; one-time
+      low-amplitude boot conditioning tone. (The warm-up gate experiment was
+      reverted 2026-06-23 — it did not fix the loop.) Cross-cutting: alert tone must soft-start + play at
+      MAX then restore (mute, volume); normal unmute must re-apply configured volume.
+- [x] **§2 nRF52 (RAK/Wio) reboot on receiving mute (stn26, stn115).** Root cause
+      was **BLE-related, not the LittleFS-in-RX-path hypothesis**: the nRF52
+      `ble_provision` stop()/begin() cycle (triggered on a state change) re-runs
+      `Bluefruit.begin()` against a live SoftDevice and hangs → 8 s watchdog reset.
+      Mitigated 2026-06-23 by pinning `BLE_CYCLE_UNSAFE` (BLE_ON always); the proper
+      fix (make stop()/begin() safe to cycle, then drop the pin) is tracked under
+      **"Restore BLE-AUTO idle power saving on nRF52"** in the RAK4631 section below.
+- [x] **§3 Instructor locked out ~90 s after a broadcast command.** FIXED +
+      HW-VALIDATED 2026-06-23 (stn73). Broadcast (255) relays can never finish
+      early (no known ack count) so they waited the full `CTRL_BURST_WINDOW`=90 s,
+      blocking the menu guard. Added `CTRL_BCAST_WINDOW`=6000 ms; `loop_instructor()`
+      give-up check now selects the window by target. Menu frees in ~6 s.
 
 ---
 
