@@ -16,6 +16,14 @@ constexpr size_t FOX_MSG_MAX  = 96;
 
 void begin();
 
+// Persist any pending settings changes to flash. Setters above only update the
+// RAM cache and mark the value dirty; the actual flash write is deferred here
+// so it never runs synchronously inside a radio RX/TX call (field note §2: an
+// nRF52 LittleFS write racing the SoftDevice mid-radio-operation rebooted the
+// node). Call once per main loop() iteration, outside any RX/TX critical
+// section; a no-op when nothing is dirty.
+void flush();
+
 uint8_t station_id();
 void    set_station_id(uint8_t id);
 

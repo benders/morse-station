@@ -187,6 +187,18 @@ P2.1–P2.13 above). These items still need a RAK4631 on the bench:
 - [ ] **Fox-mode TX verification.** RX + CW decode is proven on-air; TX has not
       been keyed yet. Confirm a hunter copies the RAK fox and that
       `setOutputPower` LO/MED/HI/MAX behaves (no FEM → +22 dBm is the ceiling).
+- [ ] **Restore BLE-AUTO idle power saving on nRF52 (RAK4631/Wio Tracker L1).**
+      Field note §2 root cause (fixed 2026-06-23, `main.cpp` setup()): these
+      boards are currently pinned `BLE_ON` always, because
+      `ble_provision_nrf52.cpp`'s `stop()` only halts advertising — it never
+      releases the SoftDevice (documented there as "fine, we only call stop()
+      right before system_off()") — so a later `begin()` re-runs
+      `Bluefruit.begin()`/`bleuart.begin()` against an already-initialized stack
+      and hangs (8 s watchdog reset). Pinning ON sacrifices the ~70 mA idle
+      saving the AUTO panel-follow policy gives the ESP32 boards — a big
+      fraction of these boards' draw. Real fix: make `ble_provision_nrf52`
+      `stop()`/`begin()` safe to cycle repeatedly (mirroring the ESP32 NimBLE
+      path), then drop the `BLE_CYCLE_UNSAFE` pin in `main.cpp` setup().
 
 ---
 

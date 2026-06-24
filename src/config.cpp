@@ -22,6 +22,17 @@ uint8_t cached_ctrl_seq = 0;      // instructor control-packet seq (persisted)
 uint8_t cached_volume = 8;        // sidetone level in GAIN_Q15/1024 units (8 -> 8192)
 uint8_t cached_fox_id = 0;        // session fox station id for the instructor menu (0=unset)
 
+// Bitmask of cached_* fields with a flash write pending. Setters only set the
+// bit (cheap, RAM-only, safe to call from anywhere incl. a radio RX handler);
+// flush() does the actual prefs.begin/put/end and is called once per loop().
+enum : uint16_t {
+    D_ID = 1u << 0, D_CALL = 1u << 1, D_MSG = 1u << 2, D_WPM = 1u << 3,
+    D_CWPM = 1u << 4, D_MMODE = 1u << 5, D_BMODE = 1u << 6, D_FPWR = 1u << 7,
+    D_MUTE = 1u << 8, D_LNA = 1u << 9, D_RXBW = 1u << 10, D_CSEQ = 1u << 11,
+    D_VOL = 1u << 12, D_FID = 1u << 13,
+};
+uint16_t dirty = 0;
+
 // Compile-time platform name — always correct for the firmware variant. This is
 // the default board model; a more specific model (e.g. a Heltec V4 sub-rev that
 // is NOT electrically distinguishable at runtime) can be pinned per unit in NVS.
@@ -125,9 +136,7 @@ uint8_t station_id() { return cached_id; }
 
 void set_station_id(uint8_t id) {
     cached_id = id;
-    prefs.begin(NS, false);
-    prefs.putUChar(KEY_ID, id);
-    prefs.end();
+    dirty |= D_ID;
 }
 
 const char* callsign() { return cached_call; }
@@ -135,9 +144,7 @@ const char* callsign() { return cached_call; }
 void set_callsign(const char* call) {
     if (!call) return;
     strlcpy(cached_call, call, sizeof(cached_call));
-    prefs.begin(NS, false);
-    prefs.putString(KEY_CALL, cached_call);
-    prefs.end();
+    dirty |= D_CALL;
 }
 
 const char* fox_message() { return cached_msg; }
@@ -145,9 +152,7 @@ const char* fox_message() { return cached_msg; }
 void set_fox_message(const char* msg) {
     if (!msg) return;
     strlcpy(cached_msg, msg, sizeof(cached_msg));
-    prefs.begin(NS, false);
-    prefs.putString(KEY_MSG, cached_msg);
-    prefs.end();
+    dirty |= D_MSG;
 }
 
 uint8_t wpm() { return cached_wpm; }
@@ -155,19 +160,14 @@ uint8_t wpm() { return cached_wpm; }
 void set_wpm(uint8_t wpm) {
     cached_wpm = clamp_u8(wpm, WPM_MIN, WPM_MAX);
     if (cached_char_wpm < cached_wpm) cached_char_wpm = cached_wpm;  // keep C >= S
-    prefs.begin(NS, false);
-    prefs.putUChar(KEY_WPM, cached_wpm);
-    prefs.putUChar(KEY_CWPM, cached_char_wpm);
-    prefs.end();
+    dirty |= D_WPM | D_CWPM;
 }
 
 uint8_t char_wpm() { return cached_char_wpm; }
 
 void set_char_wpm(uint8_t wpm) {
     cached_char_wpm = clamp_u8(wpm, cached_wpm, WPM_MAX);  // never below overall
-    prefs.begin(NS, false);
-    prefs.putUChar(KEY_CWPM, cached_char_wpm);
-    prefs.end();
+    dirty |= D_CWPM;
 }
 
 uint8_t msgmode() { return cached_msgmode; }
@@ -176,9 +176,7 @@ void set_msgmode(uint8_t mode) {
     uint8_t m = mode ? 1 : 0;
     if (m == cached_msgmode) return;   // avoid a needless flash write
     cached_msgmode = m;
-    prefs.begin(NS, false);
-    prefs.putUChar(KEY_MMODE, m);
-    prefs.end();
+    dirty |= D_MMODE;
 }
 
 uint8_t boot_mode() { return cached_boot_mode; }
@@ -186,9 +184,7 @@ uint8_t boot_mode() { return cached_boot_mode; }
 void set_boot_mode(uint8_t mode) {
     if (mode == cached_boot_mode) return;   // avoid a needless flash write
     cached_boot_mode = mode;
-    prefs.begin(NS, false);
-    prefs.putUChar(KEY_BMODE, mode);
-    prefs.end();
+    dirty |= D_BMODE;
 }
 
 uint8_t fox_pwr_idx() { return cached_fox_pwr_idx; }
@@ -196,9 +192,7 @@ uint8_t fox_pwr_idx() { return cached_fox_pwr_idx; }
 void set_fox_pwr_idx(uint8_t idx) {
     if (idx == cached_fox_pwr_idx) return;   // avoid a needless flash write
     cached_fox_pwr_idx = idx;
-    prefs.begin(NS, false);
-    prefs.putUChar(KEY_FPWR, idx);
-    prefs.end();
+    dirty |= D_FPWR;
 }
 
 uint8_t volume() { return cached_volume; }
@@ -207,9 +201,7 @@ void set_volume(uint8_t units) {
     uint8_t v = clamp_u8(units, VOL_MIN, VOL_MAX);
     if (v == cached_volume) return;   // avoid a needless flash write
     cached_volume = v;
-    prefs.begin(NS, false);
-    prefs.putUChar(KEY_VOL, v);
-    prefs.end();
+    dirty |= D_VOL;
 }
 
 const char* default_board_model() { return DEF_MODEL; }
@@ -219,9 +211,7 @@ bool muted() { return cached_muted; }
 void set_muted(bool m) {
     if (m == cached_muted) return;   // avoid a needless flash write
     cached_muted = m;
-    prefs.begin(NS, false);
-    prefs.putBool(KEY_MUTE, m);
-    prefs.end();
+    dirty |= D_MUTE;
 }
 
 bool lna() { return cached_lna; }
@@ -229,9 +219,7 @@ bool lna() { return cached_lna; }
 void set_lna(bool on) {
     if (on == cached_lna) return;    // avoid a needless flash write
     cached_lna = on;
-    prefs.begin(NS, false);
-    prefs.putBool(KEY_LNA, on);
-    prefs.end();
+    dirty |= D_LNA;
 }
 
 float rx_bw_khz() { return cached_rx_bw_dhz / 10.0f; }
@@ -240,9 +228,7 @@ void set_rx_bw_khz(float khz) {
     uint32_t dhz = (uint32_t)(khz * 10.0f + 0.5f);
     if (dhz == cached_rx_bw_dhz) return;    // avoid a needless flash write
     cached_rx_bw_dhz = dhz;
-    prefs.begin(NS, false);
-    prefs.putUInt(KEY_RXBW, dhz);
-    prefs.end();
+    dirty |= D_RXBW;
 }
 
 uint8_t ctrl_seq() { return cached_ctrl_seq; }
@@ -250,9 +236,7 @@ uint8_t ctrl_seq() { return cached_ctrl_seq; }
 void set_ctrl_seq(uint8_t seq) {
     if (seq == cached_ctrl_seq) return;     // avoid a needless flash write
     cached_ctrl_seq = seq;
-    prefs.begin(NS, false);
-    prefs.putUChar(KEY_CSEQ, seq);
-    prefs.end();
+    dirty |= D_CSEQ;
 }
 
 uint8_t fox_id() { return cached_fox_id; }
@@ -260,9 +244,28 @@ uint8_t fox_id() { return cached_fox_id; }
 void set_fox_id(uint8_t id) {
     if (id == cached_fox_id) return;        // avoid a needless flash write
     cached_fox_id = id;
+    dirty |= D_FID;
+}
+
+void flush() {
+    if (!dirty) return;   // common case: nothing pending, skip the flash session
     prefs.begin(NS, false);
-    prefs.putUChar(KEY_FID, id);
+    if (dirty & D_ID)    prefs.putUChar(KEY_ID, cached_id);
+    if (dirty & D_CALL)  prefs.putString(KEY_CALL, cached_call);
+    if (dirty & D_MSG)   prefs.putString(KEY_MSG, cached_msg);
+    if (dirty & D_WPM)   prefs.putUChar(KEY_WPM, cached_wpm);
+    if (dirty & D_CWPM)  prefs.putUChar(KEY_CWPM, cached_char_wpm);
+    if (dirty & D_MMODE) prefs.putUChar(KEY_MMODE, cached_msgmode);
+    if (dirty & D_BMODE) prefs.putUChar(KEY_BMODE, cached_boot_mode);
+    if (dirty & D_FPWR)  prefs.putUChar(KEY_FPWR, cached_fox_pwr_idx);
+    if (dirty & D_MUTE)  prefs.putBool(KEY_MUTE, cached_muted);
+    if (dirty & D_LNA)   prefs.putBool(KEY_LNA, cached_lna);
+    if (dirty & D_RXBW)  prefs.putUInt(KEY_RXBW, cached_rx_bw_dhz);
+    if (dirty & D_CSEQ)  prefs.putUChar(KEY_CSEQ, cached_ctrl_seq);
+    if (dirty & D_VOL)   prefs.putUChar(KEY_VOL, cached_volume);
+    if (dirty & D_FID)   prefs.putUChar(KEY_FID, cached_fox_id);
     prefs.end();
+    dirty = 0;
 }
 
 } // namespace config

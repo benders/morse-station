@@ -838,6 +838,7 @@ static bool handle_setup_command(const char* line, Print& out) {
         // interaction. Give the BLE notify a moment to flush before resetting.
         out.println("# rebooting");
         set_reboot_intent(REBOOT_INTENT_SOFT);   // so next boot logs "SOFT", not a false watchdog
+        config::flush();   // make sure any pending config write lands before reset
         delay(150);
         platform::restart();
     } else if (!strncmp(line, "mode ", 5)) {
@@ -1441,10 +1442,30 @@ void setup() {
     // effect on the next reboot, re-running this setup() — so this decision needs
     // no runtime re-evaluation. A manual `ble off`/`ble auto` later is still a
     // deliberate operator override and works (it just reassigns g_ble_mode).
-    if (mode == MODE_INSTRUCTOR) {
+    //
+    // nRF52 (RAK4631/Wio) is ALSO pinned ON, for a different reason: its
+    // ble_provision implementation (ble_provision_nrf52.cpp) calls stop() then
+    // begin() to cycle the core, but stop() is documented there as only safe
+    // right before system_off() — the SoftDevice is never actually released, so
+    // a later begin() re-runs Bluefruit.begin()/bleuart.begin() against an
+    // already-initialized stack and hangs (8s watchdog reset). Field note §2
+    // ("nRF52 reboots on receiving mute"): the real trigger was AUTO dropping
+    // BLE after a Hunter idle period and then any operator activity — local OR
+    // a relayed control command, both route through mark_operator_activity() —
+    // re-raising it via this unsafe cycle. Pinning ON trades away the ~70 mA
+    // idle saving on these two boards until ble_provision_nrf52 gets a real
+    // stop()/begin() that's safe to repeat.
+#if defined(DEVICE_RAK4631) || defined(DEVICE_WIO_TRACKER_L1)
+    constexpr bool BLE_CYCLE_UNSAFE = true;
+#else
+    constexpr bool BLE_CYCLE_UNSAFE = false;
+#endif
+    if (mode == MODE_INSTRUCTOR || BLE_CYCLE_UNSAFE) {
         g_ble_mode = BLE_ON;
         apply_ble(true);
-        Serial.println("# ble: instructor -> pinned ON (panel-follow disabled)");
+        Serial.println(BLE_CYCLE_UNSAFE
+            ? "# ble: nRF52 -> pinned ON (stop()/begin() not safe to cycle)"
+            : "# ble: instructor -> pinned ON (panel-follow disabled)");
     } else {
         Serial.println("# ble: AUTO (follows panel; blank drops the core)");
     }
@@ -3011,4 +3032,10 @@ void loop() {
                           want ? "up" : "down");
         apply_ble(want);
     }
+
+    // Field note §2: persist any config changes queued this pass. Deferred out
+    // of the RX path (control_rx_try et al. only update the RAM cache) so the
+    // flash write never races a radio operation; safe here, after RX/TX for
+    // this iteration is done. No-op when nothing is dirty.
+    config::flush();
 }
