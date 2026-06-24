@@ -315,9 +315,15 @@ static void set_tone(bool on) {
 
 // Apply a mute state to the sidetone and persist it, so the Cardputer 'm' key
 // and the BLE/serial `mute` command stay in lockstep and survive a power cycle.
+// On unmute, re-apply the persisted level: sidetone_set_mute() only gates the
+// tone (and re-arms the first-tone soft-start, field note §1), it never touches
+// the gain, so this is the single place that guarantees an unmuted node is
+// actually back at config::volume() instead of whatever level happened to be
+// live before it was muted.
 static void apply_mute(bool m) {
     config::set_muted(m);
     sidetone_set_mute(m);
+    if (!m) sidetone_set_level(config::volume());
     last_draw = 0;   // refresh any on-screen state on the next draw
 }
 
