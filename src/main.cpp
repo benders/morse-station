@@ -56,6 +56,13 @@ static constexpr uint32_t CTRL_BURST_INTERVAL = 250;     // min gap between burs
 static constexpr uint32_t CTRL_SILENCE_MS     = 800;     // > 700 ms heartbeat → window
 static constexpr uint32_t CTRL_PROBE_INTERVAL = 1500;    // sparse probe before target heard
 static constexpr uint32_t CTRL_BURST_WINDOW   = 90000;
+// A broadcast relay (target 255) can never finish early: the instructor can't
+// know how many hunters to expect acks from, so it can't clear g_ctrl on
+// delivery the way a unicast does. Waiting the full CTRL_BURST_WINDOW would lock
+// the operator out (menu guard !g_ctrl.active) for 90 s after every broadcast.
+// Instead give broadcasts a short fire-and-forget window: a handful of sparse
+// CTRL_PROBE_INTERVAL bursts to reach all listeners, then release.
+static constexpr uint32_t CTRL_BCAST_WINDOW   = 6000;
 static constexpr uint32_t CTRL_ACK_LISTEN_MS  = 300;     // blocking RX right after a
                                                          // burst to catch the prompt ack;
                                                          // covers the target's ack burst
@@ -2840,7 +2847,11 @@ static void loop_instructor(uint32_t now) {
     }
 
     // Burst window elapsed without (enough) acks — give up on this command.
-    if (now - g_ctrl.start_ms >= CTRL_BURST_WINDOW) {
+    // Broadcasts use the short fire-and-forget window (they never finish early);
+    // unicasts get the full safety bound while waiting for their single ack.
+    uint32_t window = (g_ctrl.target_id == proto::BROADCAST_ID)
+                          ? CTRL_BCAST_WINDOW : CTRL_BURST_WINDOW;
+    if (now - g_ctrl.start_ms >= window) {
         g_ctrl.active = false;
         char l2[24];
         snprintf(l2, sizeof(l2), "%u ack(s)", g_ctrl.n_acks);
