@@ -298,6 +298,16 @@ static const int     N_HUNTER_VOL = 4;
 
 static void log_line(const char* s) { Serial.print(s); }
 
+// Reset reason captured at boot (platform::reset_reason()), stashed at file scope
+// so the sidetone restore can break the §1 brownout loop: a Heltec that browns
+// out on its first full-volume tone comes back up unmuted (mute is persisted) and
+// replays the same crash forever. If the last reset WAS a brownout, come up muted
+// for this boot only (the persisted mute pref is untouched) so the unit can't
+// wedge itself over the air — it stays silent and recoverable until an operator
+// re-enables tone, by which point the supply problem can be addressed.
+static int  g_boot_reset_reason = 0;
+static constexpr int RST_BROWNOUT = 9;   // ESP_RST_BROWNOUT (see platform.h)
+
 static void set_tone(bool on) {
     static bool cur = false;
     if (on != cur) { cur = on; if (on) sidetone_on(); else sidetone_off(); }
@@ -1330,6 +1340,7 @@ void setup() {
             set_reboot_intent(REBOOT_INTENT_RUNNING);
         }
 #endif
+        g_boot_reset_reason = r;        // for the §1 brownout loop-breaker below
         int prev = 0;
         uint32_t bc = bootlog_record(r, prev);
         Serial.printf("# boot #%u reason now=%d(%s) prev=%d(%s)\n",
@@ -1382,7 +1393,18 @@ void setup() {
 #endif
     sidetone_init(PIN_SIDETONE, TONE_HZ);
     sidetone_set_level(config::volume()); // restore the persisted sidetone level
-    sidetone_set_mute(config::muted());   // restore a persisted silent node
+    // §1 brownout loop-breaker: if the last reset was a brownout (almost always
+    // the first full-volume tone sagging the shared 3V3 rail), come up muted for
+    // THIS boot regardless of the persisted pref, so the unit can't immediately
+    // replay the crash and wedge in a reboot loop over the air. The stored mute
+    // pref is left intact; an explicit unmute (or a clean power cycle) clears it.
+    bool boot_muted = config::muted();
+    if (g_boot_reset_reason == RST_BROWNOUT && !boot_muted) {
+        boot_muted = true;
+        Serial.println("# prev reset = BROWNOUT -> booting MUTED (loop-breaker); "
+                       "unmute to re-enable tone");
+    }
+    sidetone_set_mute(boot_muted);        // restore a persisted silent node
 
     mode = run_menu();
     // Remember the choice as the boot default (Hibernate is transient — never

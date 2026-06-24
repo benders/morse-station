@@ -21,8 +21,42 @@ Stations involved: instructor = stn73 (Cardputer ADV). Targets = stn43
 
 ## 1. Heltec V3/V4 reboot-LOOP on the first tone after startup (stn43, stn65)
 
-**Status: NOT root-caused. Two hypotheses tried and disproved (below). Paused
-2026-06-23 — this section is the full record of what is known.**
+**Status: ROOT-CAUSED + FIXED + HW-VALIDATED 2026-06-23. It is a supply
+BROWNOUT, and a single 100 µF bulk cap on the amp VDD fixes it.**
+
+**Resolution (the answer).**
+- **Reset reason captured at last: `prev=9(BROWNOUT)`** on stn43 (V4), read over
+  the V4's native USB (which does *not* reset on connect, so the crash reason
+  survived). This is the diagnostic that had been missing the whole time — it is a
+  **supply brownout**, not a hard fault or an I2S/DMA glitch. The full-swing tone
+  (level `HIGH` = 32 = full swing ≈ 450 mA into 4 Ω on the shared 3V3 rail) sags
+  the rail below the ESP32 brownout threshold. The *first* tone is the worst case
+  because the rail/amp caps are least charged; "fine in steady state" (Hypothesis
+  1) was survivorship on a marginal supply, not a true all-clear.
+- **HARDWARE FIX (validated): one 100 µF electrolytic across the MAX98357A
+  VDD→GND**, in parallel with the existing 10 µF + 0.1 µF, soldered right at the
+  amp. Clean A/B on the bench: boards **with** the cap unmuted at HIGH with **no
+  reboot**; boards **without** it took the brownout reboot. A single 100 µF was
+  enough (the 470–1000 µF figure from forum lore is conservative headroom). This
+  is the right fix because it **keeps full volume**.
+- **SOFTWARE SAFETY NET (shipped): brownout loop-breaker.** On boot, if
+  `platform::reset_reason()` is `BROWNOUT (9)`, the unit comes up **muted for that
+  boot only** (persisted mute pref untouched) and logs it, so an un-capped unit
+  can't wedge itself in an over-the-air reboot loop — it stays silent and
+  recoverable. `main.cpp`: `g_boot_reset_reason` / `RST_BROWNOUT`, applied at the
+  `sidetone_set_mute(config::muted())` boot restore.
+- **Soft-start: tried, did NOT fix it, kept as harmless click-suppression.** A
+  one-time amplitude ramp (0→full over ~250 ms on the first tone out of silence,
+  re-armed each mute cycle) was added on the "onset slew" theory. It did **not**
+  prevent the brownout — the tone still climbs to full current and dies *part-way
+  through* — which is itself the evidence that ruled out onset-slew and pointed at
+  a current ceiling. Left in `sidetone.cpp` because it cleans up key-onset clicks;
+  it is **not** the §1 fix.
+
+**Original investigation record (kept for history) below.**
+
+**Status when paused (now superseded): NOT root-caused. Two hypotheses tried and
+disproved (below).**
 
 **Observed (full set of empirical facts).**
 - After receiving **UNMUTE** (`relay 255 mute off`), stn43 (V4) and stn65 (V3)

@@ -72,14 +72,28 @@ First live run of the on-device standalone Cardputer Instructor UI surfaced thre
 **receiving-side** firmware faults (the UI itself worked). Full writeup +
 root-cause analysis in `FIELD-NOTES-20260623.md`.
 
-- [ ] **§1 Heltec V3/V4 reboot-LOOP on first tone after startup (stn43, stn65).**
-      NOT root-caused; two hypotheses disproved (steady-state supply; boot-transient
-      stack-up — warm-up gate didn't fix it). Blocked on a bench reset-reason
-      capture (`scripts/serial_capture.py`; V4 panic prints to UART0/GPIO43 not
-      USB). Candidate software fixes: first-tone amplitude soft-start; one-time
-      low-amplitude boot conditioning tone. (The warm-up gate experiment was
-      reverted 2026-06-23 — it did not fix the loop.) Cross-cutting: alert tone must soft-start + play at
-      MAX then restore (mute, volume); normal unmute must re-apply configured volume.
+- [x] **§1 Heltec V3/V4 reboot-LOOP on first tone after startup (stn43, stn65).**
+      ROOT-CAUSED + FIXED + HW-VALIDATED 2026-06-23. Reset reason captured over the
+      V4's native USB: **`prev=9(BROWNOUT)`** — the full-volume first tone (level
+      HIGH=32 ≈ 450 mA into 4 Ω on the shared 3V3 rail) sags the rail below the
+      brownout threshold; the loop persists because mute is saved. **HW fix
+      (validated): a single 100 µF electrolytic across the MAX98357A VDD→GND**, in
+      parallel with the board's 10 µF + 0.1 µF, right at the amp — clean A/B (cap =
+      no reboot, no cap = brownout), keeps full volume. **SW safety net (shipped):
+      brownout loop-breaker** — boot muted for that boot only when
+      `reset_reason()==BROWNOUT(9)` (`main.cpp` `g_boot_reset_reason`/`RST_BROWNOUT`)
+      so an un-capped unit can't wedge over the air. Soft-start amplitude ramp
+      (`sidetone.cpp`) was tried, did NOT fix the brownout (proving it's a current
+      ceiling, not onset slew), kept only as harmless click-suppression. Earlier
+      warm-up gate was reverted. **Still open (separate):** alert tone should
+      play at MAX then restore (mute, volume); normal unmute should re-apply the
+      configured volume — see new entry below.
+- [ ] **§1 follow-up: alert-at-MAX + unmute volume restore.** Independent of the
+      brownout fix. Alert tone should *save (mute, volume) → force unmute + set MAX
+      → soft-started alert tone → restore (mute, volume)*; and a normal unmute must
+      re-apply `config::volume()` (today it only clears the mute flag), especially
+      once the alert path can leave volume at MAX. (With the 100 µF cap fitted, a
+      MAX alert tone is now supply-safe.)
 - [x] **§2 nRF52 (RAK/Wio) reboot on receiving mute (stn26, stn115).** Root cause
       was **BLE-related, not the LittleFS-in-RX-path hypothesis**: the nRF52
       `ble_provision` stop()/begin() cycle (triggered on a state change) re-runs

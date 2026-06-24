@@ -121,6 +121,25 @@ static constexpr int ENV_RAMP = SAMPLE_RATE / 125;   // ~8 ms ramp, in samples
 static int16_t       s_ramp[ENV_RAMP + 1];           // raised-cosine, 0..32767 (Q15)
 static int           s_env_pos = 0;                  // current position, 0..ENV_RAMP
 
+// First-tone soft-start (field note §1). The amp reboot-loops on the *first*
+// full-amplitude drive out of silence — a one-shot, load-dependent turn-on
+// transient of the class-D output stage (first-tone-only, probabilistic, gone
+// once any tone succeeds, present only with the amp connected). The 8 ms key
+// envelope above is far too fast to ease that first drive. So on the first tone
+// out of silence, ramp a one-time amplitude ceiling from 0 up to full over
+// ~250 ms, letting the amp slew gently into its first high-amplitude output
+// instead of stepping to it.
+//
+// "Out of silence" means once per *mute cycle*, not just once per power cycle:
+// it arms at power-up and RE-ARMS whenever the unit is muted, so the next unmute
+// eases the amp back in too (the reboot was first seen on an over-the-air
+// UNMUTE). It only advances while the tone is intended on, so it conditions the
+// amp on the first real element after each unmute, whenever that element fires;
+// after it completes, normal per-element keying uses the fast envelope alone.
+static constexpr int     SOFTSTART_SAMPLES = SAMPLE_RATE / 4;   // ~250 ms
+static volatile bool     s_softstart_done  = false;
+static volatile int      s_softstart_pos   = 0;      // 0..SOFTSTART_SAMPLES, one-shot per cycle
+
 static void feeder(void*) {
     static int16_t buf[BLOCK_FRAMES * 2];           // interleaved L, R
     for (;;) {
@@ -132,11 +151,24 @@ static void feeder(void*) {
             else if (s_env_pos > target_pos) s_env_pos--;   // release along the curve
             int32_t env = s_ramp[s_env_pos];
 
+            // One-time amplitude soft-start: advance only while the tone is meant
+            // to be on, and only until it reaches full. Linear is fine here — over
+            // ~250 ms the slope is far too gentle to splatter (unlike the 8 ms key
+            // edge, which needs the raised cosine). Past full it's a constant 1.0.
+            if (!s_softstart_done) {
+                if (target_pos > 0 && s_softstart_pos < SOFTSTART_SAMPLES) s_softstart_pos++;
+                if (s_softstart_pos >= SOFTSTART_SAMPLES) s_softstart_done = true;
+            }
+            int32_t ss = s_softstart_done
+                             ? 32768
+                             : (int32_t)((int64_t)s_softstart_pos * 32768 / SOFTSTART_SAMPLES);
+
             s_phase += s_phase_inc;                  // DDS free-runs; envelope, not
                                                      // phase, gives a clickless edge
             int32_t s = s_sine[(uint8_t)(s_phase >> 24)];
             int32_t v = (s * s_gain_q15) >> 15;      // volume
             v = (v * env) >> 15;                      // raised-cosine envelope
+            v = (v * ss) >> 15;                       // one-time first-tone soft-start
             buf[2 * i] = (int16_t)v;                 // L
             buf[2 * i + 1] = (int16_t)v;             // R (SD_MODE high => (L+R)/2 = v)
         }
@@ -195,7 +227,13 @@ void sidetone_set_level(uint8_t units) {
     s_gain_q15 = (int32_t)units * 1024;
 }
 
-void sidetone_set_mute(bool m) { s_muted = m; }     // feeder writes silence while muted
+void sidetone_set_mute(bool m) {
+    if (m && !s_muted) {                 // entering mute: re-arm the first-tone
+        s_softstart_pos  = 0;            // soft-start so the next unmute eases the
+        s_softstart_done = false;        // amp back in from silence (field note §1)
+    }
+    s_muted = m;                          // feeder writes silence while muted
+}
 void sidetone_alert(bool on)   { s_alert = on; }    // feeder forces tone on while set
 
 void sidetone_on()  { s_on = true; }   // the envelope ramp gives the clickless edge
