@@ -1934,22 +1934,33 @@ static void set_banner(const char* text, bool alert, bool sticky, uint32_t now) 
     display::activity();                // force-wake the panel so the banner shows
 }
 
+// The attention tone always sounds at full level, regardless of the node's
+// configured volume: an alert must be heard even on a unit set quiet. We force
+// the sidetone level to max for the tone's duration and restore config::volume()
+// when it ends. SIDETONE_MAX_UNITS is the top of the sidetone_set_level() scale.
+static constexpr uint8_t SIDETONE_MAX_UNITS = 32;
+
 // Sound the attention tone for ALERT_TONE_MS. Overrides the master mute (a
 // broadcast must be heard); sidetone_alert() forces the tone on at the board's
-// fixed frequency. Re-arming while already sounding just extends the deadline.
+// fixed frequency, and we bump the level to max so it is heard at full volume.
+// Re-arming while already sounding just extends the deadline (level is already
+// at max, restore target is unchanged — always config::volume()).
 static void start_alert_tone(uint32_t now) {
     g_alert_tone_until = now + ALERT_TONE_MS;
+    sidetone_set_level(SIDETONE_MAX_UNITS);   // alert is always at full volume
     sidetone_alert(true);
-    if (g_debug) Serial.printf("# alert: tone %ums\n", (unsigned)ALERT_TONE_MS);
+    if (g_debug) Serial.printf("# alert: tone %ums @max\n", (unsigned)ALERT_TONE_MS);
 }
 
 // End the attention tone once its deadline passes. Cheap, non-blocking — called
 // every loop() so it never holds the speaker past ALERT_TONE_MS. Restores the
-// underlying key/mute state (sidetone_alert(false) re-evaluates it).
+// configured level and the underlying key/mute state (sidetone_alert(false)
+// re-evaluates it).
 static void alert_tone_tick(uint32_t now) {
     if (g_alert_tone_until && (int32_t)(g_alert_tone_until - now) <= 0) {
         g_alert_tone_until = 0;
         sidetone_alert(false);
+        sidetone_set_level(config::volume());  // restore the node's own volume
     }
 }
 

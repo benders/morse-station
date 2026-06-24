@@ -88,12 +88,16 @@ root-cause analysis in `FIELD-NOTES-20260623.md`.
       warm-up gate was reverted. **Still open (separate):** alert tone should
       play at MAX then restore (mute, volume); normal unmute should re-apply the
       configured volume — see new entry below.
-- [ ] **§1 follow-up: alert-at-MAX + unmute volume restore.** Independent of the
-      brownout fix. Alert tone should *save (mute, volume) → force unmute + set MAX
-      → soft-started alert tone → restore (mute, volume)*; and a normal unmute must
-      re-apply `config::volume()` (today it only clears the mute flag), especially
-      once the alert path can leave volume at MAX. (With the 100 µF cap fitted, a
-      MAX alert tone is now supply-safe.)
+- [x] **§1 follow-up: alert-at-MAX + unmute volume restore.** Independent of the
+      brownout fix. DONE: (a) normal unmute now re-applies `config::volume()` in
+      `apply_mute()` (was only clearing the mute flag) — commit fc35ac6; (b) the
+      alert tone is forced to full level (`sidetone_set_level(32)`) for its
+      duration and restores `config::volume()` on end — `start_alert_tone`/
+      `alert_tone_tick`. Alert already overrode mute via the `s_alert` gate (no
+      mute save/restore needed). With the 100 µF cap fitted, a MAX alert tone is
+      supply-safe. NOT yet HW-validated. Note: alert at MAX does NOT re-arm the
+      first-tone soft-start, so on an un-capped unit an idle→MAX alert is the
+      worst-case brownout path (the loop-breaker still recovers it).
 - [x] **§2 nRF52 (RAK/Wio) reboot on receiving mute (stn26, stn115).** Root cause
       was **BLE-related, not the LittleFS-in-RX-path hypothesis**: the nRF52
       `ble_provision` stop()/begin() cycle (triggered on a state change) re-runs
